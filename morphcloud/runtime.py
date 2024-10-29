@@ -6,6 +6,7 @@ import httpx
 from functools import wraps
 import hashlib
 from morphcloud.utils import to_camel_case, to_snake_case
+from morphcloud.actions import ide_actions
 
 # Constants
 BASE_URL = "https://cloud.morph.so"
@@ -131,10 +132,7 @@ class RuntimeExecute:
 
     def _load_actions(self):
         """Load actions from actions.py and create corresponding methods"""
-        actions_path = os.path.join(os.path.dirname(__file__), 'actions.py')
-        with open(actions_path) as f:
-            actions_data = json.loads(f.read())
-
+        actions_data = ide_actions
         for action in actions_data['actions']:
             # Convert action name to snake_case
             snake_name = to_snake_case(action['name'])
@@ -344,7 +342,7 @@ class Runtime:
             instance_response = http_client.post(
                 f"{base_url}/instance",
                 headers=headers,
-                json={"snapshot_id": snapshot_id}
+                params={"snapshot_id": snapshot_id}
             )
             instance_response.raise_for_status()
             return cls(instance_id=instance_response.json()["id"], base_url=base_url, api_key=api_key, timeout=timeout)
@@ -363,7 +361,7 @@ class Runtime:
             instance_response = http_client.post(
                 f"{base_url}/instance",
                 headers=headers,
-                json={"snapshot_id": existing_snapshot["id"]}
+                params={"snapshot_id": existing_snapshot["id"]}
             )
         elif setup_commands:
             # First try to find/create a base snapshot without setup commands
@@ -662,8 +660,7 @@ class Runtime:
         """
         remote_desktop_url = f"{self.base_url}/ui/instance/{self.instance_id}" if self.instance_id else "Not initialized"
         return (
-            f"Runtime Instance:\n"
-            f"  ID: {self.instance_id or 'Not initialized'}\n"
-            f"  Remote Desktop URL: {remote_desktop_url}\n"
-            f"  Snapshot ID: {self.snapshot_id or 'None'}"
+            f"Runtime(instance_id='{self.instance_id or 'Not initialized'}', "
+            f"remote_desktop_url='{remote_desktop_url}', "
+            f"snapshot_id='{self.snapshot_id or 'None'}')"
         )
