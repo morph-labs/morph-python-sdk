@@ -154,28 +154,37 @@ class ActionConverter:
 
     def _get_actions(self) -> List[Dict[str, Any]]:
         """Get all actions from actions.py"""
-        actions_path = os.path.join(os.path.dirname(__file__), 'actions.py')
-        with open(actions_path) as f:
-            actions_data = json.loads(f.read())
-        return actions_data['actions']
+        return ide_actions['actions']
 
     def as_anthropic_tools(self) -> List[Dict[str, Any]]:
         """Convert all actions to Anthropic tool format"""
         tools = []
+        seen_names = set()
+        
         for action in self._get_actions():
+            # Convert name to snake_case for consistency
+            name = to_snake_case(action["name"])
+            
+            # Skip duplicate action names
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            
             properties = {}
             required = []
             
             for param in action.get('parameters', []):
-                properties[param["name"]] = {
+                # Convert parameter names to snake_case too
+                param_name = to_snake_case(param["name"])
+                properties[param_name] = {
                     "type": param["type"],
                     "description": param.get("description", ""),
                 }
                 if not param.get("optional", False):
-                    required.append(param["name"])
+                    required.append(param_name)
 
             tools.append({
-                "name": action["name"],
+                "name": name,  # Now in snake_case
                 "description": action["description"],
                 "input_schema": {
                     "type": "object",
@@ -189,11 +198,23 @@ class ActionConverter:
     def as_openai_tools(self) -> List[Dict[str, Any]]:
         """Convert all actions to OpenAI function calling format"""
         tools = []
+        seen_names = set()
+        
         for action in self._get_actions():
+            # Convert name to snake_case for consistency
+            name = to_snake_case(action["name"])
+            
+            # Skip duplicate action names
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            
             properties = {}
             required = []
             
             for param in action.get('parameters', []):
+                # Convert parameter names to snake_case
+                param_name = to_snake_case(param["name"])
                 cleaned_prop = {
                     "type": param["type"],
                     "description": param.get("description", ""),
@@ -206,10 +227,10 @@ class ActionConverter:
                     }
                     if "enum" in param["items"]:
                         cleaned_prop["items"]["enum"] = param["items"]["enum"]
-                properties[param["name"]] = cleaned_prop
+                properties[param_name] = cleaned_prop
                 
                 if not param.get("optional", False):
-                    required.append(param["name"])
+                    required.append(param_name)
 
             parameters = {
                 "type": "object",
@@ -221,7 +242,7 @@ class ActionConverter:
             tools.append({
                 "type": "function",
                 "function": {
-                    "name": action["name"],
+                    "name": name,  # Now in snake_case
                     "description": action["description"],
                     "parameters": parameters,
                 },

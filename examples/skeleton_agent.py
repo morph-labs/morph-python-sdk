@@ -4,16 +4,6 @@ import anthropic
 from morphcloud import Runtime
 from typing import Optional
 
-# Create runtime with proper initialization and waiting
-runtime = Runtime.create(
-    setup=[
-        "sudo apt update",
-        "sudo apt install -y python3"
-    ],
-    vcpus=2,
-    memory=3000
-)
-
 class SimpleAgent:
     def __init__(self, api_key: str, runtime: Optional[Runtime] = None):
         self.client = anthropic.Anthropic(api_key=api_key)
@@ -57,7 +47,7 @@ class SimpleAgent:
                 function_args = tool_use.input
                 
                 # Fixed: Use execute attribute and proper method calling
-                method = getattr(self.runtime.execute, function_name.replace("-", "_").lower())
+                method = getattr(self.runtime.execute, function_name)
                 result = method(**function_args)
                 
                 self.messages.append({
@@ -103,12 +93,12 @@ if __name__ == "__main__":
         raise ValueError("Please set the ANTHROPIC_API_KEY environment variable")
 
     # Use context manager for proper cleanup
-    with Runtime.create() as runtime:
+    with Runtime.create(snapshot_id="snapshot_y31d9j6o") as runtime:
         agent = SimpleAgent(api_key=api_key, runtime=runtime)
         print("Agent initialized")
         response = agent.run("What is the current directory?")
         print(response)
         response = agent.run("Let's create a python file called 'greet.py' and add a function called 'greet' that prints 'Hello, World!'")
         print(response)
-        response = agent.run("Can you execute the greet function?")
+        response = agent.run("Can you execute the greet function using the terminal?")
         print(response)

@@ -1273,33 +1273,6 @@ ide_actions = {
       "example": "observeTerminals()"
     },
     {
-      "name": "killTerminal",
-      "description": "Use this tool to stop a running asynchronous process in a named terminal. It's useful for ending long-running tasks or cleaning up background processes that are no longer needed.",
-      "parameters": [
-        {
-          "name": "terminalName",
-          "type": "string",
-          "description": "The name of the terminal running the async process to terminate",
-          "optional": False
-        }
-      ],
-      "returns": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "message": {
-            "type": "string"
-          }
-        }
-      },
-      "examples": [
-        "killTerminal({ terminalName: \"dev-server\" })",
-        "killTerminal({ terminalName: \"background-task\" })"
-      ]
-    },
-    {
       "name": "getCodeLinks",
       "description": "Use this tool to find references, usages, and implementations of a specific identifier in a file.",
       "parameters": [
