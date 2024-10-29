@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List
 import json
 import os
 import time
@@ -11,7 +11,80 @@ from morphcloud.utils import to_camel_case, to_snake_case
 BASE_URL = "https://cloud.morph.so"
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
+class RuntimeSnapshot:
+    @classmethod
+    def create(cls, instance_id=None, digest=None):
+        """
+        Create a snapshot from an instance or configuration.
+        
+        Args:
+            instance_id: Optional ID of instance to snapshot
+            digest: Optional digest string for the snapshot
+            
+        Returns:
+            Dict containing the created snapshot details
+        """
+        api_key = os.getenv("MORPH_API_KEY")
+        headers = Runtime._get_static_headers(api_key)
+        base_url = BASE_URL
 
+        # If no digest provided, create one based on instance_id and timestamp
+        if not digest:
+            timestamp = str(int(time.time()))
+            unique_string = f"{instance_id}_{timestamp}"
+            digest = hashlib.sha256(unique_string.encode()).hexdigest()
+
+        if instance_id:
+            # Create snapshot from existing instance
+            response = httpx.post(
+                f"{base_url}/instance/{instance_id}/snapshot",
+                headers=headers,
+                params={"digest": digest}
+            )
+        else:
+            raise ValueError("instance_id is required")
+            
+        response.raise_for_status()
+        return response.json()
+
+    @classmethod
+    def list(cls):
+        """
+        List all available snapshots.
+        
+        Returns:
+            List of snapshot objects
+        """
+        api_key = os.getenv("MORPH_API_KEY")
+        headers = Runtime._get_static_headers(api_key)
+        
+        response = httpx.get(
+            f"{BASE_URL}/snapshot",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @classmethod
+    def delete(cls, snapshot_id):
+        """
+        Delete a snapshot by ID.
+        
+        Args:
+            snapshot_id: ID of the snapshot to delete
+            
+        Returns:
+            Dict containing the deletion response
+        """
+        api_key = os.getenv("MORPH_API_KEY")
+        headers = Runtime._get_static_headers(api_key)
+        
+        response = httpx.delete(
+            f"{BASE_URL}/snapshot/{snapshot_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
 
 class RuntimeExecute:
     """Dynamic execution interface that gets populated with methods from actions.py"""
@@ -400,6 +473,47 @@ class Runtime:
                     }
                 time.sleep(2)
 
+
+    def clone(self, num_clones: int = 1) -> Union['Runtime', List['Runtime']]:
+        """
+        Clone the current runtime instance.
+        
+        Args:
+            num_clones: Number of clones to create (default: 1)
+            
+        Returns:
+            If num_clones=1, returns a single Runtime instance
+            If num_clones>1, returns a list of Runtime instances
+        """
+        if not self.instance_id:
+            raise ValueError("No instance_id specified")
+            
+        response = self.http_client.post(
+            f"{self.base_url}/instance/{self.instance_id}/clone",
+            headers=self.get_headers(),
+            params={"num_clones": num_clones}
+        )
+        response.raise_for_status()
+        
+        # Create Runtime instances from the response
+        response_data = response.json()
+        if num_clones == 1:
+            return Runtime(
+                instance_id=response_data["id"],
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=self.timeout
+            )
+        else:
+            return [
+                Runtime(
+                    instance_id=instance["id"],
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    timeout=self.timeout
+                )
+                for instance in response_data
+            ]
 
     def __enter__(self):
         self._wait()
