@@ -12,7 +12,7 @@ from morphcloud.actions import ide_actions
 BASE_URL = "https://cloud.morph.so"
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
-class RuntimeSnapshot:
+class Snapshot:
     """Snapshot management interface"""
     def __init__(self, runtime: 'Runtime'):
         self._runtime = runtime
@@ -274,7 +274,7 @@ class Runtime:
         self.snapshot_id = snapshot_id
         
         self.execute = RuntimeExecute(self)
-        self.snapshot = RuntimeSnapshot(self)
+        self.snapshot = Snapshot(self)
         self.actions = ActionConverter(self.execute)  # Add the converter
         
         
