@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Union, List
+from typing import Any, Dict, Optional, Union, List, Protocol
 import json
 import os
 import time
@@ -148,6 +148,89 @@ class RuntimeExecute:
             # Set the method on the instance
             setattr(self, snake_name, execute_method)
 
+class ActionConverter:
+    """Converts Runtime actions to AI model tool formats"""
+    
+    def __init__(self, runtime_execute: 'RuntimeExecute'):
+        self._runtime_execute = runtime_execute
+
+    def _get_actions(self) -> List[Dict[str, Any]]:
+        """Get all actions from actions.py"""
+        actions_path = os.path.join(os.path.dirname(__file__), 'actions.py')
+        with open(actions_path) as f:
+            actions_data = json.loads(f.read())
+        return actions_data['actions']
+
+    def as_anthropic_tools(self) -> List[Dict[str, Any]]:
+        """Convert all actions to Anthropic tool format"""
+        tools = []
+        for action in self._get_actions():
+            properties = {}
+            required = []
+            
+            for param in action.get('parameters', []):
+                properties[param["name"]] = {
+                    "type": param["type"],
+                    "description": param.get("description", ""),
+                }
+                if not param.get("optional", False):
+                    required.append(param["name"])
+
+            tools.append({
+                "name": action["name"],
+                "description": action["description"],
+                "input_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            })
+        
+        return tools
+
+    def as_openai_tools(self) -> List[Dict[str, Any]]:
+        """Convert all actions to OpenAI function calling format"""
+        tools = []
+        for action in self._get_actions():
+            properties = {}
+            required = []
+            
+            for param in action.get('parameters', []):
+                cleaned_prop = {
+                    "type": param["type"],
+                    "description": param.get("description", ""),
+                }
+                if "enum" in param:
+                    cleaned_prop["enum"] = param["enum"]
+                if param.get("type") == "array" and "items" in param:
+                    cleaned_prop["items"] = {
+                        "type": param["items"].get("type"),
+                    }
+                    if "enum" in param["items"]:
+                        cleaned_prop["items"]["enum"] = param["items"]["enum"]
+                properties[param["name"]] = cleaned_prop
+                
+                if not param.get("optional", False):
+                    required.append(param["name"])
+
+            parameters = {
+                "type": "object",
+                "properties": properties,
+            }
+            if required:
+                parameters["required"] = required
+
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": action["name"],
+                    "description": action["description"],
+                    "parameters": parameters,
+                },
+            })
+        
+        return tools
+
 class Runtime:
     def __init__(self, 
                  instance_id: Optional[str] = None, 
@@ -173,6 +256,7 @@ class Runtime:
         
         self.execute = RuntimeExecute(self)
         self.snapshot = RuntimeSnapshot(self)
+        self.actions = ActionConverter(self.execute)  # Add the converter
         
         
         self.http_client = httpx.Client(
@@ -263,7 +347,7 @@ class Runtime:
                 json={"snapshot_id": snapshot_id}
             )
             instance_response.raise_for_status()
-            return cls(instance_id=instance_response.json()["instance_id"], base_url=base_url, api_key=api_key, timeout=timeout)
+            return cls(instance_id=instance_response.json()["id"], base_url=base_url, api_key=api_key, timeout=timeout)
 
         # Check for existing snapshots with matching digest
         snapshots_response = http_client.get(f"{base_url}/snapshot", headers=headers)
@@ -324,7 +408,7 @@ class Runtime:
             
             # Initialize runtime instance
             runtime = cls(
-                instance_id=instance_response.json()["instance_id"], 
+                instance_id=instance_response.json()["id"], 
                 base_url=base_url, 
                 api_key=api_key, 
                 timeout=timeout
@@ -346,6 +430,10 @@ class Runtime:
                 json={"digest": digest}  # Use the original digest that includes setup commands
             )
             snapshot_response.raise_for_status()
+            
+            # Print remote desktop URL before returning
+            remote_desktop_url = f"{base_url}/ui/instance/{runtime.instance_id}"
+            print(f"\nYou can access the remote desktop at: {remote_desktop_url}\n")
             
             return runtime
 
@@ -372,12 +460,16 @@ class Runtime:
             )
         
         instance_response.raise_for_status()
-        instance_id = instance_response.json()["instance_id"]
+        instance_id = instance_response.json()["id"]
         runtime = cls(instance_id=instance_id, base_url=base_url, api_key=api_key, timeout=timeout)
 
 
         # Wait for readiness
         runtime._wait()
+        
+        # Print remote desktop URL before returning
+        remote_desktop_url = f"{base_url}/ui/instance/{instance_id}"
+        print(f"\nYou can access the remote desktop at: {remote_desktop_url}\n")
         
         return runtime
 
@@ -446,7 +538,7 @@ class Runtime:
             action_name.startswith("Db") or 
             action_name.startswith("Git")
         ):
-            request_data["params"]["instance_id"] = self.instance_id
+            request_data["params"]["id"] = self.instance_id
 
         for attempt in range(max_retries):
             try:
@@ -534,3 +626,44 @@ class Runtime:
             except httpx.HTTPError as e:
                 # Log the error but don't raise - we're cleaning up
                 print(f"Warning: Failed to stop instance: {str(e)}")
+
+    @staticmethod
+    def list_instances(base_url: str = BASE_URL, api_key: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List all runtime instances.
+        
+        Args:
+            base_url: Optional custom base URL for the API
+            api_key: Optional API key (if not provided, will check MORPH_API_KEY env variable)
+            
+        Returns:
+            List of instance objects
+            
+        Raises:
+            ValueError: If no API key is provided
+            httpx.HTTPError: For any HTTP errors
+        """
+        headers = Runtime._get_static_headers(api_key)
+        
+        with httpx.Client(follow_redirects=True) as client:
+            response = client.get(
+                f"{base_url}/instance",
+                headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def __str__(self) -> str:
+        """
+        String representation of the Runtime instance.
+        
+        Returns:
+            String containing the instance ID, remote desktop URL, and snapshot ID
+        """
+        remote_desktop_url = f"{self.base_url}/ui/instance/{self.instance_id}" if self.instance_id else "Not initialized"
+        return (
+            f"Runtime Instance:\n"
+            f"  ID: {self.instance_id or 'Not initialized'}\n"
+            f"  Remote Desktop URL: {remote_desktop_url}\n"
+            f"  Snapshot ID: {self.snapshot_id or 'None'}"
+        )

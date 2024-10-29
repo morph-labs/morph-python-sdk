@@ -136,6 +136,23 @@ for r in runtimes:
 # all runtime instances are terminated upon script completion. 
 ```
 
+## AI Integration
+
+MorphCloud provides built-in support for integrating with AI models through standardized tool formats. You can easily convert runtime actions to formats compatible with popular AI models:
+
+```python
+from morphcloud import Runtime
+
+runtime = Runtime.create()
+
+# Get tools in Anthropic's format
+anthropic_tools = runtime.actions.as_anthropic_tools()
+
+# Get tools in OpenAI's function calling format
+openai_tools = runtime.actions.as_openai_tools()
+
+```
+
 ## Examples
 
 There are several examples in the `examples` directory. Notably, there are two key examples: [search.py](https://github.com/morph-labs/morphcloud/blob/main/examples/search.py), which showcases repository cloning, semantic code search, and function analysis, and [agent_skeleton.py](https://github.com/morph-labs/morphcloud/blob/main/examples/agent_skeleton.py), which provides a good starting point to create simple AI agents that interact with the cloud development environment. 
