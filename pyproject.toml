@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "morphcloud"
+version = "0.1.0"
+description = "A CLI tool for creating, managing, and interacting with Morph Cloud Runtimes."
+authors = ["Morph Labs <jobs@morph.so>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "morphcloud"}]
+keywords = ["morph", "cloud", "runtimes", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+requests = "*"
+tqdm = "*"
+httpx = "*"
+pydantic = "*"
+psutil = "*"
+anthropic = "^0.35.0"
+streamlit = "^1.39.0"
+beautifulsoup4 = "^4.12.3"
+fire = "^0.7.0"
+playwright = "^1.47.0"
+pillow = "^10.4.0"
+click = "^8.1.7"
+paramiko = "^3.5.0"
+watchdog = "^5.0.3"
+
+[tool.poetry.scripts]
+morphcloud = "morphcloud.cli:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
