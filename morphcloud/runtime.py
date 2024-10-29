@@ -12,61 +12,53 @@ BASE_URL = "https://cloud.morph.so"
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
 class RuntimeSnapshot:
-    @classmethod
-    def create(cls, instance_id=None, digest=None):
+    """Snapshot management interface"""
+    def __init__(self, runtime: 'Runtime'):
+        self._runtime = runtime
+
+    def create(self, digest: Optional[str] = None) -> Dict[str, Any]:
         """
         Create a snapshot from an instance or configuration.
         
         Args:
-            instance_id: Optional ID of instance to snapshot
+
             digest: Optional digest string for the snapshot
             
         Returns:
             Dict containing the created snapshot details
         """
-        api_key = os.getenv("MORPH_API_KEY")
-        headers = Runtime._get_static_headers(api_key)
-        base_url = BASE_URL
+        if not self._runtime.instance_id:
+            raise ValueError("No instance_id specified")
 
         # If no digest provided, create one based on instance_id and timestamp
         if not digest:
             timestamp = str(int(time.time()))
-            unique_string = f"{instance_id}_{timestamp}"
+            unique_string = f"{self._runtime.instance_id}_{timestamp}"
             digest = hashlib.sha256(unique_string.encode()).hexdigest()
 
-        if instance_id:
-            # Create snapshot from existing instance
-            response = httpx.post(
-                f"{base_url}/instance/{instance_id}/snapshot",
-                headers=headers,
-                params={"digest": digest}
-            )
-        else:
-            raise ValueError("instance_id is required")
-            
+        response = self._runtime.http_client.post(
+            f"{self._runtime.base_url}/instance/{self._runtime.instance_id}/snapshot",
+            headers=self._runtime.get_headers(),
+            params={"digest": digest}
+        )
         response.raise_for_status()
         return response.json()
 
-    @classmethod
-    def list(cls):
+    def list(self) -> List[Dict[str, Any]]:
         """
         List all available snapshots.
         
         Returns:
             List of snapshot objects
         """
-        api_key = os.getenv("MORPH_API_KEY")
-        headers = Runtime._get_static_headers(api_key)
-        
-        response = httpx.get(
-            f"{BASE_URL}/snapshot",
-            headers=headers
+        response = self._runtime.http_client.get(
+            f"{self._runtime.base_url}/snapshot",
+            headers=self._runtime.get_headers()
         )
         response.raise_for_status()
         return response.json()
 
-    @classmethod
-    def delete(cls, snapshot_id):
+    def delete(self, snapshot_id: str) -> Dict[str, Any]:
         """
         Delete a snapshot by ID.
         
@@ -76,12 +68,9 @@ class RuntimeSnapshot:
         Returns:
             Dict containing the deletion response
         """
-        api_key = os.getenv("MORPH_API_KEY")
-        headers = Runtime._get_static_headers(api_key)
-        
-        response = httpx.delete(
-            f"{BASE_URL}/snapshot/{snapshot_id}",
-            headers=headers
+        response = self._runtime.http_client.delete(
+            f"{self._runtime.base_url}/snapshot/{snapshot_id}",
+            headers=self._runtime.get_headers()
         )
         response.raise_for_status()
         return response.json()
@@ -164,7 +153,8 @@ class Runtime:
                  instance_id: Optional[str] = None, 
                  base_url: str = BASE_URL,
                  api_key: Optional[str] = None,
-                 timeout: int = 30):
+                 timeout: int = 30,
+                 snapshot_id: Optional[str] = None):
         """
         Initialize a Runtime instance.
         
@@ -173,12 +163,18 @@ class Runtime:
             base_url: The base URL for the Morph Cloud API (defaults to https://cloud.morph.so)
             api_key: Optional API key (if not provided, will check MORPH_API_KEY env variable)
             timeout: Request timeout in seconds (default: 30)
+            snapshot_id: Optional snapshot ID where the instance was created from
         """
         self.instance_id = instance_id
         self.base_url = base_url.rstrip('/')  # Remove trailing slash if present
         self.api_key = api_key
         self.timeout = timeout
+        self.snapshot_id = snapshot_id
+        
         self.execute = RuntimeExecute(self)
+        self.snapshot = RuntimeSnapshot(self)
+        
+        
         self.http_client = httpx.Client(
             follow_redirects=True, 
             timeout=self.timeout
@@ -461,6 +457,8 @@ class Runtime:
                     timeout=timeout
                 )
                 response.raise_for_status()
+                # refresh the actions
+                self.execute._load_actions()
                 return response.json()
                 
             except httpx.HTTPError as e:
