@@ -385,7 +385,7 @@ class Runtime:
         snapshot = next(
             (
                 s
-                for s in Snapshot.list()
+                for s in Snapshot.list(kwargs.get("api_key"))
                 if s.digest == snapshot_digest
             ),
             None,
