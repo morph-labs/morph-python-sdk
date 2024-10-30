@@ -325,6 +325,33 @@ class Runtime:
     def snapshot(self) -> Snapshot:
         return Snapshot.create(self)
 
+    
+    def exec(self, command: Union[str, List[str]]) -> Dict[str, Any]:
+        """
+        Execute a command or list of commands on the runtime instance.
+
+        Args:
+            command: A single command string or list of command strings to execute
+
+        Returns:
+            Dict containing the execution response
+
+        Example:
+            >>> runtime.exec("ls -la")
+            >>> runtime.exec(["cd /tmp", "touch test.txt"])
+        """
+        if isinstance(command, str):
+            command = [command]
+
+        response = self.http.post(
+            f"/instance/{self.instance_id}/exec",
+            json={"command": command},
+            headers=self.headers
+        )
+        response.raise_for_status()
+        return response.json()    
+        
+
     @property
     def remote_desktop_url(self):
         return f"{self.base_url}/ui/instance/{self.instance_id}"
@@ -441,8 +468,10 @@ class Runtime:
         if self.instance_id:
             try:
                 self.http.delete(f"/instance/{self.instance_id}")
+            # finally:
+            #     self.http.close()
             finally:
-                self.http.close()
+                pass
 
     @classmethod
     def list(cls, **kwargs) -> List[Dict]:
@@ -555,26 +584,16 @@ and then the blueprint setup script should run and that should be automatically 
 
 def test_runtime():
 
-    # # should not need to do this
-    # snapshots = Snapshot.list()
-    # base_snapshot = snapshots[0]
-    # print(f"{base_snapshot=}")
-    # runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
-    # ss = runtime.snapshot()
-    #
-    # print(f"created snapshot: {ss}")
-    # with Runtime.create(snapshot_id=ss.id) as runtime:
-    #     print(f"created runtime with snapshot_id={ss.id}")
+    # should not need to do this
+    snapshots = Snapshot.list()
+    base_snapshot = snapshots[0]
+    print(f"{base_snapshot=}")
+    runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
+    ss_id = runtime.snapshot()
 
-    runtime = Runtime.create(
-        setup=[
-            "sudo apt update",
-            "sudo apt install -y python3 python3-pip",
-            "python3 -m pip install -U pip",
-            "pip install numpy"
-        ]
-    )
-    runtimes = runtime.clone(num_clones=2)
+    print(f"created snapshot: {ss_id}")
+    with Runtime.create(snapshot_id=ss_id) as runtime:
+        print(f"created runtime with snapshot_id={ss_id}")
 
 
 if __name__ == "__main__":
