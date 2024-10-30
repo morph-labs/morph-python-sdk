@@ -431,7 +431,7 @@ class Runtime:
         runtime.instance_id = resp.json()["id"]
         runtime._wait_ready()
 
-        for command in setup:
+        for command in setup or []:
             runtime._execute([command])
 
         # save snapshot
