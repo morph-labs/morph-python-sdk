@@ -451,7 +451,7 @@ class Runtime:
         """Create a clone of this runtime"""
         resp = self.http.post(
             f"/instance/{self.instance_id}/clone",
-            json={"num_clones": num_clones},
+            params={"num_clones": num_clones},
             headers=Snapshot.get_headers(api_key=api_key)
         )
         resp.raise_for_status()
@@ -579,8 +579,12 @@ def main():
     print("hello world")
 
 def test_runtime():
-    runtime = Runtime.create()
-    breakpoint()
+    with Runtime.create() as runtime:
+        with runtime.clone()[-1] as new_runtime:
+            print("yeehaw")
+    # runtime = Runtime.create()
+    # with runtime
+    # breakpoint()
     # snapshots = Snapshot.list()
     # base_snapshot = snapshots[0]
     # print(f"{base_snapshot=}")
