@@ -1,3 +1,11 @@
+"""
+import morphcloud as morph
+
+morph.Snapshot.create()
+"""
+
+
+import fire
 from typing import Any, Dict, Optional, Union, List, Protocol
 import json
 import os
@@ -5,6 +13,7 @@ import time
 import httpx
 from functools import wraps
 import hashlib
+from dataclasses import dataclass, field
 from morphcloud.utils import to_camel_case, to_snake_case
 from morphcloud.actions import ide_actions
 
@@ -12,79 +21,120 @@ from morphcloud.actions import ide_actions
 BASE_URL = "https://cloud.morph.so"
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
-class Snapshot:
-    """Snapshot management interface"""
-    def __init__(self, runtime: 'Runtime'):
-        self._runtime = runtime
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
+import enum
 
-    def create(self, digest: Optional[str] = None) -> Dict[str, Any]:
+class SnapshotStatus(enum.Enum):
+    PENDING = "pending"
+    READY = "ready"
+    FAILED = "failed"
+    DELETING = "deleting"
+    DELETED = "deleted"
+
+@dataclass
+class Snapshot:
+    id: str
+    image_id: str
+    created: datetime
+    status: SnapshotStatus
+    vcpus: float
+    memory: float
+    user_id: str
+    object: Optional[str] = None
+    digest: Optional[str] = None
+    instances: List["Instance"] = None  # Type hint with string to avoid circular import
+    owner: "User" = None  # Type hint with string to avoid circular import
+
+    base_url: classmethod = BASE_URL
+    http: classmethod = httpx.Client(timeout=None)    
+
+    def __post_init__(self):
+        if self.instances is None:
+            self.instances = []
+
+    @staticmethod
+    def get_headers(api_key: Optional[str] = None):
+        return {
+                'Authorization': f'Bearer {api_key or os.getenv("MORPH_API_KEY")}',
+                'Content-Type': 'application/json',
+            }
+
+    @staticmethod
+    def create(runtime: 'Runtime', digest: Optional[str] = None) -> Dict[str, Any]:
         """
         Create a snapshot from an instance or configuration.
-        
-        Args:
 
+        Args:
+            runtime: Runtime instance containing client configuration
             digest: Optional digest string for the snapshot
-            
+
         Returns:
             Dict containing the created snapshot details
         """
-        if not self._runtime.instance_id:
+        if not runtime.instance_id:
             raise ValueError("No instance_id specified")
 
         # If no digest provided, create one based on instance_id and timestamp
         if not digest:
             timestamp = str(int(time.time()))
-            unique_string = f"{self._runtime.instance_id}_{timestamp}"
+            unique_string = f"{runtime.instance_id}_{timestamp}"
             digest = hashlib.sha256(unique_string.encode()).hexdigest()
 
-        response = self._runtime.http_client.post(
-            f"{self._runtime.base_url}/instance/{self._runtime.instance_id}/snapshot",
-            headers=self._runtime.get_headers(),
+        response = runtime.http.post(
+            f"{runtime.base_url}/instance/{runtime.instance_id}/snapshot",
+            headers=runtime.headers,
             params={"digest": digest}
         )
         response.raise_for_status()
-        return response.json()
+        breakpoint()
+        return Snapshot(response.json())
 
-    def list(self) -> List[Dict[str, Any]]:
+    @staticmethod
+    def list(api_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         List all available snapshots.
-        
+
+        Args:
+            runtime: Runtime instance containing client configuration
+
         Returns:
             List of snapshot objects
         """
-        response = self._runtime.http_client.get(
-            f"{self._runtime.base_url}/snapshot",
-            headers=self._runtime.get_headers()
+        response = Snapshot.http.get(
+            f"{Snapshot.base_url}/snapshot",
+            headers=Snapshot.get_headers(api_key=api_key)
         )
         response.raise_for_status()
-        return response.json()
+        return [Snapshot(**x) for x in response.json()]
 
-    def delete(self, snapshot_id: str) -> Dict[str, Any]:
+    @staticmethod
+    def delete(snapshot_id: str, api_key: Optional[str] = None) -> Dict[str, Any]:
         """
         Delete a snapshot by ID.
-        
+
         Args:
+            runtime: Runtime instance containing client configuration
             snapshot_id: ID of the snapshot to delete
-            
+
         Returns:
             Dict containing the deletion response
         """
-        response = self._runtime.http_client.delete(
-            f"{self._runtime.base_url}/snapshot/{snapshot_id}",
-            headers=self._runtime.get_headers()
+        response = Snapshot.http.delete(
+            f"{runtime.base_url}/snapshot/{snapshot_id}",
+            headers=Snapshot.get_headers(api_key=api_key)
         )
         response.raise_for_status()
         return response.json()
 
-class RuntimeExecute:
-    """Dynamic execution interface that gets populated with methods from actions.py"""
+class RuntimeInterface:
     def __init__(self, runtime):
         self._runtime = runtime
         self._load_actions()
 
     def _format_docstring(self, action: Dict[str, Any]) -> str:
         """Create formatted markdown docstring from action details"""
-        # Convert parameter names to snake_case
         params = [
             {**p, 'name': to_snake_case(p['name'])} 
             for p in action.get('parameters', [])
@@ -100,8 +150,7 @@ class RuntimeExecute:
         
         if 'returns' in action:
             doc += "\nReturns:\n"
-            returns = action['returns']
-            doc += f"    {json.dumps(returns, indent=4)}\n"
+            doc += f"    {json.dumps(action['returns'], indent=4)}\n"
         
         if 'examples' in action:
             doc += "\nExamples:\n"
@@ -110,17 +159,15 @@ class RuntimeExecute:
         
         return doc
 
-    def _create_execute_wrapper(self, action_details: Dict[str, Any]):
+    def _create_interface_wrapper(self, action_details: Dict[str, Any]):
         """Create an execution wrapper that handles camelCase conversion"""
         @wraps(self._runtime._run)
         def wrapper(*args, **kwargs):
-            # Convert all snake_case kwargs to camelCase
             camel_kwargs = {
                 to_camel_case(k): v 
                 for k, v in kwargs.items()
             }
             
-            # Create action request
             action_request = {
                 'action_type': action_details['name'],
                 'parameters': camel_kwargs
@@ -132,40 +179,24 @@ class RuntimeExecute:
 
     def _load_actions(self):
         """Load actions from actions.py and create corresponding methods"""
-        actions_data = ide_actions
-        for action in actions_data['actions']:
-            # Convert action name to snake_case
+        for action in ide_actions['actions']:
             snake_name = to_snake_case(action['name'])
-            
-            # Create the execution method
-            execute_method = self._create_execute_wrapper(action)
-            
-            # Set the docstring
-            execute_method.__doc__ = self._format_docstring(action)
-            
-            # Set the method on the instance
-            setattr(self, snake_name, execute_method)
+            interface_method = self._create_interface_wrapper(action)
+            interface_method.__doc__ = self._format_docstring(action)
+            setattr(self, snake_name, interface_method)
 
-class ActionConverter:
-    """Converts Runtime actions to AI model tool formats"""
-    
-    def __init__(self, runtime_execute: 'RuntimeExecute'):
-        self._runtime_execute = runtime_execute
-
-    def _get_actions(self) -> List[Dict[str, Any]]:
-        """Get all actions from actions.py"""
-        return ide_actions['actions']
-
-    def as_anthropic_tools(self) -> List[Dict[str, Any]]:
-        """Convert all actions to Anthropic tool format"""
-        tools = []
-        seen_names = set()
+    def render(self, target: str = 'anthropic') -> List[Dict[str, Any]]:
+        """
+        Render actions in specified target format.
         
-        for action in self._get_actions():
-            # Convert name to snake_case for consistency
+        Args:
+            target: Format to render as ('anthropic' or 'openai')
+        """
+        seen_names = set()
+        tools = []
+        
+        for action in ide_actions['actions']:
             name = to_snake_case(action["name"])
-            
-            # Skip duplicate action names
             if name in seen_names:
                 continue
             seen_names.add(name)
@@ -174,350 +205,182 @@ class ActionConverter:
             required = []
             
             for param in action.get('parameters', []):
-                # Convert parameter names to snake_case too
                 param_name = to_snake_case(param["name"])
-                properties[param_name] = {
+                prop = {
                     "type": param["type"],
                     "description": param.get("description", ""),
                 }
-                if not param.get("optional", False):
-                    required.append(param_name)
-
-            tools.append({
-                "name": name,  # Now in snake_case
-                "description": action["description"],
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            })
-        
-        return tools
-
-    def as_openai_tools(self) -> List[Dict[str, Any]]:
-        """Convert all actions to OpenAI function calling format"""
-        tools = []
-        seen_names = set()
-        
-        for action in self._get_actions():
-            # Convert name to snake_case for consistency
-            name = to_snake_case(action["name"])
-            
-            # Skip duplicate action names
-            if name in seen_names:
-                continue
-            seen_names.add(name)
-            
-            properties = {}
-            required = []
-            
-            for param in action.get('parameters', []):
-                # Convert parameter names to snake_case
-                param_name = to_snake_case(param["name"])
-                cleaned_prop = {
-                    "type": param["type"],
-                    "description": param.get("description", ""),
-                }
-                if "enum" in param:
-                    cleaned_prop["enum"] = param["enum"]
-                if param.get("type") == "array" and "items" in param:
-                    cleaned_prop["items"] = {
-                        "type": param["items"].get("type"),
-                    }
-                    if "enum" in param["items"]:
-                        cleaned_prop["items"]["enum"] = param["items"]["enum"]
-                properties[param_name] = cleaned_prop
+                
+                if target == 'openai':
+                    if "enum" in param:
+                        prop["enum"] = param["enum"]
+                    if param.get("type") == "array" and "items" in param:
+                        prop["items"] = {
+                            "type": param["items"].get("type"),
+                        }
+                        if "enum" in param["items"]:
+                            prop["items"]["enum"] = param["items"]["enum"]
+                
+                properties[param_name] = prop
                 
                 if not param.get("optional", False):
                     required.append(param_name)
 
-            parameters = {
-                "type": "object",
-                "properties": properties,
-            }
-            if required:
-                parameters["required"] = required
-
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": name,  # Now in snake_case
+            if target == 'anthropic':
+                tools.append({
+                    "name": name,
                     "description": action["description"],
-                    "parameters": parameters,
-                },
-            })
+                    "input_schema": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                })
+            else:  # openai
+                parameters = {
+                    "type": "object",
+                    "properties": properties,
+                }
+                if required:
+                    parameters["required"] = required
+                    
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": action["description"],
+                        "parameters": parameters,
+                    },
+                })
         
-        return tools
+        return tools    
 
+@dataclass
 class Runtime:
-    def __init__(self, 
-                 instance_id: Optional[str] = None, 
-                 base_url: str = BASE_URL,
-                 api_key: Optional[str] = None,
-                 timeout: int = 30,
-                 snapshot_id: Optional[str] = None):
-        """
-        Initialize a Runtime instance.
-        
-        Args:
-            instance_id: The ID of the runtime instance
-            base_url: The base URL for the Morph Cloud API (defaults to https://cloud.morph.so)
-            api_key: Optional API key (if not provided, will check MORPH_API_KEY env variable)
-            timeout: Request timeout in seconds (default: 30)
-            snapshot_id: Optional snapshot ID where the instance was created from
-        """
-        self.instance_id = instance_id
-        self.base_url = base_url.rstrip('/')  # Remove trailing slash if present
-        self.api_key = api_key
-        self.timeout = timeout
-        self.snapshot_id = snapshot_id
-        
-        self.execute = RuntimeExecute(self)
-        self.snapshot = Snapshot(self)
-        self.actions = ActionConverter(self.execute)  # Add the converter
-        
-        
-        self.http_client = httpx.Client(
-            follow_redirects=True, 
+    """A Morph runtime instance"""
+    # Core configuration
+    instance_id: Optional[str] = None
+    api_key: Optional[str] = field(default_factory=lambda: os.getenv("MORPH_API_KEY"))
+    base_url: str = "https://cloud.morph.so"
+    timeout: int = 30
+
+    # Internal state
+    http: classmethod = httpx.Client(timeout=None)
+    interface: RuntimeInterface = None
+
+    def __post_init__(self):
+        """Initialize HTTP client and sub-clients after dataclass initialization"""
+        if not self.api_key:
+            raise ValueError("API key required. Provide api_key or set MORPH_API_KEY environment variable")
+
+        self.http = httpx.Client(
+            base_url=self.base_url,
+            follow_redirects=True,
+            timeout=self.timeout,
+            headers=self.headers
+        )
+        self.interface = RuntimeInterface(self)
+
+    @property
+    def headers(self):
+        return {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json',
+            }
+
+    def snapshot(self) -> Snapshot:
+        return Snapshot.create(self)
+
+    @property
+    def remote_desktop_url(self):
+        return f"{self.base_url}/ui/instance/{self.instance_id}"
+
+    @classmethod
+    def create(cls,
+               vcpus: int = 2,
+               memory: int = 3000,
+               setup: Optional[Union[str, List[str]]] = None,
+               snapshot_id: Optional[str] = None,
+               **kwargs) -> 'Runtime':
+        """Create a new runtime instance"""
+        # Process setup commands
+        if isinstance(setup, str):
+            setup = [setup] if not os.path.exists(setup) else [
+                line.strip() for line in open(setup) if line.strip()
+            ]
+
+        runtime = cls(**kwargs)            
+
+        # Create instance
+        if snapshot_id:
+            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+        else:
+            resp = runtime.http.post("/instance", json={
+                "vcpus": vcpus,
+                "memory": memory,
+                "setup_commands": setup or []
+            })
+
+        resp.raise_for_status()
+        runtime.instance_id = resp.json()["id"]
+        runtime._wait_ready()
+
+        print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
+        return runtime
+
+    def clone(self) -> 'Runtime':
+        """Create a clone of this runtime"""
+        resp = self.http.post(f"/instance/{self.instance_id}/clone")
+        resp.raise_for_status()
+
+        return Runtime(
+            instance_id=resp.json()["id"],
+            api_key=self.api_key,
+            base_url=self.base_url,
             timeout=self.timeout
         )
 
-    def get_headers(self) -> Dict[str, str]:
-        """Get headers for API requests"""
-        api_key = self.api_key or os.getenv("MORPH_API_KEY")
-        if not api_key:
-            raise ValueError("No API key provided. Either pass api_key parameter or set MORPH_API_KEY environment variable")
-            
-        return {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}'
-        }
+    def __enter__(self) -> 'Runtime':
+        return self
 
-    def get_endpoint_url(self) -> str:
-        """Get the full endpoint URL for the instance"""
-        if not self.instance_id:
-            raise ValueError("No instance_id specified")
-            
-        return f"{self.base_url}{API_ENDPOINT.format(instance_id=self.instance_id)}"
+    def __exit__(self, *_):
+        self.stop()
 
-    
-    @classmethod
-    def create(cls, 
-               setup: Optional[Union[str, list[str]]] = None,
-               vcpus: int = 2,
-               memory: int = 3000,
-               id: Optional[str] = None,
-               snapshot_id: Optional[str] = None,
-               base_url: str = BASE_URL,
-               api_key: Optional[str] = None,
-               timeout: int = 30) -> 'Runtime':
-        """
-        Create a new runtime instance.
-        
-        Args:
-            setup: Optional setup script or list of commands
-            vcpus: Number of virtual CPUs
-            memory: Memory in MB
-            id: Optional instance ID to connect to existing instance
-            snapshot_id: Optional snapshot ID to create from
-            base_url: Optional custom base URL for the API
-            api_key: Optional API key (if not provided, will check MORPH_API_KEY env variable)
-            timeout: Request timeout in seconds (default: 30)
-            
-        Returns:
-            Runtime: A new Runtime instance
-        """
-        
-        # If connecting to existing instance, return immediately
-        if id:
-            return cls(instance_id=id, base_url=base_url, api_key=api_key, timeout=timeout)
-
-        # Initialize client for API calls
-        http_client = httpx.Client(follow_redirects=True, timeout=timeout)
-        headers = cls._get_static_headers(api_key)
-
-        # Process setup commands
-        setup_commands = []
-        if isinstance(setup, str):
-            if os.path.exists(setup):
-                with open(setup, 'r') as f:
-                    setup_commands = [line.strip() for line in f if line.strip()]
-            else:
-                setup_commands = [setup]
-        elif isinstance(setup, list):
-            setup_commands = setup
-
-        # Create configuration digest
-        config = {
-            "image_id": "morphvm-codelink",
-            "readiness_check": {"type": "timeout", "timeout": 30},
-            "vcpus": vcpus,
-            "memory": memory,
-            "setup_commands": setup_commands
-        }
-        digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-
-        # If snapshot_id provided, use it directly
-        if snapshot_id:
-            instance_response = http_client.post(
-                f"{base_url}/instance",
-                headers=headers,
-                params={"snapshot_id": snapshot_id}
-            )
-            instance_response.raise_for_status()
-            return cls(instance_id=instance_response.json()["id"], base_url=base_url, api_key=api_key, timeout=timeout)
-
-        # Check for existing snapshots with matching digest
-        snapshots_response = http_client.get(f"{base_url}/snapshot", headers=headers)
-        snapshots_response.raise_for_status()
-        
-        existing_snapshot = next(
-            (s for s in snapshots_response.json() if s.get("digest") == digest), 
-            None
-        )
-
-        if existing_snapshot:
-            # Use existing snapshot
-            instance_response = http_client.post(
-                f"{base_url}/instance",
-                headers=headers,
-                params={"snapshot_id": existing_snapshot["id"]}
-            )
-        elif setup_commands:
-            # First try to find/create a base snapshot without setup commands
-            base_config = {
-                "image_id": "morphvm-codelink",
-                "readiness_check": {"type": "timeout", "timeout": 30},
-                "vcpus": vcpus,
-                "memory": memory,
-                "setup_commands": []  # Empty setup commands for base snapshot
-            }
-            base_digest = hashlib.sha256(json.dumps(base_config, sort_keys=True).encode()).hexdigest()
-            
-            # Look for existing base snapshot
-            base_snapshot = next(
-                (s for s in snapshots_response.json() if s.get("digest") == base_digest), 
-                None
-            )
-            
-            if not base_snapshot:
-                # Create new base snapshot
-                base_snapshot_response = http_client.post(
-                    f"{base_url}/snapshot",
-                    headers=headers,
-                    json={
-                        "image_id": base_config["image_id"],
-                        "readiness_check": base_config["readiness_check"],
-                        "vcpus": base_config["vcpus"],
-                        "memory": base_config["memory"],
-                        "digest": base_digest
-                    }
-                )
-                base_snapshot_response.raise_for_status()
-                base_snapshot = base_snapshot_response.json()
-            
-            # Create runtime from base snapshot
-            instance_response = http_client.post(
-                f"{base_url}/instance",
-                headers=headers,
-                json={"snapshot_id": base_snapshot["id"]}
-            )
-            instance_response.raise_for_status()
-            
-            # Initialize runtime instance
-            runtime = cls(
-                instance_id=instance_response.json()["id"], 
-                base_url=base_url, 
-                api_key=api_key, 
-                timeout=timeout
-            )
-            
-            # Wait for runtime to be ready before executing setup commands
-            runtime._wait()
-            
-            # Execute setup commands
-            for command in setup_commands:
-                result = runtime.execute.terminal_command(command=command)
-                if not result.get('success', False):
-                    raise RuntimeError(f"Setup command failed: {command}\nError: {result.get('message', 'Unknown error')}")
-
-            # Create snapshot with setup commands included in digest
-            snapshot_response = http_client.post(
-                f"{base_url}/instance/{runtime.instance_id}/snapshot",
-                headers=headers,
-                json={"digest": digest}  # Use the original digest that includes setup commands
-            )
-            snapshot_response.raise_for_status()
-            
-            # Print remote desktop URL before returning
-            remote_desktop_url = f"{base_url}/ui/instance/{runtime.instance_id}"
-            print(f"\nYou can access the remote desktop at: {remote_desktop_url}\n")
-            
-            return runtime
-
-        else:
-            # Create new snapshot from base image
-            snapshot_response = http_client.post(
-                f"{base_url}/snapshot",
-                headers=headers,
-                json={
-                    "image_id": config["image_id"],
-                    "readiness_check": config["readiness_check"],
-                    "vcpus": config["vcpus"],
-                    "memory": config["memory"],
-                    "digest": digest
-                }
-            )
-            snapshot_response.raise_for_status()
-            
-            # Create instance from new snapshot
-            instance_response = http_client.post(
-                f"{base_url}/instance",
-                headers=headers,
-                json={"snapshot_id": snapshot_response.json()["id"]}
-            )
-        
-        instance_response.raise_for_status()
-        instance_id = instance_response.json()["id"]
-        runtime = cls(instance_id=instance_id, base_url=base_url, api_key=api_key, timeout=timeout)
-
-
-        # Wait for readiness
-        runtime._wait()
-        
-        # Print remote desktop URL before returning
-        remote_desktop_url = f"{base_url}/ui/instance/{instance_id}"
-        print(f"\nYou can access the remote desktop at: {remote_desktop_url}\n")
-        
-        return runtime
-
-    @staticmethod
-    def _get_static_headers(api_key: Optional[str] = None) -> Dict[str, str]:
-        """Get headers for API requests without instance context"""
-        key = api_key or os.getenv("MORPH_API_KEY")
-        if not key:
-            raise ValueError("No API key provided. Either pass api_key parameter or set MORPH_API_KEY environment variable")
-        return {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {key}'
-        }
-
-    def _wait(self, timeout: int = 30):
-        """Wait for runtime to be ready"""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+    def stop(self):
+        """Stop the runtime instance"""
+        if self.instance_id:
             try:
-                response = self.http_client.get(
-                    f"{self.base_url}/instance/{self.instance_id}",
-                    headers=self.get_headers()
-                )
-                if response.json().get("status") == "ready":
-                    return
-            except httpx.HTTPError:
-                pass
-            time.sleep(2)
-        raise TimeoutError("Runtime failed to become ready within timeout period")
+                self.http.delete(f"/instance/{self.instance_id}")
+            finally:
+                self.http.close()
+
+    @classmethod
+    def list(cls, **kwargs) -> List[Dict]:
+        """List all runtime instances"""
+        runtime = cls(**kwargs)
+        try:
+            resp = runtime.http.get("/instance")
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            runtime.http.close()
+
+    def _wait_ready(self, timeout: Optional[int] = None):
+        """Wait for runtime to be ready"""
+        deadline = time.time() + (timeout or self.timeout)
+        while time.time() < deadline:
+            if self.status == "ready":
+                return
+            time.sleep(2.)
+        raise TimeoutError(f"Runtime failed to become ready within {timeout=}s")
+
+    @property
+    def status(self) -> Optional[str]:
+        try:
+            return self.http.get(f"/instance/{self.instance_id}").json().get("status")
+        except Exception as e:
+            print(f"[Runtime.status] caught {e=}")
+            return None
 
     def _run(self, 
                 action: Dict[str, Any], 
@@ -527,7 +390,7 @@ class Runtime:
         Execute an action on the runtime instance.
         
         Args:
-            action: The action to execute
+            action: The action to interface
             timeout: Request timeout in seconds
             max_retries: Maximum number of retry attempts
             
@@ -569,7 +432,7 @@ class Runtime:
                 )
                 response.raise_for_status()
                 # refresh the actions
-                self.execute._load_actions()
+                self.interface._load_actions()
                 return response.json()
                 
             except httpx.HTTPError as e:
@@ -582,106 +445,32 @@ class Runtime:
                     }
                 time.sleep(2)
 
-
-    def clone(self, num_clones: int = 1) -> Union['Runtime', List['Runtime']]:
-        """
-        Clone the current runtime instance.
+def main():
+    print("hello world")
         
-        Args:
-            num_clones: Number of clones to create (default: 1)
-            
-        Returns:
-            If num_clones=1, returns a single Runtime instance
-            If num_clones>1, returns a list of Runtime instances
-        """
-        if not self.instance_id:
-            raise ValueError("No instance_id specified")
-            
-        response = self.http_client.post(
-            f"{self.base_url}/instance/{self.instance_id}/clone",
-            headers=self.get_headers(),
-            params={"num_clones": num_clones}
-        )
-        response.raise_for_status()
-        
-        # Create Runtime instances from the response
-        response_data = response.json()
-        if num_clones == 1:
-            return Runtime(
-                instance_id=response_data["id"],
-                base_url=self.base_url,
-                api_key=self.api_key,
-                timeout=self.timeout
-            )
-        else:
-            return [
-                Runtime(
-                    instance_id=instance["id"],
-                    base_url=self.base_url,
-                    api_key=self.api_key,
-                    timeout=self.timeout
-                )
-                for instance in response_data
-            ]
+"""
+TODO: this interface is a bit user-unfriendly.
 
-    def __enter__(self):
-        self._wait()
-        return self
+as part of our distribution strategy, we should make it easy for users to specify an arbitrary docker image. this should be converted into a snapshot upon startup-time, for example,
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-        self.http_client.close()
+and then the blueprint setup script should run and that should be automatically cached as a digest of the container and setup script as well
+"""
+def test_runtime():
 
-    def stop(self):
-        """Stop the runtime instance"""
-        if self.instance_id:
-            try:
-                endpoint_url = f"{self.base_url}/instance/{self.instance_id}"
-                response = self.http_client.delete(
-                    endpoint_url,
-                    headers=self.get_headers()
-                )
-                response.raise_for_status()
-            except httpx.HTTPError as e:
-                # Log the error but don't raise - we're cleaning up
-                print(f"Warning: Failed to stop instance: {str(e)}")
+    # should not need to do this
+    snapshots = Snapshot.list()
+    base_snapshot = snapshots[0]
+    print(f"{base_snapshot=}")
+    runtime = Runtime.create(
+        vcpus=2,
+        memory=2048,
+        snapshot_id=base_snapshot.id
+    )
+    ss = runtime.snapshot()
 
-    @staticmethod
-    def list_instances(base_url: str = BASE_URL, api_key: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        List all runtime instances.
-        
-        Args:
-            base_url: Optional custom base URL for the API
-            api_key: Optional API key (if not provided, will check MORPH_API_KEY env variable)
-            
-        Returns:
-            List of instance objects
-            
-        Raises:
-            ValueError: If no API key is provided
-            httpx.HTTPError: For any HTTP errors
-        """
-        headers = Runtime._get_static_headers(api_key)
-        
-        with httpx.Client(follow_redirects=True) as client:
-            response = client.get(
-                f"{base_url}/instance",
-                headers=headers
-            )
-            response.raise_for_status()
-            return response.json()
+    print(f"created snapshot: {ss}")
+    with Runtime.create(snapshot_id=ss.id) as runtime:
+        print(f"created runtime with snapshot_id={ss.id}")
 
-    def __str__(self) -> str:
-        """
-        String representation of the Runtime instance.
-        
-        Returns:
-            String containing the instance ID, remote desktop URL, and snapshot ID
-        """
-        remote_desktop_url = f"{self.base_url}/ui/instance/{self.instance_id}" if self.instance_id else "Not initialized"
-        return (
-            f"Runtime(instance_id='{self.instance_id or 'Not initialized'}', "
-            f"remote_desktop_url='{remote_desktop_url}', "
-            f"snapshot_id='{self.snapshot_id or 'None'}')"
-        )
+if __name__ == "__main__":
+    fire.Fire(locals())
