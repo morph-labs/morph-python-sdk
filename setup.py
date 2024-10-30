@@ -7,7 +7,7 @@ class PostInstallCommand(install):
 
 setup(
     name="morphcloud",
-    version="0.1.4",
+    version="0.1.5",
     use_scm_version=True,
     packages=find_packages(),
     include_package_data=True,
