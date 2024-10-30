@@ -103,7 +103,7 @@ class Snapshot:
 
     @classmethod
     def _create_from_image(
-        cls, image_id: str, vcpus: int, memory: int, readiness_check: Optional[Dict[str, Any]] = None
+            cls, image_id: str, vcpus: int, memory: int, readiness_check: Optional[Dict[str, Any]] = None, **kwargs
     ) -> "Snapshot":
         resp = cls.http.post(
             f"{cls.base_url}/snapshot",
@@ -113,7 +113,7 @@ class Snapshot:
                 "memory": memory,
                 "readiness_check": readiness_check,
             },
-            headers=cls.get_headers(),
+            headers=cls.get_headers(api_key=kwargs.get("api_key")),
         )
         resp.raise_for_status()
         return cls(**resp.json())
@@ -421,6 +421,7 @@ class Runtime:
             vcpus=vcpus,
             memory=memory,
             readiness_check=config.get("readiness_check"),
+            api_key=kwargs.get("api_key"),
         )
         snapshot_id = initial_snapshot.id
 
