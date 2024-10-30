@@ -17,7 +17,7 @@ from morphcloud.utils import to_camel_case, to_snake_case
 from morphcloud.actions import ide_actions
 
 # Constants
-BASE_URL = "https://cloud.morph.so"
+BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
 from dataclasses import dataclass
@@ -25,6 +25,16 @@ from datetime import datetime
 from typing import List, Optional
 import enum
 
+def _default_snapshot():
+    return {
+        "image_id": "morphvm-codelink",
+        "vcpus": 2,
+        "memory": 2048,
+        "readiness_check": {
+            "type": "timeout",
+            "timeout": 10,
+        }
+    }
 
 class SnapshotStatus(enum.Enum):
     PENDING = "pending"
@@ -89,11 +99,27 @@ class Snapshot:
             params={"digest": digest},
         )
         response.raise_for_status()
-        breakpoint()
         return Snapshot(response.json())
 
+    @classmethod
+    def _create_from_image(
+        cls, image_id: str, vcpus: int, memory: int, readiness_check: Optional[Dict[str, Any]] = None
+    ) -> "Snapshot":
+        resp = cls.http.post(
+            f"{cls.base_url}/snapshot",
+            json={
+                "image_id": image_id,
+                "vcpus": vcpus,
+                "memory": memory,
+                "readiness_check": readiness_check,
+            },
+            headers=cls.get_headers(),
+        )
+        resp.raise_for_status()
+        return cls(**resp.json())
+
     @staticmethod
-    def list(api_key: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list(api_key: Optional[str] = None) -> List["Snapshot"]:
         """
         List all available snapshots.
 
@@ -267,7 +293,7 @@ class Runtime:
     # Core configuration
     instance_id: Optional[str] = None
     api_key: Optional[str] = field(default_factory=lambda: os.getenv("MORPH_API_KEY"))
-    base_url: str = "https://cloud.morph.so"
+    base_url: str = BASE_URL
     timeout: int = 30
 
     # Internal state
@@ -323,18 +349,68 @@ class Runtime:
 
         runtime = cls(**kwargs)
 
-        # Create instance
-        if snapshot_id:
-            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
-        else:
-            resp = runtime.http.post(
-                "/instance",
-                json={"vcpus": vcpus, "memory": memory, "setup_commands": setup or []},
-            )
+        # hash vcpus, memory, and setup to create a unique snapshot digest
+        snapshot_digest = hashlib.sha256(
+            f"{vcpus}_{memory}_{setup}".encode()
+        ).hexdigest()
 
+        # try to create a snapshot with the given digest
+        snapshot = next(
+            (
+                s
+                for s in Snapshot.list()
+                if s.digest == snapshot_digest
+            ),
+            None,
+        )
+
+        if snapshot:
+            # create a runtime from the existing snapshot
+            snapshot_id = snapshot.id
+
+            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+            resp.raise_for_status()
+
+            runtime.instance_id = resp.json()["id"]
+            runtime._wait_ready()
+
+            print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
+            return runtime
+
+
+        config = _default_snapshot()
+
+        if vcpus:
+            config["vcpus"] = vcpus
+
+        if memory:
+            config["memory"] = memory
+
+        if setup:
+            config["setup"] = setup
+
+        initial_snapshot = Snapshot._create_from_image(
+            image_id=config["image_id"],
+            vcpus=vcpus,
+            memory=memory,
+            readiness_check=config.get("readiness_check"),
+        )
+        snapshot_id = initial_snapshot.id
+
+        resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
         resp.raise_for_status()
+
         runtime.instance_id = resp.json()["id"]
         runtime._wait_ready()
+
+        for command in setup:
+            runtime.interface._execute(command)
+
+        # save snapshot
+        snapshot = Snapshot.create(runtime, snapshot_digest)
+
+        # cleanup initial snapshot
+        Snapshot.delete(snapshot_id)
 
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
@@ -452,6 +528,14 @@ class Runtime:
                     }
                 time.sleep(2)
 
+    def _execute(self, command: List[str]) -> Dict[str, Any]:
+        resp = self.http.post(
+            f"/instance/{self.instance_id}/exec",
+            json={"command": command},
+            headers=self.headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 def main():
     print("hello world")
@@ -468,16 +552,25 @@ and then the blueprint setup script should run and that should be automatically 
 
 def test_runtime():
 
-    # should not need to do this
-    snapshots = Snapshot.list()
-    base_snapshot = snapshots[0]
-    print(f"{base_snapshot=}")
-    runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
-    ss = runtime.snapshot()
+    # # should not need to do this
+    # snapshots = Snapshot.list()
+    # base_snapshot = snapshots[0]
+    # print(f"{base_snapshot=}")
+    # runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
+    # ss = runtime.snapshot()
+    #
+    # print(f"created snapshot: {ss}")
+    # with Runtime.create(snapshot_id=ss.id) as runtime:
+    #     print(f"created runtime with snapshot_id={ss.id}")
 
-    print(f"created snapshot: {ss}")
-    with Runtime.create(snapshot_id=ss.id) as runtime:
-        print(f"created runtime with snapshot_id={ss.id}")
+    runtime = Runtime.create(
+        setup=[
+            "sudo apt update",
+            "sudo apt install -y python3 python3-pip",
+            "python3 -m pip install -U pip",
+            "pip install numpy"
+        ]
+    )
 
 
 if __name__ == "__main__":
