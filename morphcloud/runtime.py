@@ -572,28 +572,18 @@ class Runtime:
 def main():
     print("hello world")
 
-
-"""
-TODO: this interface is a bit user-unfriendly.
-
-as part of our distribution strategy, we should make it easy for users to specify an arbitrary docker image. this should be converted into a snapshot upon startup-time, for example,
-
-and then the blueprint setup script should run and that should be automatically cached as a digest of the container and setup script as well
-"""
-
-
 def test_runtime():
+    runtime = Runtime.create()
+    breakpoint()
+    # snapshots = Snapshot.list()
+    # base_snapshot = snapshots[0]
+    # print(f"{base_snapshot=}")
+    # runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
+    # ss_id = runtime.snapshot()
 
-    # should not need to do this
-    snapshots = Snapshot.list()
-    base_snapshot = snapshots[0]
-    print(f"{base_snapshot=}")
-    runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
-    ss_id = runtime.snapshot()
-
-    print(f"created snapshot: {ss_id}")
-    with Runtime.create(snapshot_id=ss_id) as runtime:
-        print(f"created runtime with snapshot_id={ss_id}")
+    # print(f"created snapshot: {ss_id}")
+    # with Runtime.create(snapshot_id=ss_id) as runtime:
+    #     print(f"created runtime with snapshot_id={ss_id}")
 
 
 if __name__ == "__main__":
