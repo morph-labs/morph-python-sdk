@@ -438,7 +438,7 @@ class Runtime:
         snapshot = Snapshot.create(runtime, snapshot_digest)
 
         # cleanup initial snapshot
-        Snapshot.delete(snapshot_id)
+        Snapshot.delete(snapshot_id, api_key=kwargs.get("api_key"))
 
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
