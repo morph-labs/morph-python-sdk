@@ -447,7 +447,7 @@ class Runtime:
         """Create a clone of this runtime"""
         resp = self.http.post(
             f"/instance/{self.instance_id}/clone",
-            params={"num_clones": num_clones},
+            json={"num_clones": num_clones},
             headers=Snapshot.get_headers(api_key=api_key)
         )
         resp.raise_for_status()
@@ -480,7 +480,7 @@ class Runtime:
         """List all runtime instances"""
         runtime = cls(**kwargs)
         try:
-            resp = runtime.http.get("/instance")
+            resp = runtime.http.get("/instance", headers=Runtime.get_headers(api_key=kwargs.get("api_key")))
             resp.raise_for_status()
             return resp.json()
         finally:
