@@ -415,17 +415,20 @@ class Runtime:
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
-    def clone(self) -> "Runtime":
+    def clone(self, num_clones: int = 1) -> List["Runtime"]:
         """Create a clone of this runtime"""
-        resp = self.http.post(f"/instance/{self.instance_id}/clone")
+        resp = self.http.post(
+            f"/instance/{self.instance_id}/clone",
+            params={"num_clones": num_clones},
+        )
         resp.raise_for_status()
 
-        return Runtime(
-            instance_id=resp.json()["id"],
+        return [Runtime(
+            instance_id=runtime["id"],
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-        )
+        ) for runtime in resp.json()]
 
     def __enter__(self) -> "Runtime":
         return self
@@ -571,6 +574,7 @@ def test_runtime():
             "pip install numpy"
         ]
     )
+    runtimes = runtime.clone(num_clones=2)
 
 
 if __name__ == "__main__":
