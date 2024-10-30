@@ -13,7 +13,7 @@ import httpx
 from functools import wraps
 import hashlib
 from dataclasses import dataclass, field
-from morphcloud.utils import to_camel_case, to_snake_case
+from morphcloud.utils import get_iframe_object_from_instance_id, to_camel_case, to_snake_case
 from morphcloud.actions import ide_actions
 
 # Constants
@@ -355,6 +355,10 @@ class Runtime:
     @property
     def remote_desktop_url(self):
         return f"{self.base_url}/ui/instance/{self.instance_id}"
+    
+    @property
+    def remote_desktop_iframe(self):
+        return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
 
     @classmethod
     def create(
