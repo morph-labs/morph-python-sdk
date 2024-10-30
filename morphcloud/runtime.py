@@ -443,17 +443,18 @@ class Runtime:
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
-    def clone(self, num_clones: int = 1) -> List["Runtime"]:
+    def clone(self, num_clones: int = 1, api_key: Optional[str] = None) -> List["Runtime"]:
         """Create a clone of this runtime"""
         resp = self.http.post(
             f"/instance/{self.instance_id}/clone",
             params={"num_clones": num_clones},
+            headers=Snapshot.get_headers(api_key=api_key)
         )
         resp.raise_for_status()
 
         return [Runtime(
             instance_id=runtime["id"],
-            api_key=self.api_key,
+            api_key=api_key or self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
         ) for runtime in resp.json()]
