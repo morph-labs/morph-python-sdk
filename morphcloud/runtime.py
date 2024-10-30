@@ -99,7 +99,7 @@ class Snapshot:
             params={"digest": digest},
         )
         response.raise_for_status()
-        return Snapshot(response.json())
+        return Snapshot(**response.json())
 
     @classmethod
     def _create_from_image(
@@ -149,7 +149,7 @@ class Snapshot:
             Dict containing the deletion response
         """
         response = Snapshot.http.delete(
-            f"{runtime.base_url}/snapshot/{snapshot_id}",
+            f"{Snapshot.base_url}/snapshot/{snapshot_id}",
             headers=Snapshot.get_headers(api_key=api_key),
         )
         response.raise_for_status()
@@ -404,7 +404,7 @@ class Runtime:
         runtime._wait_ready()
 
         for command in setup:
-            runtime.interface._execute(command)
+            runtime._execute([command])
 
         # save snapshot
         snapshot = Snapshot.create(runtime, snapshot_digest)
