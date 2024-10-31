@@ -203,6 +203,9 @@ class RuntimeInterface:
 
         return wrapper
 
+    async def execute(self, tool_name: str, **kwargs):
+        return {"action_type": tool_name, "parameters": {to_camel_case(k): v for k,v in kwargs.items()}}
+
     def _load_actions(self):
         """Load actions from actions.py and create corresponding methods"""
         for action in ide_actions["actions"]:
@@ -379,6 +382,19 @@ class Runtime:
             )
 
         runtime = cls(**kwargs)
+
+        if snapshot_id:
+            # create a runtime from the existing snapshot
+
+            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+            resp.raise_for_status()
+
+            runtime.instance_id = resp.json()["id"]
+            runtime._wait_ready()
+
+            print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
+            return runtime
+        
 
         # hash vcpus, memory, and setup to create a unique snapshot digest
         snapshot_digest = hashlib.sha256(
