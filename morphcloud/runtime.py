@@ -519,12 +519,13 @@ class Runtime:
 
     def _wait_ready(self, timeout: Optional[int] = None):
         """Wait for runtime to be ready"""
-        deadline = time.time() + (timeout or self.timeout)
+        wait_timeout = (timeout or self.timeout)
+        deadline = time.time() + wait_timeout
         while time.time() < deadline:
             if self.status == "ready":
                 return
             time.sleep(2.0)
-        raise TimeoutError(f"Runtime failed to become ready within {timeout=}s")
+        raise TimeoutError(f"Runtime failed to become ready within {wait_timeout=}s")
 
     @property
     def status(self) -> Optional[str]:
