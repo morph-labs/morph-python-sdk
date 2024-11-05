@@ -124,50 +124,48 @@ Potential Extensions
    - Pipeline operations
    - Streaming support
 """
-import contextlib
-from anthropic import AsyncAnthropic
-import os
-from dataclasses import dataclass, field
-from typing import TypeVar, Generic, Callable, Any, Dict, Optional, List
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+
 import asyncio
-from enum import Enum
+import contextlib
 import logging
+import os
+from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
+
+from anthropic import AsyncAnthropic
 
 from morphcloud import Runtime
 
-T = TypeVar('T')
-S = TypeVar('S')
+T = TypeVar("T")
+S = TypeVar("S")
 
-from collections import deque
-from typing import Iterable, Tuple, Optional, List, Dict, Any
-from dataclasses import dataclass
-import io
-import contextlib
-import json
-
-
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Union, Sequence
-from datetime import datetime, timedelta
 import asyncio
+import contextlib
+import io
 import json
-from enum import Enum
 import logging
 from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
 
 class MessageRole(Enum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
 
+
 @dataclass
 class ChatMessage:
     role: MessageRole
     content: Union[str, List[Dict[str, Any]]]
-    
+
     def __post_init__(self):
         if isinstance(self.role, str):
             self.role = MessageRole(self.role)
@@ -178,25 +176,23 @@ class ChatMessage:
                 if not isinstance(block, dict) or "type" not in block:
                     raise ValueError("Invalid content block structure")
 
+
 @dataclass
 class ChatHistory:
     messages: List[ChatMessage] = field(default_factory=list)
     max_messages: int = 100
     max_tokens: int = 8000  # Approximate token limit
-    
+
     def add(self, message: ChatMessage) -> None:
         self.messages.append(message)
         while len(self.messages) > self.max_messages:
             self.messages.pop(0)
-    
+
     def to_api_messages(self) -> List[Dict[str, Any]]:
         return [
-            {
-                "role": msg.role.value,
-                "content": msg.content
-            }
-            for msg in self.messages
+            {"role": msg.role.value, "content": msg.content} for msg in self.messages
         ]
+
 
 class StreamSplitter:
     """Splits a stream of text into a buffered iterator of tuples that either contain a matched filter word or a chunk of text."""
@@ -226,67 +222,76 @@ class StreamSplitter:
                 yield None, self.buffer.popleft()
 
     def _check_filter(self) -> Optional[str]:
-        buffer_str = ''.join(self.buffer)
+        buffer_str = "".join(self.buffer)
         for word in self.filter_set:
             if buffer_str.startswith(word):
                 return word
         return None
 
+
 @dataclass
 class ResponseProcessor:
     """Processes streaming responses and maintains state."""
+
     stream_splitter: StreamSplitter
     partial_buffer: io.StringIO
     content_blocks: List[Dict[str, Any]]
-    
+
     @classmethod
-    def create(cls) -> 'ResponseProcessor':
+    def create(cls) -> "ResponseProcessor":
         return cls(
             stream_splitter=StreamSplitter(["<thinking>", "</thinking>"]),
             partial_buffer=io.StringIO(),
-            content_blocks=[]
+            content_blocks=[],
         )
-    
-    def process_chunk(self, chunk: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+
+    def process_chunk(
+        self, chunk: Any
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """Process a single chunk from the response stream."""
         text_content = None
         tool_content = None
-        
+
         match chunk.type:
             case "message_start":
                 return None, None
-                
+
             case "content_block_start":
                 self.partial_buffer.seek(0)
                 self.partial_buffer.truncate()
-                
+
                 if chunk.content_block.type == "text":
                     self.content_blocks.append({"type": "text"})
                 elif chunk.content_block.type == "tool_use":
-                    self.content_blocks.append({
-                        "type": "tool_use",
-                        "name": chunk.content_block.name,
-                        "id": chunk.content_block.id,
-                    })
-                    
+                    self.content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "name": chunk.content_block.name,
+                            "id": chunk.content_block.id,
+                        }
+                    )
+
             case "content_block_delta":
                 if self.content_blocks[-1]["type"] == "text":
                     self.partial_buffer.write(chunk.delta.text)
                     # Process text through stream splitter
                     text_content = "".join(
-                        text for _, text in self.stream_splitter.add(
+                        text
+                        for _, text in self.stream_splitter.add(
                             chunk.delta.text
-                        ).flush_iter() if text is not None
+                        ).flush_iter()
+                        if text is not None
                     )
                 elif self.content_blocks[-1]["type"] == "tool_use":
                     self.partial_buffer.write(chunk.delta.partial_json)
-                    
+
             case "content_block_stop":
                 if self.content_blocks[-1]["type"] == "text":
                     self.content_blocks[-1]["text"] = self.partial_buffer.getvalue()
                     # Flush any remaining content
                     text_content = "".join(
-                        text for _, text in self.stream_splitter.flush_iter() 
+                        text
+                        for _, text in self.stream_splitter.flush_iter()
                         if text is not None
                     )
                 elif self.content_blocks[-1]["type"] == "tool_use":
@@ -297,27 +302,31 @@ class ResponseProcessor:
                             self.content_blocks[-1]["input"] = tool_content
                         except json.JSONDecodeError:
                             self.logger.warning("Invalid JSON in tool use delta")
-                
+
         return text_content, tool_content
 
     def get_final_message(self) -> ChatMessage:
         """Create the final ChatMessage from processed content."""
-        return ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content=self.content_blocks
-        )
+        return ChatMessage(role=MessageRole.ASSISTANT, content=self.content_blocks)
+
 
 class ExecutionError(Exception):
     """Base class for execution errors"""
+
     pass
+
 
 class ValidationError(ExecutionError):
     """Validation related errors"""
+
     pass
+
 
 class TimeoutError(ExecutionError):
     """Timeout related errors"""
+
     pass
+
 
 class ExecutionStatus(Enum):
     PENDING = "pending"
@@ -326,9 +335,11 @@ class ExecutionStatus(Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+
 @dataclass
 class RuntimeMetadata:
     """Metadata about runtime execution"""
+
     start_time: datetime
     last_updated: datetime
     status: ExecutionStatus
@@ -338,17 +349,21 @@ class RuntimeMetadata:
         self.execution_history.append((datetime.now(), operation))
         self.last_updated = datetime.now()
 
+
 @dataclass
 class ExecutionContext:
     """Execution context with validation and history tracking"""
+
     state: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     context: Dict[str, Any] = field(default_factory=dict)
-    metadata: RuntimeMetadata = field(default_factory=lambda: RuntimeMetadata(
-        start_time=datetime.now(),
-        last_updated=datetime.now(),
-        status=ExecutionStatus.PENDING
-    ))
+    metadata: RuntimeMetadata = field(
+        default_factory=lambda: RuntimeMetadata(
+            start_time=datetime.now(),
+            last_updated=datetime.now(),
+            status=ExecutionStatus.PENDING,
+        )
+    )
 
     def __post_init__(self):
         if not isinstance(self.state, dict):
@@ -356,19 +371,21 @@ class ExecutionContext:
         if not isinstance(self.context, dict):
             raise ValidationError("Context must be a dictionary")
 
-    def update(self, updates: Dict[str, Any]) -> 'ExecutionContext':
+    def update(self, updates: Dict[str, Any]) -> "ExecutionContext":
         new_runtime = ExecutionContext(
             state={**self.state, **updates},
             timestamp=datetime.now(),
             context=self.context,
-            metadata=self.metadata
+            metadata=self.metadata,
         )
         new_runtime.metadata.log_operation(f"State updated with keys: {updates.keys()}")
         return new_runtime
 
+
 @dataclass
 class Instruction:
     """Validated instruction with required and optional parameters"""
+
     action: str
     parameters: Dict[str, Any]
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -378,14 +395,17 @@ class Instruction:
     def __post_init__(self):
         if not self.action:
             raise ValidationError("Action cannot be empty")
-        missing_params = [param for param in self.required_params
-                         if param not in self.parameters]
+        missing_params = [
+            param for param in self.required_params if param not in self.parameters
+        ]
         if missing_params:
             raise ValidationError(f"Missing required parameters: {missing_params}")
+
 
 @dataclass
 class AgentContext:
     """Agent configuration with capability verification"""
+
     agent_id: str
     capabilities: List[str] = field(default_factory=list)
     config: Dict[str, Any] = field(default_factory=dict)
@@ -399,23 +419,25 @@ class AgentContext:
     def can_execute(self, instruction: Instruction) -> bool:
         return instruction.action in self.capabilities
 
+
 @dataclass
 class AgentResult(Generic[T]):
     """Enhanced result container with metadata and utilities"""
+
     value: Optional[T]
     runtime: ExecutionContext
     error: Optional[Exception] = None
     execution_time: Optional[float] = None
 
     @classmethod
-    def pure(cls, value: T, runtime: ExecutionContext) -> 'AgentResult[T]':
+    def pure(cls, value: T, runtime: ExecutionContext) -> "AgentResult[T]":
         return cls(value=value, runtime=runtime)
 
     @classmethod
-    def fail(cls, error: Exception, runtime: ExecutionContext) -> 'AgentResult[Any]':
+    def fail(cls, error: Exception, runtime: ExecutionContext) -> "AgentResult[Any]":
         return cls(value=None, runtime=runtime, error=error)
 
-    def map(self, f: Callable[[T], S]) -> 'AgentResult[S]':
+    def map(self, f: Callable[[T], S]) -> "AgentResult[S]":
         if self.error is not None:
             return AgentResult(None, self.runtime, self.error)
         try:
@@ -423,16 +445,16 @@ class AgentResult(Generic[T]):
         except Exception as e:
             return AgentResult.fail(e, self.runtime)
 
+
 class Agent:
     """Enhanced agent with proper error handling and timeouts"""
+
     def __init__(self, context: AgentContext):
         self.context = context
         self.logger = logging.getLogger(f"Agent-{context.agent_id}")
 
     async def execute(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         start_time = datetime.now()
         runtime.metadata.status = ExecutionStatus.RUNNING
@@ -449,8 +471,7 @@ class Agent:
             if instruction.timeout:
                 try:
                     result = await asyncio.wait_for(
-                        execute_with_timeout(),
-                        timeout=instruction.timeout
+                        execute_with_timeout(), timeout=instruction.timeout
                     )
                 except asyncio.TimeoutError:
                     raise TimeoutError(
@@ -475,29 +496,31 @@ class Agent:
 
     @abstractmethod
     async def _execute_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         """Must be implemented by concrete agent classes"""
         pass
+
 
 @dataclass
 class AgentRPC(Generic[T]):
     """
     RPC implementation with clear monadic composition
     """
+
     instruction: Instruction
     agent: Agent
     _execute_fn: Callable[[ExecutionContext], AgentResult[T]]
 
     @classmethod
-    def create(cls, instruction: Instruction, agent: Agent) -> 'AgentRPC[T]':
+    def create(cls, instruction: Instruction, agent: Agent) -> "AgentRPC[T]":
         """Create a basic RPC"""
+
         async def execute_fn(runtime: ExecutionContext) -> AgentResult[T]:
             if runtime is None:
                 raise ValidationError("ExecutionContext cannot be None")
             return await agent.execute(instruction, runtime)
+
         return cls(instruction, agent, execute_fn)
 
     async def execute(self, runtime: ExecutionContext) -> AgentResult[T]:
@@ -510,8 +533,9 @@ class AgentRPC(Generic[T]):
             runtime.metadata.status = ExecutionStatus.CANCELLED
             raise
 
-    def then(self, f: Callable[[T], 'AgentRPC[S]']) -> 'AgentRPC[S]':
+    def then(self, f: Callable[[T], "AgentRPC[S]"]) -> "AgentRPC[S]":
         """Chain another RPC, passing the result of this one"""
+
         async def new_execute(runtime: ExecutionContext) -> AgentResult[S]:
             result = await self.execute(runtime)
             if result.error:
@@ -523,67 +547,69 @@ class AgentRPC(Generic[T]):
             instruction=Instruction(
                 action="chain",
                 parameters={"operations": [self.instruction]},
-                timeout=self.instruction.timeout
+                timeout=self.instruction.timeout,
             ),
             agent=self.agent,
-            _execute_fn=new_execute
+            _execute_fn=new_execute,
         )
 
-    def map(self, f: Callable[[T], S]) -> 'AgentRPC[S]':
+    def map(self, f: Callable[[T], S]) -> "AgentRPC[S]":
         """Transform the result value without creating a new RPC"""
+
         async def new_execute(runtime: ExecutionContext) -> AgentResult[S]:
             result = await self.execute(runtime)
             return result.map(f)
 
         return AgentRPC(
-            instruction=self.instruction,
-            agent=self.agent,
-            _execute_fn=new_execute
+            instruction=self.instruction, agent=self.agent, _execute_fn=new_execute
         )
 
     @classmethod
-    def pure(cls, value: T, agent: Agent) -> 'AgentRPC[T]':
+    def pure(cls, value: T, agent: Agent) -> "AgentRPC[T]":
         """Create an RPC that just returns a value"""
+
         async def execute_fn(runtime: ExecutionContext) -> AgentResult[T]:
             return AgentResult.pure(value, runtime)
 
         return cls(
             instruction=Instruction(action="pure", parameters={"value": value}),
             agent=agent,
-            _execute_fn=execute_fn
+            _execute_fn=execute_fn,
         )
+
 
 # Example concrete agent implementation
 class SimpleAgent(Agent):
     async def _execute_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         # Simple example implementation
         if instruction.action == "echo":
-            return AgentResult.pure(
-                instruction.parameters.get("message", ""),
-                runtime
-            )
+            return AgentResult.pure(instruction.parameters.get("message", ""), runtime)
         raise NotImplementedError(f"Unknown action: {instruction.action}")
+
 
 # Example concrete agent implementation
 
-from openai import AsyncOpenAI
-from typing import List, Optional, Any, Dict
+import asyncio
 import json
 import logging
 from datetime import datetime
-import asyncio
+from typing import Any, Dict, List, Optional
+
+from openai import AsyncOpenAI
+
 
 class LLMError(ExecutionError):
     """Specific error type for LLM-related failures"""
+
     pass
+
 
 @dataclass
 class LLMAgentConfig:
     """Configuration for LLM Agent"""
+
     model: str = "gpt-4-turbo-preview"
     temperature: float = 0.1
     max_tokens: Optional[int] = None
@@ -604,27 +630,20 @@ class LLMAgent(Agent):
     - "transform": Transform content according to instructions
     """
 
-    def __init__(
-        self,
-        context: AgentContext,
-        config: LLMAgentConfig
-    ):
+    def __init__(self, context: AgentContext, config: LLMAgentConfig):
         super().__init__(context)
         self.config = config
         self.client = AsyncOpenAI(
-            api_key=config.api_key,
-            organization=config.organization
+            api_key=config.api_key, organization=config.organization
         )
         self.logger = logging.getLogger("LLMAgent")
 
     async def _execute_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         try:
             # Validate instruction parameters
-            if 'prompt' not in instruction.parameters:
+            if "prompt" not in instruction.parameters:
                 raise ValidationError("'prompt' is required in instruction parameters")
 
             # Prepare messages
@@ -637,11 +656,13 @@ class LLMAgent(Agent):
             result = await self._process_response(instruction, response)
 
             # Update runtime with relevant metadata
-            new_runtime = runtime.update({
-                "last_llm_call": datetime.now().isoformat(),
-                "last_prompt": instruction.parameters["prompt"],
-                "tokens_used": response.usage.total_tokens
-            })
+            new_runtime = runtime.update(
+                {
+                    "last_llm_call": datetime.now().isoformat(),
+                    "last_prompt": instruction.parameters["prompt"],
+                    "tokens_used": response.usage.total_tokens,
+                }
+            )
 
             return AgentResult.pure(result, new_runtime)
 
@@ -655,23 +676,16 @@ class LLMAgent(Agent):
 
         # Add system prompt if configured
         if self.config.system_prompt:
-            messages.append({
-                "role": "system",
-                "content": self.config.system_prompt
-            })
+            messages.append({"role": "system", "content": self.config.system_prompt})
 
         # Add instruction-specific system prompt if provided
         if instruction.parameters.get("system_prompt"):
-            messages.append({
-                "role": "system",
-                "content": instruction.parameters["system_prompt"]
-            })
+            messages.append(
+                {"role": "system", "content": instruction.parameters["system_prompt"]}
+            )
 
         # Add main prompt
-        messages.append({
-            "role": "user",
-            "content": instruction.parameters["prompt"]
-        })
+        messages.append({"role": "user", "content": instruction.parameters["prompt"]})
 
         return messages
 
@@ -683,7 +697,7 @@ class LLMAgent(Agent):
                 messages=messages,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
-                stop=self.config.stop_sequences
+                stop=self.config.stop_sequences,
             )
             return response
         except Exception as e:
@@ -749,32 +763,32 @@ class LLMAgent(Agent):
 
         return result
 
+
 async def morph_agent_example():
     context = AgentContext(
-        agent_id="casper",
-        capabilities=["simple_instruction", "autonomous_instruction"]
+        agent_id="casper", capabilities=["simple_instruction", "autonomous_instruction"]
     )
 
-    config = MorphVMAgentConfig(
-        max_tokens=1024, default_timeout=60.0
-    )
+    config = MorphVMAgentConfig(max_tokens=1024, default_timeout=60.0)
 
     agent = MorphVMAgent(context, config)
 
-    with Runtime.create(snapshot_id="snapshot_idtfj0xi", vcpus=4, memory=8192) as runtime:
-        execution_context = ExecutionContext(
-            state=dict(runtime=runtime)
-        )
+    with Runtime.create(
+        snapshot_id="snapshot_idtfj0xi", vcpus=4, memory=8192
+    ) as runtime:
+        execution_context = ExecutionContext(state=dict(runtime=runtime))
         rpc = AgentRPC.create(
             Instruction(
                 action="simple_instruction",
-                parameters={"prompt": "open chromium to the wikipedia page for the CCP by invoking the chromium binary in a terminal. just directly call the `chromium` binary directly"},
+                parameters={
+                    "prompt": "open chromium to the wikipedia page for the CCP by invoking the chromium binary in a terminal. just directly call the `chromium` binary directly"
+                },
             ),
-            agent
+            agent,
         )
         result = await rpc.execute(execution_context)
     return result
-        
+
 
 # Example usage
 async def llm_example():
@@ -782,7 +796,7 @@ async def llm_example():
     context = AgentContext(
         agent_id="llm-1",
         capabilities=["chat", "analyze", "extract", "transform"],
-        config={}
+        config={},
     )
 
     config = LLMAgentConfig(
@@ -793,33 +807,25 @@ async def llm_example():
 
     agent = LLMAgent(context, config)
     runtime = ExecutionContext(
-        state={},
-        timestamp=datetime.now(),
-        context={"env": "prod"}
+        state={}, timestamp=datetime.now(), context={"env": "prod"}
     )
 
     # Example 1: Simple chat
     chat_rpc = AgentRPC.create(
         Instruction(
-            action="chat",
-            parameters={"prompt": "What is the capital of France?"}
+            action="chat", parameters={"prompt": "What is the capital of France?"}
         ),
-        agent
+        agent,
     )
 
     # Example 2: Chain of operations
-    complex_rpc = (
-        chat_rpc.then(
-            lambda response: AgentRPC.create(
-                Instruction(
-                    action="transform",
-                    parameters={
-                        "prompt": response,
-                        "transforms": ["uppercase"]
-                    }
-                ),
-                agent
-            )
+    complex_rpc = chat_rpc.then(
+        lambda response: AgentRPC.create(
+            Instruction(
+                action="transform",
+                parameters={"prompt": response, "transforms": ["uppercase"]},
+            ),
+            agent,
         )
     )
 
@@ -831,59 +837,44 @@ async def llm_example():
 # Example usage showing composition patterns
 async def example():
     runtime = ExecutionContext(
-        state={},
-        timestamp=datetime.now(),
-        context={"env": "prod"}
+        state={}, timestamp=datetime.now(), context={"env": "prod"}
     )
 
     agent_context = AgentContext(
-        agent_id="agent1",
-        capabilities=["fetch", "process"],
-        config={}
+        agent_id="agent1", capabilities=["fetch", "process"], config={}
     )
     agent = SimpleAgent(agent_context)
 
     # Create RPCs
-    fetch_users = AgentRPC.create(
-        Instruction("fetch", {"resource": "users"}),
-        agent
-    )
+    fetch_users = AgentRPC.create(Instruction("fetch", {"resource": "users"}), agent)
 
     # Example 1: Simple transformation
     get_user_count = fetch_users.map(lambda users: len(users))
 
     # Example 2: Dependent operations
     process_users = fetch_users.then(
-        lambda users: AgentRPC.create(
-            Instruction("process", {"users": users}),
-            agent
-        )
+        lambda users: AgentRPC.create(Instruction("process", {"users": users}), agent)
     )
 
     # Example 3: Multiple transformations
-    get_processed_user_count = (
-        fetch_users
-        .then(lambda users: AgentRPC.create(
-            Instruction("process", {"users": users}),
-            agent
-        ))
-        .map(lambda processed: len(processed))
-    )
+    get_processed_user_count = fetch_users.then(
+        lambda users: AgentRPC.create(Instruction("process", {"users": users}), agent)
+    ).map(lambda processed: len(processed))
 
     # Example 4: Combining results
     def combine_results(users: List[dict]) -> AgentRPC[Dict[str, Any]]:
-        return (AgentRPC.create(
-            Instruction("process", {"users": users}),
-            agent
-        ).map(lambda processed: {
-            "original": users,
-            "processed": processed,
-            "count": len(users)
-        }))
+        return AgentRPC.create(Instruction("process", {"users": users}), agent).map(
+            lambda processed: {
+                "original": users,
+                "processed": processed,
+                "count": len(users),
+            }
+        )
 
     combined = fetch_users.then(combine_results)
 
     return await combined.execute(runtime)
+
 
 @dataclass
 class MorphVMAgentConfig:
@@ -895,7 +886,9 @@ class MorphVMAgentConfig:
     max_autonomous_time: int = 300  # 5 minutes
     retry_attempts: int = 3
     retry_delay: float = 1.0
-    system_prompt: str = """You are a helpful assistant that controls a cloud based development environment. Take user requests and execute them in the cloud environment."""
+    system_prompt: str = (
+        """You are a helpful assistant that controls a cloud based development environment. Take user requests and execute them in the cloud environment."""
+    )
 
     def __post_init__(self):
         if not self.model:
@@ -904,6 +897,7 @@ class MorphVMAgentConfig:
             raise ValidationError("Temperature must be between 0 and 1")
         if not 0 < self.max_tokens <= 4096:
             raise ValidationError("Invalid max_tokens value")
+
 
 class MorphVMAgent(Agent):
     def __init__(
@@ -915,7 +909,7 @@ class MorphVMAgent(Agent):
         self.config = config
         self.client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         self.logger = logging.getLogger(f"MorphVMAgent-{context.agent_id}")
-        
+
     #     # Validate runtime capabilities
     #     self._validate_capabilities()
 
@@ -926,166 +920,158 @@ class MorphVMAgent(Agent):
     #         raise ValidationError(f"Missing required capabilities: {required_capabilities}")
 
     async def _execute_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         if "runtime" not in runtime.state:
             raise ValidationError("No runtime found in execution context")
-            
+
         try:
-            async with asyncio.timeout(instruction.timeout or self.config.default_timeout):
+            async with asyncio.timeout(
+                instruction.timeout or self.config.default_timeout
+            ):
                 if instruction.action == "simple_instruction":
                     return await self._handle_simple_instruction(instruction, runtime)
                 elif instruction.action == "autonomous_instruction":
-                    return await self._handle_autonomous_instruction(instruction, runtime)
+                    return await self._handle_autonomous_instruction(
+                        instruction, runtime
+                    )
                 else:
-                    raise ValidationError(f"Unknown instruction type: {instruction.action}")
+                    raise ValidationError(
+                        f"Unknown instruction type: {instruction.action}"
+                    )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"Instruction execution timeout after {self.config.default_timeout}s")
+            raise TimeoutError(
+                f"Instruction execution timeout after {self.config.default_timeout}s"
+            )
 
     async def _handle_simple_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         # Create or validate chat history
-        history = ChatHistory(
-            messages=instruction.parameters.get("messages", [])
-        )
+        history = ChatHistory(messages=instruction.parameters.get("messages", []))
         prompt = instruction.parameters["prompt"]
-        
+
         # Add user message
-        history.add(ChatMessage(
-            role=MessageRole.USER,
-            content=prompt
-        ))
+        history.add(ChatMessage(role=MessageRole.USER, content=prompt))
 
         async def response_thunk():
             return await self.client.messages.create(
-                            model=self.config.model,
-                            max_tokens=self.config.max_tokens,
-                            system=self.config.system_prompt,
-                            messages=history.to_api_messages(),
-                            tools=runtime.state["runtime"].interface.render(target="anthropic"),
-                            stream=True
+                model=self.config.model,
+                max_tokens=self.config.max_tokens,
+                system=self.config.system_prompt,
+                messages=history.to_api_messages(),
+                tools=runtime.state["runtime"].interface.render(target="anthropic"),
+                stream=True,
             )
-        
+
         # Get LLM response with retries
-        response_stream = await self._retry_with_backoff(
-            response_thunk
-        )
-        
+        response_stream = await self._retry_with_backoff(response_thunk)
+
         # Process response
         assistant_message = await self._process_response_stream(
-            response_stream,
-            runtime
+            response_stream, runtime
         )
         history.add(assistant_message)
-        
+
         # Execute tools with parallel execution and timeout
         if tool_results := await self._execute_tool_calls(
-            assistant_message,
-            runtime,
-            timeout=self.config.default_timeout
+            assistant_message, runtime, timeout=self.config.default_timeout
         ):
-            history.add(ChatMessage(
-                role=MessageRole.USER,
-                content=tool_results
-            ))
-        
+            history.add(ChatMessage(role=MessageRole.USER, content=tool_results))
+
         # Update runtime
-        new_runtime = runtime.update({
-            "last_interaction": datetime.now().isoformat(),
-            "message_history": history.messages
-        })
-        
-        return AgentResult.pure(
+        new_runtime = runtime.update(
             {
-                "response": assistant_message,
-                "messages": history.messages
-            },
-            new_runtime
+                "last_interaction": datetime.now().isoformat(),
+                "message_history": history.messages,
+            }
+        )
+
+        return AgentResult.pure(
+            {"response": assistant_message, "messages": history.messages}, new_runtime
         )
 
     async def _handle_autonomous_instruction(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ) -> AgentResult:
         history = ChatHistory()
         goal = instruction.parameters["goal"]
         start_time = datetime.now()
         iteration = 0
-        
+
         # Add initial message
-        history.add(ChatMessage(
-            role=MessageRole.USER,
-            content=f"Goal: {goal}\nExecute this task autonomously. Work on it step by step and let me know when you're done."
-        ))
-        
+        history.add(
+            ChatMessage(
+                role=MessageRole.USER,
+                content=f"Goal: {goal}\nExecute this task autonomously. Work on it step by step and let me know when you're done.",
+            )
+        )
+
         try:
             while iteration < self.config.max_autonomous_iterations:
                 # Check time limit
-                if (datetime.now() - start_time).total_seconds() > self.config.max_autonomous_time:
+                if (
+                    datetime.now() - start_time
+                ).total_seconds() > self.config.max_autonomous_time:
                     raise TimeoutError("Autonomous execution time limit exceeded")
-                
+
                 # Execute one turn
                 result = await self._handle_simple_instruction(
                     Instruction(
                         action="simple_instruction",
                         parameters={
                             "messages": history.messages,
-                            "prompt": "Continue working on the task."
-                        }
+                            "prompt": "Continue working on the task.",
+                        },
                     ),
-                    runtime
+                    runtime,
                 )
-                
+
                 # Update history
                 history = ChatHistory(messages=result.value["messages"])
-                
+
                 # check completion with timeout
                 async with asyncio.timeout(10):
                     completion_status = await self._check_task_completion(
-                        goal,
-                        history.messages,
-                        runtime
+                        goal, history.messages, runtime
                     )
                 # try:
                 #     # Wait for the task to complete with a timeout of 10 seconds
                 #     result = await asyncio.wait_for(
-                #         self._check_task_completion(goal, history.messages, runtime), 
+                #         self._check_task_completion(goal, history.messages, runtime),
                 #         timeout=10
                 #     )
                 #     completion_status = result
                 # except asyncio.TimeoutError:
                 #     # Handle the timeout (e.g., log an error, retry, etc.)
                 #     print("Task timed out!")
-                #     completion_status = "timeout" 
-                    
-                
+                #     completion_status = "timeout"
+
                 if completion_status["is_complete"]:
-                    new_runtime = runtime.update({
-                        "task_completed": True,
-                        "completion_reason": completion_status["reason"],
-                        "message_history": history.messages,
-                        "iterations": iteration + 1,
-                        "execution_time": (datetime.now() - start_time).total_seconds()
-                    })
-                    
+                    new_runtime = runtime.update(
+                        {
+                            "task_completed": True,
+                            "completion_reason": completion_status["reason"],
+                            "message_history": history.messages,
+                            "iterations": iteration + 1,
+                            "execution_time": (
+                                datetime.now() - start_time
+                            ).total_seconds(),
+                        }
+                    )
+
                     return AgentResult.pure(
                         {
                             "messages": history.messages,
-                            "completion_status": completion_status
+                            "completion_status": completion_status,
                         },
-                        new_runtime
+                        new_runtime,
                     )
-                
+
                 iteration += 1
-            
+
             raise RuntimeError("Maximum iterations reached without task completion")
-            
+
         except Exception as e:
             self.logger.exception("Error in autonomous instruction handling")
             return AgentResult.fail(e, runtime)
@@ -1093,7 +1079,7 @@ class MorphVMAgent(Agent):
     async def _retry_with_backoff(self, operation, max_attempts=None):
         if max_attempts is None:
             max_attempts = self.config.retry_attempts
-            
+
         last_error = None
         for attempt in range(max_attempts):
             try:
@@ -1101,8 +1087,8 @@ class MorphVMAgent(Agent):
             except Exception as e:
                 last_error = e
                 if attempt + 1 < max_attempts:
-                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
-        
+                    await asyncio.sleep(self.config.retry_delay * (2**attempt))
+
         raise last_error
 
     # async def _process_response_stream(
@@ -1113,7 +1099,7 @@ class MorphVMAgent(Agent):
     # ) -> ChatMessage:
     #     content_blocks = []
     #     total_size = 0
-        
+
     #     try:
     #         async for chunk in response_stream:
     #             # Check size limit
@@ -1121,7 +1107,7 @@ class MorphVMAgent(Agent):
     #             if total_size + chunk_size > max_size:
     #                 raise ValueError("Response size limit exceeded")
     #             total_size += chunk_size
-                
+
     #             # Process chunk
     #             if chunk.type == "content_block_start":
     #                 block = {"type": chunk.content_block.type}
@@ -1131,11 +1117,11 @@ class MorphVMAgent(Agent):
     #                         "id": chunk.content_block.id,
     #                     })
     #                 content_blocks.append(block)
-                    
+
     #             elif chunk.type == "content_block_delta":
     #                 if not content_blocks:
     #                     raise ValueError("Received delta before block start")
-                        
+
     #                 if content_blocks[-1]["type"] == "text":
     #                     content_blocks[-1].setdefault("text", "")
     #                     content_blocks[-1]["text"] += chunk.delta.text
@@ -1149,18 +1135,18 @@ class MorphVMAgent(Agent):
     #                             )
     #                         except json.JSONDecodeError:
     #                             self.logger.warning("Invalid JSON in tool use delta")
-                                
+
     #     except Exception as e:
     #         self.logger.exception("Error processing response stream")
     #         raise
-            
+
     #     return ChatMessage(role=MessageRole.ASSISTANT, content=content_blocks)
 
     async def _process_response_stream(
         self,
         response_stream: Any,
         runtime: ExecutionContext,
-        max_size: int = 1024 * 1024  # 1MB limit
+        max_size: int = 1024 * 1024,  # 1MB limit
     ) -> ChatMessage:
         """Enhanced response stream processing with proper state management."""
         total_size = 0
@@ -1190,68 +1176,65 @@ class MorphVMAgent(Agent):
 
         except Exception as e:
             self.logger.exception("Error processing response stream")
-            raise    
+            raise
 
     async def _execute_tool_calls(
-        self,
-        message: ChatMessage,
-        runtime: ExecutionContext,
-        timeout: float
+        self, message: ChatMessage, runtime: ExecutionContext, timeout: float
     ) -> Optional[List[Dict[str, Any]]]:
         if not isinstance(message.content, list):
             return None
-            
+
         tool_results = []
         tool_tasks = []
-        
+
         # Create tasks for each tool
         for content in message.content:
             if content["type"] == "tool_use" and "input" in content:
-                tool_tasks.append({
-                    "id": content["id"],
-                    "task": self._execute_single_tool(
-                        content["name"],
-                        content["input"],
-                        runtime
-                    )
-                })
-        
+                tool_tasks.append(
+                    {
+                        "id": content["id"],
+                        "task": self._execute_single_tool(
+                            content["name"], content["input"], runtime
+                        ),
+                    }
+                )
+
         if not tool_tasks:
             return None
-            
+
         # Execute tools in parallel with timeout
         try:
             async with asyncio.timeout(timeout):
                 results = await asyncio.gather(
-                    *(task["task"] for task in tool_tasks),
-                    return_exceptions=True
+                    *(task["task"] for task in tool_tasks), return_exceptions=True
                 )
-                
+
             # Process results
             for task, result in zip(tool_tasks, results):
                 if isinstance(result, Exception):
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": task["id"],
-                        "error": str(result)
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": task["id"],
+                            "error": str(result),
+                        }
+                    )
                 else:
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": task["id"],
-                        "content": json.dumps(result)
-                    })
-                    
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": task["id"],
+                            "content": json.dumps(result),
+                        }
+                    )
+
             return tool_results
-            
+
         except asyncio.TimeoutError:
             raise TimeoutError(f"Tool execution timeout after {timeout}s")
 
     async def _execute_single_tool(
-        self,
-        tool_name: str,
-        tool_input: Dict[str, Any],
-        runtime: ExecutionContext
+        self, tool_name: str, tool_input: Dict[str, Any], runtime: ExecutionContext
     ) -> Any:
         try:
             return await runtime.state["runtime"].interface.execute(
@@ -1292,29 +1275,39 @@ Respond with ONLY a JSON object in this format:
     "blocked": boolean
 }}"""
 
-            response = await self._retry_with_backoff(lambda: self.client.messages.create(
-                model=self.config.model,
-                temperature=0.1,  # Lower temperature for more consistent evaluation
-                max_tokens=300,
-                system=completion_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": self._format_messages_for_completion_check(messages[-10:])
-                    }
-                ]
-            ))
+            response = await self._retry_with_backoff(
+                lambda: self.client.messages.create(
+                    model=self.config.model,
+                    temperature=0.1,  # Lower temperature for more consistent evaluation
+                    max_tokens=300,
+                    system=completion_prompt,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": self._format_messages_for_completion_check(
+                                messages[-10:]
+                            ),
+                        }
+                    ],
+                )
+            )
 
             try:
                 completion_status = json.loads(response.content)
                 # Validate response format
-                required_fields = {"is_complete", "reason", "confidence", "failure_detected", "blocked"}
+                required_fields = {
+                    "is_complete",
+                    "reason",
+                    "confidence",
+                    "failure_detected",
+                    "blocked",
+                }
                 if not all(field in completion_status for field in required_fields):
                     raise ValueError("Invalid completion status format")
-                
+
                 # Cache the result
                 new_runtime = runtime.update({cache_key: completion_status})
-                
+
                 return completion_status
 
             except json.JSONDecodeError:
@@ -1323,7 +1316,7 @@ Respond with ONLY a JSON object in this format:
                     "reason": "Failed to parse completion status",
                     "confidence": 0.0,
                     "failure_detected": True,
-                    "blocked": True
+                    "blocked": True,
                 }
 
         except Exception as e:
@@ -1333,7 +1326,7 @@ Respond with ONLY a JSON object in this format:
                 "reason": f"Error evaluating completion: {str(e)}",
                 "confidence": 0.0,
                 "failure_detected": True,
-                "blocked": True
+                "blocked": True,
             }
 
     def _format_messages_for_completion_check(self, messages: List[ChatMessage]) -> str:
@@ -1350,108 +1343,105 @@ Respond with ONLY a JSON object in this format:
                         blocks.append(block.get("text", ""))
                     elif block["type"] == "tool_use":
                         blocks.append(f"[Used tool: {block['name']}]")
-                formatted_messages.append(f"{msg.role.value.upper()}: {' '.join(blocks)}")
-        
+                formatted_messages.append(
+                    f"{msg.role.value.upper()}: {' '.join(blocks)}"
+                )
+
         return "\n".join(formatted_messages)
 
     async def _monitor_task_progress(
-        self,
-        start_time: datetime,
-        iteration: int,
-        history: ChatHistory
+        self, start_time: datetime, iteration: int, history: ChatHistory
     ) -> None:
         """Monitor task progress and resource usage"""
         current_time = datetime.now()
         execution_time = (current_time - start_time).total_seconds()
-        
+
         # Log progress metrics
         self.logger.info(
             f"Task Progress - Iteration: {iteration}, "
             f"Time: {execution_time:.2f}s, "
             f"Messages: {len(history.messages)}"
         )
-        
+
         # Check resource usage
         if execution_time > self.config.max_autonomous_time:
             raise TimeoutError(
                 f"Exceeded maximum execution time of {self.config.max_autonomous_time}s"
             )
-        
+
         if iteration >= self.config.max_autonomous_iterations:
             raise RuntimeError(
                 f"Exceeded maximum iterations of {self.config.max_autonomous_iterations}"
             )
 
-#     async def _handle_tool_failure(
-#         self,
-#         tool_name: str,
-#         error: Exception,
-#         runtime: ExecutionContext
-#     ) -> Optional[Dict[str, Any]]:
-#         """Handle tool execution failures with recovery options"""
-#         self.logger.error(f"Tool {tool_name} failed: {str(error)}")
-        
-#         # Ask LLM for recovery strategy
-#         recovery_prompt = f"""Tool "{tool_name}" failed with error: {str(error)}
+    #     async def _handle_tool_failure(
+    #         self,
+    #         tool_name: str,
+    #         error: Exception,
+    #         runtime: ExecutionContext
+    #     ) -> Optional[Dict[str, Any]]:
+    #         """Handle tool execution failures with recovery options"""
+    #         self.logger.error(f"Tool {tool_name} failed: {str(error)}")
 
-# Analyze the error and suggest how to proceed:
-# 1. Can we retry the operation?
-# 2. Is there an alternative approach?
-# 3. Should we abort the current task?
+    #         # Ask LLM for recovery strategy
+    #         recovery_prompt = f"""Tool "{tool_name}" failed with error: {str(error)}
 
-# Respond with a JSON object containing:
-# {{
-#     "action": "retry|alternate|abort",
-#     "reason": "explanation",
-#     "alternate_tool": "tool_name" if applicable,
-#     "retry_count": suggested number of retries
-# }}"""
+    # Analyze the error and suggest how to proceed:
+    # 1. Can we retry the operation?
+    # 2. Is there an alternative approach?
+    # 3. Should we abort the current task?
 
-#         try:
-#             response = await self.client.messages.create(
-#                 model=self.config.model,
-#                 temperature=0.1,
-#                 max_tokens=200,
-#                 messages=[{"role": "user", "content": recovery_prompt}]
-#             )
-            
-#             strategy = json.loads(response.content)
-            
-#             match strategy["action"]:
-#                 case "retry":
-#                     if strategy["retry_count"] > 0:
-#                         return await self._retry_with_backoff(
-#                             lambda: runtime.state["runtime"].interface.execute(
-#                                 tool_name
-#                             ),
-#                             max_attempts=strategy["retry_count"]
-#                         )
-#                 case "alternate":
-#                     if alt_tool := strategy.get("alternate_tool"):
-#                         return await runtime.state["runtime"].interface.execute(
-#                             create_tool(alt_tool)
-#                         )
-#                 case "abort":
-#                     raise ExecutionError(f"Tool failure: {strategy['reason']}")
-                
-#         except Exception as e:
-#             self.logger.exception("Error in tool failure recovery")
-#             raise ExecutionError(f"Tool recovery failed: {str(e)}")
+    # Respond with a JSON object containing:
+    # {{
+    #     "action": "retry|alternate|abort",
+    #     "reason": "explanation",
+    #     "alternate_tool": "tool_name" if applicable,
+    #     "retry_count": suggested number of retries
+    # }}"""
+
+    #         try:
+    #             response = await self.client.messages.create(
+    #                 model=self.config.model,
+    #                 temperature=0.1,
+    #                 max_tokens=200,
+    #                 messages=[{"role": "user", "content": recovery_prompt}]
+    #             )
+
+    #             strategy = json.loads(response.content)
+
+    #             match strategy["action"]:
+    #                 case "retry":
+    #                     if strategy["retry_count"] > 0:
+    #                         return await self._retry_with_backoff(
+    #                             lambda: runtime.state["runtime"].interface.execute(
+    #                                 tool_name
+    #                             ),
+    #                             max_attempts=strategy["retry_count"]
+    #                         )
+    #                 case "alternate":
+    #                     if alt_tool := strategy.get("alternate_tool"):
+    #                         return await runtime.state["runtime"].interface.execute(
+    #                             create_tool(alt_tool)
+    #                         )
+    #                 case "abort":
+    #                     raise ExecutionError(f"Tool failure: {strategy['reason']}")
+
+    #         except Exception as e:
+    #             self.logger.exception("Error in tool failure recovery")
+    #             raise ExecutionError(f"Tool recovery failed: {str(e)}")
 
     @contextlib.asynccontextmanager
     async def _execution_context(
-        self,
-        instruction: Instruction,
-        runtime: ExecutionContext
+        self, instruction: Instruction, runtime: ExecutionContext
     ):
         """Manage execution context with proper cleanup"""
         start_time = datetime.now()
         context_data = {
             "start_time": start_time,
             "instruction_id": id(instruction),
-            "tool_executions": []
+            "tool_executions": [],
         }
-        
+
         try:
             yield context_data
         finally:
@@ -1461,7 +1451,7 @@ Respond with ONLY a JSON object in this format:
                 f"Instruction {context_data['instruction_id']} completed in {execution_time:.2f}s "
                 f"with {len(context_data['tool_executions'])} tool executions"
             )
-            
+
             # Cleanup any resources
             for tool_execution in context_data["tool_executions"]:
                 if hasattr(tool_execution.get("result"), "close"):
@@ -1471,44 +1461,50 @@ Respond with ONLY a JSON object in this format:
         """Validate message format and content"""
         if not isinstance(messages, list):
             raise ValidationError("Messages must be a list")
-            
+
         for msg in messages:
             if not isinstance(msg, ChatMessage):
                 raise ValidationError(f"Invalid message type: {type(msg)}")
-            
+
             if isinstance(msg.content, list):
                 for block in msg.content:
                     if not isinstance(block, dict) or "type" not in block:
                         raise ValidationError("Invalid content block structure")
-                    
+
                     if block["type"] == "tool_use":
                         required_fields = {"name", "id", "input"}
                         if not all(field in block for field in required_fields):
-                            raise ValidationError(f"Missing required fields in tool_use block: {required_fields}")
+                            raise ValidationError(
+                                f"Missing required fields in tool_use block: {required_fields}"
+                            )
+
 
 class MorphVMAgentMetrics:
     """Track and expose agent metrics"""
+
     def __init__(self):
         self.tool_executions = 0
         self.total_execution_time = 0.0
         self.failed_executions = 0
         self.retries = 0
         self.last_updated = datetime.now()
-        
-    def update_tool_execution(self, success: bool, execution_time: float, retries: int = 0):
+
+    def update_tool_execution(
+        self, success: bool, execution_time: float, retries: int = 0
+    ):
         self.tool_executions += 1
         self.total_execution_time += execution_time
         if not success:
             self.failed_executions += 1
         self.retries += retries
         self.last_updated = datetime.now()
-        
+
     @property
     def success_rate(self) -> float:
         if self.tool_executions == 0:
             return 0.0
         return (self.tool_executions - self.failed_executions) / self.tool_executions
-        
+
     @property
     def average_execution_time(self) -> float:
         if self.tool_executions == 0:
@@ -1523,7 +1519,7 @@ class MorphVMAgentMetrics:
             "retries": self.retries,
             "success_rate": self.success_rate,
             "average_execution_time": self.average_execution_time,
-            "last_updated": self.last_updated.isoformat()
+            "last_updated": self.last_updated.isoformat(),
         }
 
 

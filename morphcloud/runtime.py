@@ -1,29 +1,27 @@
-"""
-import morphcloud as morph
-
-morph.Snapshot.create()
-"""
-
-import fire
-from typing import Any, Dict, Optional, Union, List, Protocol
+import hashlib
 import json
 import os
 import time
-import httpx
-from functools import wraps
-import hashlib
 from dataclasses import dataclass, field
-from morphcloud.utils import get_iframe_object_from_instance_id, to_camel_case, to_snake_case
+from functools import wraps
+from typing import Any, Dict, List, Optional, Protocol, Union
+
+import fire
+import httpx
+
 from morphcloud.actions import ide_actions
+from morphcloud.utils import (get_iframe_object_from_instance_id,
+                              to_camel_case, to_snake_case)
 
 # Constants
 BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
+import enum
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
-import enum
+
 
 def _default_snapshot():
     return {
@@ -33,8 +31,9 @@ def _default_snapshot():
         "readiness_check": {
             "type": "timeout",
             "timeout": 10,
-        }
+        },
     }
+
 
 class SnapshotStatus(enum.Enum):
     PENDING = "pending"
@@ -103,7 +102,12 @@ class Snapshot:
 
     @classmethod
     def _create_from_image(
-            cls, image_id: str, vcpus: int, memory: int, readiness_check: Optional[Dict[str, Any]] = None, **kwargs
+        cls,
+        image_id: str,
+        vcpus: int,
+        memory: int,
+        readiness_check: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> "Snapshot":
         resp = cls.http.post(
             f"{cls.base_url}/snapshot",
@@ -204,7 +208,10 @@ class RuntimeInterface:
         return wrapper
 
     async def execute(self, tool_name: str, **kwargs):
-        return {"action_type": tool_name, "parameters": {to_camel_case(k): v for k,v in kwargs.items()}}
+        return {
+            "action_type": tool_name,
+            "parameters": {to_camel_case(k): v for k, v in kwargs.items()},
+        }
 
     def _load_actions(self):
         """Load actions from actions.py and create corresponding methods"""
@@ -328,7 +335,6 @@ class Runtime:
     def snapshot(self) -> Snapshot:
         return Snapshot.create(self)
 
-    
     def exec(self, command: Union[str, List[str]]) -> Dict[str, Any]:
         """
         Execute a command or list of commands on the runtime instance.
@@ -349,19 +355,19 @@ class Runtime:
         response = self.http.post(
             f"/instance/{self.instance_id}/exec",
             json={"command": command},
-            headers=self.headers
+            headers=self.headers,
         )
         response.raise_for_status()
-        return response.json()    
-        
+        return response.json()
 
     @property
     def remote_desktop_url(self):
         return f"{self.base_url}/ui/instance/{self.instance_id}"
-    
-    @property
-    def remote_desktop_iframe(self):
-        return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
+
+    def remote_desktop_iframe(self, width: int = 1280 // 2, height: int = 720 // 2):
+        return get_iframe_object_from_instance_id(
+            self.base_url, self.instance_id, width=width, height=height
+        )
 
     @classmethod
     def create(
@@ -394,7 +400,6 @@ class Runtime:
 
             print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
-        
 
         # hash vcpus, memory, and setup to create a unique snapshot digest
         snapshot_digest = hashlib.sha256(
@@ -423,7 +428,6 @@ class Runtime:
 
             print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
-
 
         config = _default_snapshot()
 
@@ -463,21 +467,26 @@ class Runtime:
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
-    def clone(self, num_clones: int = 1, api_key: Optional[str] = None) -> List["Runtime"]:
+    def clone(
+        self, num_clones: int = 1, api_key: Optional[str] = None
+    ) -> List["Runtime"]:
         """Create a clone of this runtime"""
         resp = self.http.post(
             f"/instance/{self.instance_id}/clone",
             params={"num_clones": num_clones},
-            headers=Snapshot.get_headers(api_key=api_key)
+            headers=Snapshot.get_headers(api_key=api_key),
         )
         resp.raise_for_status()
 
-        return [Runtime(
-            instance_id=runtime["id"],
-            api_key=api_key or self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
-        ) for runtime in resp.json()]
+        return [
+            Runtime(
+                instance_id=runtime["id"],
+                api_key=api_key or self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+            )
+            for runtime in resp.json()
+        ]
 
     def __enter__(self) -> "Runtime":
         return self
@@ -500,7 +509,9 @@ class Runtime:
         """List all runtime instances"""
         runtime = cls(**kwargs)
         try:
-            resp = runtime.http.get("/instance", headers=Runtime.get_headers(api_key=kwargs.get("api_key")))
+            resp = runtime.http.get(
+                "/instance", headers=Runtime.get_headers(api_key=kwargs.get("api_key"))
+            )
             resp.raise_for_status()
             return resp.json()
         finally:
@@ -591,8 +602,10 @@ class Runtime:
         resp.raise_for_status()
         return resp.json()
 
+
 def main():
     print("hello world")
+
 
 def test_runtime():
     with Runtime.create() as runtime:
@@ -610,6 +623,13 @@ def test_runtime():
     # print(f"created snapshot: {ss_id}")
     # with Runtime.create(snapshot_id=ss_id) as runtime:
     #     print(f"created runtime with snapshot_id={ss_id}")
+
+
+def temp_devbox():
+    with Runtime.create(
+        vcpus=4, memory=8192, snapshot_id="snapshot_idtfj0xi"
+    ) as runtime:
+        input()
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 from setuptools.command.install import install
+
 
 class PostInstallCommand(install):
     def run(self):
         install.run(self)
+
 
 setup(
     name="morphcloud",
@@ -36,6 +38,6 @@ setup(
         ],
     },
     cmdclass={
-        'install': PostInstallCommand,
+        "install": PostInstallCommand,
     },
 )
