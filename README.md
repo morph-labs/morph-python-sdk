@@ -77,6 +77,20 @@ runtime = Runtime.create(
 )
 ```
 
+## Custom Containers
+
+You can create a runtime instance from a custom container by providing a rootfs path and an init command.
+
+```bash
+docker export <container_id> > /tmp/demo-webserver.tar
+```
+
+Then, create the runtime instance:
+
+```py
+runtime = Runtime.create(rootfs_path="/tmp/demo-webserver.tar", init_cmd="node /app/index.js")
+```
+
 ## Connecting to a Runtime
 
 If you created a runtime instance from the web UI and you wish to connect to it:

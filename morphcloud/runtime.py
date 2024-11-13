@@ -4,6 +4,7 @@ import morphcloud as morph
 morph.Snapshot.create()
 """
 
+import subprocess
 import fire
 from typing import Any, Dict, Optional, Union, List, Protocol
 import json
@@ -28,6 +29,17 @@ import enum
 def _default_snapshot():
     return {
         "image_id": "morphvm-codelink",
+        "vcpus": 2,
+        "memory": 2048,
+        "readiness_check": {
+            "type": "timeout",
+            "timeout": 10,
+        }
+    }
+
+def _default_snapshot_custom_container():
+    return {
+        "image_id": "morphvm-minimal",
         "vcpus": 2,
         "memory": 2048,
         "readiness_check": {
@@ -359,6 +371,47 @@ class Runtime:
     @property
     def remote_desktop_iframe(self):
         return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
+    
+    def upload_file(self, local_file_path: str, remote_file_path: str):
+        """Upload a file to the runtime instance"""
+        if not os.path.exists(local_file_path):
+            raise FileNotFoundError(f"Local file does not exist: {local_file_path}")
+        
+        ssh_host = "127.0.0.1" # Mock port for bastion
+        ssh_port = "2224"
+        ssh_user = f"{self.instance_id}:{self.api_key}"
+        ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
+        
+        scp_command = f"scp -o \"User={ssh_user}\" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}"
+        print(f"Uploading file to runtime: {scp_command}")
+        return subprocess.run(scp_command, shell=True)
+        
+    def _prepare_custom_container(self, local_rootfs_path: str, init_cmd: str):
+        # Check if local rootfs path exists
+        if not os.path.exists(local_rootfs_path):
+            raise FileNotFoundError(f"Local rootfs path does not exist: {local_rootfs_path}")
+
+        # Upload rootfs to runtime using SCP
+        self.upload_file(local_rootfs_path, "/rootfs.tar")
+        
+        # Extract rootfs
+        self.exec(["tar -xvf /rootfs.tar -C /rootfs"])
+        
+        old_init_script = self.exec(["cat /config.json"])["stdout"]
+        
+        # Update init script
+        json_data = json.loads(old_init_script)
+        json_data["process"]["terminal"] = False
+        json_data["process"]["args"] = init_cmd.split(" ")
+        new_init_script = json.dumps(json_data)
+        self.exec([f"echo '{new_init_script}' > /config.json"])
+        
+        # Start systemd service
+        self.exec(["systemctl stop runc.service"])
+        self.exec(["systemctl start runc.service"])
+        
+        # Cleanup
+        self.exec(["rm /rootfs.tar"])
 
     @classmethod
     def create(
@@ -367,6 +420,8 @@ class Runtime:
         memory: int = 3000,
         setup: Optional[Union[str, List[str]]] = None,
         snapshot_id: Optional[str] = None,
+        rootfs_path: Optional[str] = None,
+        init_cmd: Optional[str] = None,
         **kwargs,
     ) -> "Runtime":
         """Create a new runtime instance"""
@@ -378,11 +433,14 @@ class Runtime:
                 else [line.strip() for line in open(setup) if line.strip()]
             )
 
+        if rootfs_path and not init_cmd:
+            raise ValueError("init_cmd is required when providing a rootfs_path")
+
         runtime = cls(**kwargs)
 
         # hash vcpus, memory, and setup to create a unique snapshot digest
         snapshot_digest = hashlib.sha256(
-            f"{vcpus}_{memory}_{setup}".encode()
+            f"{vcpus}_{memory}_{setup}_{rootfs_path}".encode()
         ).hexdigest()
 
         # try to create a snapshot with the given digest
@@ -409,7 +467,7 @@ class Runtime:
             return runtime
 
 
-        config = _default_snapshot()
+        config = _default_snapshot() if rootfs_path is None else _default_snapshot_custom_container()
 
         if vcpus:
             config["vcpus"] = vcpus
@@ -437,6 +495,9 @@ class Runtime:
 
         for command in setup or []:
             runtime._execute([command])
+            
+        if rootfs_path:
+            runtime._prepare_custom_container(local_rootfs_path=rootfs_path, init_cmd=init_cmd)
 
         # save snapshot
         snapshot = Snapshot.create(runtime, snapshot_digest)
