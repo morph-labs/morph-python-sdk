@@ -19,6 +19,9 @@ from morphcloud.actions import ide_actions
 
 # Constants
 BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
+SSH_PORTAL_HOST = os.getenv("SSH_PORTAL_HOST", "127.0.0.1")
+SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2224")
+
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
 from dataclasses import dataclass
@@ -377,8 +380,8 @@ class Runtime:
         if not os.path.exists(local_file_path):
             raise FileNotFoundError(f"Local file does not exist: {local_file_path}")
         
-        ssh_host = "127.0.0.1" # Mock port for bastion
-        ssh_port = "2224"
+        ssh_host = SSH_PORTAL_HOST
+        ssh_port = SSH_PORTAL_PORT
         ssh_user = f"{self.instance_id}:{self.api_key}"
         
         ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
