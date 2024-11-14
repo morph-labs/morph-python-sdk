@@ -380,7 +380,12 @@ class Runtime:
         ssh_host = "127.0.0.1" # Mock port for bastion
         ssh_port = "2224"
         ssh_user = f"{self.instance_id}:{self.api_key}"
+        
         ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
+        if not os.path.exists(ssh_key_path):
+            ssh_key_path = os.path.expanduser("~/.ssh/id_rsa")
+        if not os.path.exists(ssh_key_path):
+            raise FileNotFoundError(f"You don't have an SSH key in your ~/.ssh directory. Please create one with `ssh-keygen`. This is required for uploading files to the runtime.")
         
         scp_command = f"scp -o \"User={ssh_user}\" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}"
         print(f"Uploading file to runtime: {scp_command}")
