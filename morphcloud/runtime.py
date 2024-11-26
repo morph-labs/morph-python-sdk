@@ -1,5 +1,3 @@
-"""
-"""
 from __future__ import annotations
 
 import os
@@ -370,6 +368,8 @@ class Runtime:
 
     @property
     def remote_desktop_iframe(self):
+        if not self.instance_id:
+            raise ValueError("instance_id is required to get the remote desktop iframe")
         return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
 
     def upload_file(self, local_file_path: str, remote_file_path: str):
