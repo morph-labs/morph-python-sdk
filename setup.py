@@ -1,13 +1,15 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 from setuptools.command.install import install
+
 
 class PostInstallCommand(install):
     def run(self):
         install.run(self)
 
+
 setup(
     name="morphcloud",
-    version="0.1.6",
+    version="0.1.9",
     use_scm_version=True,
     packages=find_packages(),
     include_package_data=True,
@@ -36,6 +38,6 @@ setup(
         ],
     },
     cmdclass={
-        'install': PostInstallCommand,
+        "install": PostInstallCommand,
     },
 )
