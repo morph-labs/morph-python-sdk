@@ -33,10 +33,6 @@ SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2224")
 
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
-import enum
-from dataclasses import dataclass
-from datetime import datetime
-from typing import List, Optional
 
 def _default_snapshot():
     return {
