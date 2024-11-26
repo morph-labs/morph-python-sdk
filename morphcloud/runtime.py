@@ -20,6 +20,8 @@ from morphcloud.utils import (
     to_snake_case,
 )
 from morphcloud.actions import ide_actions
+from morphcloud.utils import (get_iframe_object_from_instance_id,
+                              to_camel_case, to_snake_case)
 
 import fire
 import httpx
@@ -32,6 +34,11 @@ SSH_PORTAL_HOST = os.getenv("SSH_PORTAL_HOST", "127.0.0.1")
 SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2224")
 
 API_ENDPOINT = "/instance/{instance_id}/codelink"
+
+import enum
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
 
 def _default_snapshot():
     return {
@@ -224,6 +231,12 @@ class RuntimeInterface:
 
         return wrapper
 
+    async def execute(self, tool_name: str, **kwargs):
+        return {
+            "action_type": tool_name,
+            "parameters": {to_camel_case(k): v for k, v in kwargs.items()},
+        }
+
     def _load_actions(self):
         """Load actions from actions.py and create corresponding methods"""
         for action in ide_actions["actions"]:
@@ -368,9 +381,10 @@ class Runtime:
     def remote_desktop_url(self):
         return f"{self.base_url}/ui/instance/{self.instance_id}"
 
-    @property
-    def remote_desktop_iframe(self):
-        return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
+    def remote_desktop_iframe(self, width: int = 1280 // 2, height: int = 720 // 2):
+        return get_iframe_object_from_instance_id(
+            self.base_url, self.instance_id, width=width, height=height
+        )
 
     def upload_file(self, local_file_path: str, remote_file_path: str):
         """Upload a file to the runtime instance"""
@@ -453,6 +467,18 @@ class Runtime:
         vcpus = vcpus or default_snapshot["vcpus"]
         memory = memory or default_snapshot["memory"]
         disk_size = disk_size or default_snapshot["disk_size"]
+        
+        if snapshot_id:
+            # create a runtime from the existing snapshot
+
+            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+            resp.raise_for_status()
+
+            runtime.instance_id = resp.json()["id"]
+            runtime._wait_ready()
+
+            print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
+            return runtime
 
         # hash vcpus, memory, and setup to create a unique snapshot digest
         snapshot_digest = hashlib.sha256(
@@ -581,12 +607,13 @@ class Runtime:
 
     def _wait_ready(self, timeout: Optional[int] = None):
         """Wait for runtime to be ready"""
-        deadline = time.time() + (timeout or self.timeout)
+        wait_timeout = (timeout or self.timeout)
+        deadline = time.time() + wait_timeout
         while time.time() < deadline:
             if self.status == "ready":
                 return
             time.sleep(2.0)
-        raise TimeoutError(f"Runtime failed to become ready within {timeout=}s")
+        raise TimeoutError(f"Runtime failed to become ready within {wait_timeout=}s")
 
     @property
     def status(self) -> Optional[str]:
@@ -662,6 +689,12 @@ class Runtime:
         )
         resp.raise_for_status()
         return resp.json()
+
+def temp_devbox():
+    with Runtime.create(
+        vcpus=4, memory=8192, snapshot_id="snapshot_idtfj0xi"
+    ) as runtime:
+        input()
 
 
 if __name__ == "__main__":
