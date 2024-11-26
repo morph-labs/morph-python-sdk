@@ -1,21 +1,30 @@
 """
-import morphcloud as morph
-
-morph.Snapshot.create()
 """
+from __future__ import annotations
 
-import subprocess
-import fire
-from typing import Any, Dict, Optional, Union, List, Protocol
-import json
 import os
+import enum
+import json
 import time
-import httpx
-from functools import wraps
 import hashlib
+import subprocess
+
+from datetime import datetime
+from functools import wraps
 from dataclasses import dataclass, field
-from morphcloud.utils import get_iframe_object_from_instance_id, to_camel_case, to_snake_case
+from typing import Any, Dict, Optional, Union, List, Literal
+
+from morphcloud.utils import (
+    get_iframe_object_from_instance_id,
+    to_camel_case,
+    to_snake_case,
+)
 from morphcloud.actions import ide_actions
+
+import fire
+import httpx
+
+from pydantic import BaseModel
 
 # Constants
 BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
@@ -24,32 +33,18 @@ SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2224")
 
 API_ENDPOINT = "/instance/{instance_id}/codelink"
 
-from dataclasses import dataclass
-from datetime import datetime
-from typing import List, Optional
-import enum
-
 def _default_snapshot():
     return {
-        "image_id": "morphvm-codelink",
-        "vcpus": 2,
-        "memory": 2048,
+        "image_id": "morphvm-minimal",
+        "vcpus": 1,
+        "memory": 128,
+        "disk_size": 700,
         "readiness_check": {
             "type": "timeout",
-            "timeout": 10,
-        }
+            "timeout": 5,
+        },
     }
 
-def _default_snapshot_custom_container():
-    return {
-        "image_id": "morphvm-minimal",
-        "vcpus": 2,
-        "memory": 2048,
-        "readiness_check": {
-            "type": "timeout",
-            "timeout": 10,
-        }
-    }
 
 class SnapshotStatus(enum.Enum):
     PENDING = "pending"
@@ -59,36 +54,40 @@ class SnapshotStatus(enum.Enum):
     DELETED = "deleted"
 
 
-@dataclass
-class Snapshot:
+def get_headers(api_key: Optional[str] = None):
+    return {
+        "Authorization": f'Bearer {api_key or os.getenv("MORPH_API_KEY")}',
+        "Content-Type": "application/json",
+    }
+
+_base_url = BASE_URL
+_http = httpx.Client(
+    base_url=_base_url,
+    follow_redirects=True,
+    headers=get_headers(),
+    timeout=None
+)
+
+
+class Snapshot(BaseModel):
     id: str
+    object: Literal["snapshot"] = "snapshot"
     image_id: str
     created: datetime
     status: SnapshotStatus
     vcpus: float
     memory: float
     user_id: str
-    object: Optional[str] = None
     digest: Optional[str] = None
-    instances: List["Instance"] = None  # Type hint with string to avoid circular import
-    owner: "User" = None  # Type hint with string to avoid circular import
-
-    base_url: classmethod = BASE_URL
-    http: classmethod = httpx.Client(timeout=None)
+    instances: Optional[List[Any]] = None
+    owner: Optional[Any] = None
 
     def __post_init__(self):
         if self.instances is None:
             self.instances = []
 
     @staticmethod
-    def get_headers(api_key: Optional[str] = None):
-        return {
-            "Authorization": f'Bearer {api_key or os.getenv("MORPH_API_KEY")}',
-            "Content-Type": "application/json",
-        }
-
-    @staticmethod
-    def create(runtime: "Runtime", digest: Optional[str] = None) -> Dict[str, Any]:
+    def create(runtime: Runtime, digest: Optional[str] = None):
         """
         Create a snapshot from an instance or configuration.
 
@@ -108,8 +107,8 @@ class Snapshot:
             unique_string = f"{runtime.instance_id}_{timestamp}"
             digest = hashlib.sha256(unique_string.encode()).hexdigest()
 
-        response = runtime.http.post(
-            f"{runtime.base_url}/instance/{runtime.instance_id}/snapshot",
+        response = _http.post(
+            f"/instance/{runtime.instance_id}/snapshot",
             headers=runtime.headers,
             params={"digest": digest},
         )
@@ -118,17 +117,24 @@ class Snapshot:
 
     @classmethod
     def _create_from_image(
-            cls, image_id: str, vcpus: int, memory: int, readiness_check: Optional[Dict[str, Any]] = None, **kwargs
+        cls,
+        image_id: str,
+        vcpus: int,
+        memory: int,
+        disk_size: int,
+        readiness_check: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> "Snapshot":
-        resp = cls.http.post(
-            f"{cls.base_url}/snapshot",
+        resp = _http.post(
+            "/snapshot",
             json={
                 "image_id": image_id,
                 "vcpus": vcpus,
                 "memory": memory,
+                "disk_size": disk_size,
                 "readiness_check": readiness_check,
             },
-            headers=cls.get_headers(api_key=kwargs.get("api_key")),
+            headers=get_headers(api_key=kwargs.get("api_key")),
         )
         resp.raise_for_status()
         return cls(**resp.json())
@@ -144,9 +150,9 @@ class Snapshot:
         Returns:
             List of snapshot objects
         """
-        response = Snapshot.http.get(
-            f"{Snapshot.base_url}/snapshot",
-            headers=Snapshot.get_headers(api_key=api_key),
+        response = _http.get(
+            "/snapshot",
+            headers=get_headers(api_key=api_key),
         )
         response.raise_for_status()
         return [Snapshot(**x) for x in response.json()]
@@ -163,9 +169,9 @@ class Snapshot:
         Returns:
             Dict containing the deletion response
         """
-        response = Snapshot.http.delete(
-            f"{Snapshot.base_url}/snapshot/{snapshot_id}",
-            headers=Snapshot.get_headers(api_key=api_key),
+        response = _http.delete(
+            f"{_base_url}/snapshot/{snapshot_id}",
+            headers=get_headers(api_key=api_key),
         )
         response.raise_for_status()
         return response.json()
@@ -312,8 +318,7 @@ class Runtime:
     timeout: int = 30
 
     # Internal state
-    http: classmethod = httpx.Client(timeout=None)
-    interface: RuntimeInterface = None
+    interface: Optional[RuntimeInterface] = None
 
     def __post_init__(self):
         """Initialize HTTP client and sub-clients after dataclass initialization"""
@@ -322,12 +327,6 @@ class Runtime:
                 "API key required. Provide api_key or set MORPH_API_KEY environment variable"
             )
 
-        self.http = httpx.Client(
-            base_url=self.base_url,
-            follow_redirects=True,
-            timeout=self.timeout,
-            headers=self.headers,
-        )
         self.interface = RuntimeInterface(self)
 
     @property
@@ -340,7 +339,6 @@ class Runtime:
     def snapshot(self) -> Snapshot:
         return Snapshot.create(self)
 
-    
     def exec(self, command: Union[str, List[str]]) -> Dict[str, Any]:
         """
         Execute a command or list of commands on the runtime instance.
@@ -358,74 +356,78 @@ class Runtime:
         if isinstance(command, str):
             command = [command]
 
-        response = self.http.post(
+        response = _http.post(
             f"/instance/{self.instance_id}/exec",
             json={"command": command},
-            headers=self.headers
+            headers=self.headers,
         )
         response.raise_for_status()
-        return response.json()    
-        
+        return response.json()
 
     @property
     def remote_desktop_url(self):
         return f"{self.base_url}/ui/instance/{self.instance_id}"
-    
+
     @property
     def remote_desktop_iframe(self):
         return get_iframe_object_from_instance_id(self.base_url, self.instance_id)
-    
+
     def upload_file(self, local_file_path: str, remote_file_path: str):
         """Upload a file to the runtime instance"""
         if not os.path.exists(local_file_path):
             raise FileNotFoundError(f"Local file does not exist: {local_file_path}")
-        
+
         ssh_host = SSH_PORTAL_HOST
         ssh_port = SSH_PORTAL_PORT
         ssh_user = f"{self.instance_id}:{self.api_key}"
-        
+
         ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
         if not os.path.exists(ssh_key_path):
             ssh_key_path = os.path.expanduser("~/.ssh/id_rsa")
         if not os.path.exists(ssh_key_path):
-            raise FileNotFoundError(f"You don't have an SSH key in your ~/.ssh directory. Please create one with `ssh-keygen`. This is required for uploading files to the runtime.")
-        
-        scp_command = f"scp -o \"User={ssh_user}\" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}"
+            raise FileNotFoundError(
+                f"You don't have an SSH key in your ~/.ssh directory. Please create one with `ssh-keygen`. This is required for uploading files to the runtime."
+            )
+
+        scp_command = f'scp -o "User={ssh_user}" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}'
         print(f"Uploading file to runtime: {scp_command}")
         return subprocess.run(scp_command, shell=True)
-        
+
     def _prepare_custom_container(self, local_rootfs_path: str, init_cmd: str):
         # Check if local rootfs path exists
         if not os.path.exists(local_rootfs_path):
-            raise FileNotFoundError(f"Local rootfs path does not exist: {local_rootfs_path}")
+            raise FileNotFoundError(
+                f"Local rootfs path does not exist: {local_rootfs_path}"
+            )
 
         # Upload rootfs to runtime using SCP
         self.upload_file(local_rootfs_path, "/rootfs.tar")
-        
+
         # Extract rootfs
         self.exec(["tar -xvf /rootfs.tar -C /rootfs"])
-        
+
         old_init_script = self.exec(["cat /config.json"])["stdout"]
-        
+
         # Update init script
         json_data = json.loads(old_init_script)
         json_data["process"]["terminal"] = False
         json_data["process"]["args"] = init_cmd.split(" ")
         new_init_script = json.dumps(json_data)
         self.exec([f"echo '{new_init_script}' > /config.json"])
-        
+
         # Start systemd service
         self.exec(["systemctl stop runc.service"])
         self.exec(["systemctl start runc.service"])
-        
+
         # Cleanup
         self.exec(["rm /rootfs.tar"])
 
     @classmethod
     def create(
         cls,
-        vcpus: int = 2,
-        memory: int = 3000,
+        vcpus: Optional[int] = None,
+        memory: Optional[int] = None,
+        disk_size: Optional[int] = None,
         setup: Optional[Union[str, List[str]]] = None,
         snapshot_id: Optional[str] = None,
         rootfs_path: Optional[str] = None,
@@ -446,9 +448,15 @@ class Runtime:
 
         runtime = cls(**kwargs)
 
+        default_snapshot = _default_snapshot()
+
+        vcpus = vcpus or default_snapshot["vcpus"]
+        memory = memory or default_snapshot["memory"]
+        disk_size = disk_size or default_snapshot["disk_size"]
+
         # hash vcpus, memory, and setup to create a unique snapshot digest
         snapshot_digest = hashlib.sha256(
-            f"{vcpus}_{memory}_{setup}_{rootfs_path}".encode()
+            f"{vcpus}_{memory}_{disk_size}_{setup}_{rootfs_path}".encode()
         ).hexdigest()
 
         # try to create a snapshot with the given digest
@@ -465,7 +473,7 @@ class Runtime:
             # create a runtime from the existing snapshot
             snapshot_id = snapshot.id
 
-            resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+            resp = _http.post("/instance", params={"snapshot_id": snapshot_id}, headers=get_headers(api_key=kwargs.get("api_key")))
             resp.raise_for_status()
 
             runtime.instance_id = resp.json()["id"]
@@ -474,14 +482,16 @@ class Runtime:
             print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
 
-
-        config = _default_snapshot() if rootfs_path is None else _default_snapshot_custom_container()
+        config = _default_snapshot()
 
         if vcpus:
             config["vcpus"] = vcpus
 
         if memory:
             config["memory"] = memory
+
+        if disk_size:
+            config["disk_size"] = disk_size
 
         if setup:
             config["setup"] = setup
@@ -490,12 +500,13 @@ class Runtime:
             image_id=config["image_id"],
             vcpus=vcpus,
             memory=memory,
+            disk_size=disk_size,
             readiness_check=config.get("readiness_check"),
             api_key=kwargs.get("api_key"),
         )
         snapshot_id = initial_snapshot.id
 
-        resp = runtime.http.post("/instance", params={"snapshot_id": snapshot_id})
+        resp = _http.post("/instance", params={"snapshot_id": snapshot_id}, headers=get_headers(api_key=kwargs.get("api_key")))
         resp.raise_for_status()
 
         runtime.instance_id = resp.json()["id"]
@@ -503,9 +514,14 @@ class Runtime:
 
         for command in setup or []:
             runtime._execute([command])
-            
+
         if rootfs_path:
-            runtime._prepare_custom_container(local_rootfs_path=rootfs_path, init_cmd=init_cmd)
+            if not init_cmd:
+                raise ValueError("init_cmd is required when providing a rootfs_path")
+
+            runtime._prepare_custom_container(
+                local_rootfs_path=rootfs_path, init_cmd=init_cmd
+            )
 
         # save snapshot
         snapshot = Snapshot.create(runtime, snapshot_digest)
@@ -516,23 +532,28 @@ class Runtime:
         print(f"\nRemote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
-    def clone(self, num_clones: int = 1, api_key: Optional[str] = None) -> List["Runtime"]:
+    def clone(
+        self, num_clones: int = 1, api_key: Optional[str] = None
+    ) -> List["Runtime"]:
         """Create a clone of this runtime"""
-        resp = self.http.post(
+        resp = _http.post(
             f"/instance/{self.instance_id}/clone",
             json={"num_clones": num_clones},
-            headers=Snapshot.get_headers(api_key=api_key)
+            headers=get_headers(api_key=api_key),
         )
         resp.raise_for_status()
 
-        return [Runtime(
-            instance_id=runtime["id"],
-            api_key=api_key or self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
-        ) for runtime in resp.json()]
+        return [
+            Runtime(
+                instance_id=runtime["id"],
+                api_key=api_key or self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+            )
+            for runtime in resp.json()
+        ]
 
-    def __enter__(self) -> "Runtime":
+    def __enter__(self) -> Runtime:
         return self
 
     def __exit__(self, *_):
@@ -542,22 +563,21 @@ class Runtime:
         """Stop the runtime instance"""
         if self.instance_id:
             try:
-                self.http.delete(f"/instance/{self.instance_id}")
-            # finally:
-            #     self.http.close()
+                _http.delete(f"/instance/{self.instance_id}")
             finally:
                 pass
 
     @classmethod
     def list(cls, **kwargs) -> List[Dict]:
         """List all runtime instances"""
-        runtime = cls(**kwargs)
         try:
-            resp = runtime.http.get("/instance", headers=Runtime.get_headers(api_key=kwargs.get("api_key")))
+            resp = _http.get(
+                "/instance", headers=get_headers(api_key=kwargs.get("api_key"))
+            )
             resp.raise_for_status()
             return resp.json()
         finally:
-            runtime.http.close()
+            _http.close()
 
     def _wait_ready(self, timeout: Optional[int] = None):
         """Wait for runtime to be ready"""
@@ -571,14 +591,14 @@ class Runtime:
     @property
     def status(self) -> Optional[str]:
         try:
-            return self.http.get(f"/instance/{self.instance_id}").json().get("status")
+            return _http.get(f"/instance/{self.instance_id}").json().get("status")
         except Exception as e:
             print(f"[Runtime.status] caught {e=}")
             return None
 
     def _run(
         self, action: Dict[str, Any], timeout: int = 30, max_retries: int = 3
-    ) -> Dict[str, Any]:
+    ):
         """
         Execute an action on the runtime instance.
 
@@ -614,10 +634,9 @@ class Runtime:
 
         for attempt in range(max_retries):
             try:
-                response = self.http_client.post(
+                response = _http.post(
                     endpoint_url,
                     json=request_data,
-                    headers=self.get_headers(),
                     timeout=timeout,
                 )
                 response.raise_for_status()
@@ -636,7 +655,7 @@ class Runtime:
                 time.sleep(2)
 
     def _execute(self, command: List[str]) -> Dict[str, Any]:
-        resp = self.http.post(
+        resp = _http.post(
             f"/instance/{self.instance_id}/exec",
             json={"command": command},
             headers=self.headers,
@@ -644,22 +663,7 @@ class Runtime:
         resp.raise_for_status()
         return resp.json()
 
-def main():
-    print("hello world")
-
-def test_runtime():
-    runtime = Runtime.create()
-    breakpoint()
-    # snapshots = Snapshot.list()
-    # base_snapshot = snapshots[0]
-    # print(f"{base_snapshot=}")
-    # runtime = Runtime.create(vcpus=2, memory=2048, snapshot_id=base_snapshot.id)
-    # ss_id = runtime.snapshot()
-
-    # print(f"created snapshot: {ss_id}")
-    # with Runtime.create(snapshot_id=ss_id) as runtime:
-    #     print(f"created runtime with snapshot_id={ss_id}")
-
 
 if __name__ == "__main__":
     fire.Fire(locals())
+
