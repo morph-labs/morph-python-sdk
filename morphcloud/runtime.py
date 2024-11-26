@@ -688,12 +688,6 @@ class Runtime:
         resp.raise_for_status()
         return resp.json()
 
-def temp_devbox():
-    with Runtime.create(
-        vcpus=4, memory=8192, snapshot_id="snapshot_idtfj0xi"
-    ) as runtime:
-        input()
-
 
 if __name__ == "__main__":
     fire.Fire(locals())
