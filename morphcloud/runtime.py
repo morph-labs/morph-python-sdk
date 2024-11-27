@@ -34,7 +34,7 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 # Constants
-BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
+BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so/api")
 SSH_PORTAL_HOST = BASE_URL.replace("https://", "").replace("http://", "")
 SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2222")
 
@@ -70,6 +70,19 @@ morph_http_client = httpx.Client(
 
 from morphcloud.vm import MorphVm, SnapshotStatus, VmSnapshot
 
+class Image(VmSnapshot):
+    """
+    An image for the MorphCloud container runtime.
+    
+    Under the hood, this is a morphVM snapshot with a `runc` container, etc.
+    """
+    id: str
+    object: Literal["image"] = "image"
+    name: str
+    entrypoint: str
+    rootfs_digest: str
+    
+
 class Snapshot(VmSnapshot):
     """A snapshot that forwards all operations to VmSnapshot"""
 
@@ -85,10 +98,10 @@ class Snapshot(VmSnapshot):
         Returns:
             Dict containing the created snapshot details
         """
-        raise NotImplementedError("This method is not implemented for Snapshot")
+        if not runtime or not runtime.id:
+            raise ValueError("No runtime specified")
         
-        if not runtime.id:
-            raise ValueError("No instance_id specified")
+        vm = runtime.vm
 
         # If no digest provided, create one based on instance_id and timestamp
         if not digest:
@@ -96,13 +109,8 @@ class Snapshot(VmSnapshot):
             unique_string = f"{runtime.id}_{timestamp}"
             digest = hashlib.sha256(unique_string.encode()).hexdigest()
 
-        response = morph_http_client.post(
-            f"/instance/{runtime.id}/snapshot",
-            headers=_get_headers(),
-            params={"digest": digest},
-        )
-        response.raise_for_status()
-        return Snapshot(**response.json())
+        snapshot = VmSnapshot.create(vm, digest=digest)
+        return Snapshot(**snapshot.dict())
 
     @classmethod
     def _create_from_image(
@@ -324,14 +332,14 @@ class Runtime(BaseModel):
         """
         return self.vm.exec(command)
 
-    @property
-    def remote_desktop_url(self):
-        return f"{morph_base_url}/web/instance/{self.id}"
+    # @property
+    # def remote_desktop_url(self):
+    #     return f"{morph_base_url}/web/instance/{self.id}"
 
-    def remote_desktop_iframe(self, width: int = 1280 // 2, height: int = 720 // 2):
-        return get_iframe_object_from_instance_id(
-            morph_base_url, self.id, width=width, height=height
-        )
+    # def remote_desktop_iframe(self, width: int = 1280 // 2, height: int = 720 // 2):
+    #     return get_iframe_object_from_instance_id(
+    #         morph_base_url, self.id, width=width, height=height
+    #     )
 
     def upload_file(self, local_file_path: str, remote_file_path: str, **kwargs):
         """Upload a file to the runtime instance"""
@@ -376,6 +384,7 @@ class Runtime(BaseModel):
         snapshot_id: Optional[str] = None,
         rootfs_path: Optional[str] = None,
         init_cmd: Optional[str] = None,
+        ports: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> Runtime:
         """Create a new runtime instance"""
@@ -398,10 +407,10 @@ class Runtime(BaseModel):
         
         if snapshot_id:
             # create a runtime from the existing snapshot
-            vm = MorphVm.create(snapshot_id=snapshot_id)
+            vm = MorphVm.create(snapshot_id=snapshot_id, ports=ports)
             runtime = Runtime(id=vm.id, vm=vm)
 
-            logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
+            # logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
 
         # hash vcpus, memory, and setup to create a unique snapshot digest
@@ -423,10 +432,10 @@ class Runtime(BaseModel):
             # create a runtime from the existing snapshot
             snapshot_id = snapshot.id
 
-            vm = MorphVm.create(snapshot_id=snapshot_id)
+            vm = MorphVm.create(snapshot_id=snapshot_id, ports=ports)
             runtime = Runtime(id=vm.id, vm=vm)
 
-            logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
+            # logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
 
         vm = MorphVm.create(
@@ -435,6 +444,7 @@ class Runtime(BaseModel):
             disk_size=disk_size,
             api_key=kwargs.get("api_key"),
             digest=snapshot_digest,
+            ports=ports,
         )
         
         runtime = Runtime(id=vm.id, vm=vm)
@@ -450,7 +460,7 @@ class Runtime(BaseModel):
                 local_rootfs_path=rootfs_path, init_cmd=init_cmd
             )
 
-        logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
+        # logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
     def clone(
