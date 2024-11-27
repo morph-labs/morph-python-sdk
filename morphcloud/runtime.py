@@ -68,29 +68,10 @@ morph_http_client = httpx.Client(
     timeout=None
 )
 
-class SnapshotStatus(enum.Enum):
-    PENDING = "pending"
-    READY = "ready"
-    FAILED = "failed"
-    DELETING = "deleting"
-    DELETED = "deleted"
+from morphcloud.vm import MorphVm, SnapshotStatus, VmSnapshot
 
-class Snapshot(BaseModel):
-    id: str
-    object: Literal["snapshot"] = "snapshot"
-    image_id: str
-    created: datetime
-    status: SnapshotStatus
-    vcpus: float
-    memory: float
-    user_id: str
-    digest: Optional[str] = None
-    instances: Optional[List[Any]] = None
-    owner: Optional[Any] = None
-
-    def __post_init__(self):
-        if self.instances is None:
-            self.instances = []
+class Snapshot(VmSnapshot):
+    """A snapshot that forwards all operations to VmSnapshot"""
 
     @staticmethod
     def create(runtime: Runtime, digest: Optional[str] = None):
@@ -104,6 +85,8 @@ class Snapshot(BaseModel):
         Returns:
             Dict containing the created snapshot details
         """
+        raise NotImplementedError("This method is not implemented for Snapshot")
+        
         if not runtime.id:
             raise ValueError("No instance_id specified")
 
@@ -131,19 +114,16 @@ class Snapshot(BaseModel):
         readiness_check: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> "Snapshot":
-        resp = morph_http_client.post(
-            "/snapshot",
-            json={
-                "image_id": image_id,
-                "vcpus": vcpus,
-                "memory": memory,
-                "disk_size": disk_size,
-                "readiness_check": readiness_check,
-            },
-            headers=_get_headers(api_key=kwargs.get("api_key")),
+        # Forward to parent class but return Snapshot instead of VmSnapshot
+        vm_snapshot = super()._create_from_image(
+            image_id=image_id,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
+            readiness_check=readiness_check,
+            **kwargs
         )
-        resp.raise_for_status()
-        return cls(**resp.json())
+        return cls(**vm_snapshot.dict())
 
     @staticmethod
     def list(api_key: Optional[str] = None) -> List["Snapshot"]:
@@ -151,17 +131,14 @@ class Snapshot(BaseModel):
         List all available snapshots.
 
         Args:
-            runtime: Runtime instance containing client configuration
+            api_key: Optional API key to use for authentication
 
         Returns:
             List of snapshot objects
         """
-        response = morph_http_client.get(
-            "/snapshot",
-            headers=_get_headers(api_key=api_key),
-        )
-        response.raise_for_status()
-        return [Snapshot(**x) for x in response.json()]
+        # Forward to parent class but convert results to Snapshot
+        vm_snapshots = VmSnapshot.list(api_key=api_key)
+        return [Snapshot(**x.dict()) for x in vm_snapshots]
 
     @staticmethod
     def delete(snapshot_id: str, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -169,154 +146,149 @@ class Snapshot(BaseModel):
         Delete a snapshot by ID.
 
         Args:
-            runtime: Runtime instance containing client configuration
             snapshot_id: ID of the snapshot to delete
+            api_key: Optional API key to use for authentication
 
         Returns:
             Dict containing the deletion response
         """
-        response = morph_http_client.delete(
-            f"/snapshot/{snapshot_id}",
-            headers=_get_headers(api_key=api_key),
-        )
-        response.raise_for_status()
-        return response.json()
+        return VmSnapshot.delete(snapshot_id=snapshot_id, api_key=api_key)
 
 
-class RuntimeInterface:
-    def __init__(self, runtime):
-        self._runtime = runtime
-        self._load_actions()
+# class RuntimeInterface:
+#     def __init__(self, runtime):
+#         self._runtime = runtime
+#         self._load_actions()
 
-    def _format_docstring(self, action: Dict[str, Any]) -> str:
-        """Create formatted markdown docstring from action details"""
-        params = [
-            {**p, "name": to_snake_case(p["name"])}
-            for p in action.get("parameters", [])
-        ]
+#     def _format_docstring(self, action: Dict[str, Any]) -> str:
+#         """Create formatted markdown docstring from action details"""
+#         params = [
+#             {**p, "name": to_snake_case(p["name"])}
+#             for p in action.get("parameters", [])
+#         ]
 
-        doc = f"{action['description']}\n\n"
+#         doc = f"{action['description']}\n\n"
 
-        if params:
-            doc += "Parameters:\n"
-            for param in params:
-                optional_str = " (optional)" if param.get("optional", False) else ""
-                doc += f"- {param['name']}{optional_str}: {param['type']}\n    {param['description']}\n"
+#         if params:
+#             doc += "Parameters:\n"
+#             for param in params:
+#                 optional_str = " (optional)" if param.get("optional", False) else ""
+#                 doc += f"- {param['name']}{optional_str}: {param['type']}\n    {param['description']}\n"
 
-        if "returns" in action:
-            doc += "\nReturns:\n"
-            doc += f"    {json.dumps(action['returns'], indent=4)}\n"
+#         if "returns" in action:
+#             doc += "\nReturns:\n"
+#             doc += f"    {json.dumps(action['returns'], indent=4)}\n"
 
-        if "examples" in action:
-            doc += "\nExamples:\n"
-            for example in action["examples"]:
-                doc += f"    {example}\n"
+#         if "examples" in action:
+#             doc += "\nExamples:\n"
+#             for example in action["examples"]:
+#                 doc += f"    {example}\n"
 
-        return doc
+#         return doc
 
-    def _create_interface_wrapper(self, action_details: Dict[str, Any]):
-        """Create an execution wrapper that handles camelCase conversion"""
+#     def _create_interface_wrapper(self, action_details: Dict[str, Any]):
+#         """Create an execution wrapper that handles camelCase conversion"""
 
-        @wraps(self._runtime._run)
-        def wrapper(*args, **kwargs):
-            camel_kwargs = {to_camel_case(k): v for k, v in kwargs.items()}
+#         @wraps(self._runtime._run)
+#         def wrapper(*args, **kwargs):
+#             camel_kwargs = {to_camel_case(k): v for k, v in kwargs.items()}
 
-            action_request = {
-                "action_type": action_details["name"],
-                "parameters": camel_kwargs,
-            }
+#             action_request = {
+#                 "action_type": action_details["name"],
+#                 "parameters": camel_kwargs,
+#             }
 
-            return self._runtime._run(action_request)
+#             return self._runtime._run(action_request)
 
-        return wrapper
+#         return wrapper
 
-    async def execute(self, tool_name: str, **kwargs):
-        return {
-            "action_type": tool_name,
-            "parameters": {to_camel_case(k): v for k, v in kwargs.items()},
-        }
+#     async def execute(self, tool_name: str, **kwargs):
+#         return {
+#             "action_type": tool_name,
+#             "parameters": {to_camel_case(k): v for k, v in kwargs.items()},
+#         }
 
-    def _load_actions(self):
-        """Load actions from actions.py and create corresponding methods"""
-        for action in ide_actions["actions"]:
-            snake_name = to_snake_case(action["name"])
-            interface_method = self._create_interface_wrapper(action)
-            interface_method.__doc__ = self._format_docstring(action)
-            setattr(self, snake_name, interface_method)
+#     def _load_actions(self):
+#         """Load actions from actions.py and create corresponding methods"""
+#         for action in ide_actions["actions"]:
+#             snake_name = to_snake_case(action["name"])
+#             interface_method = self._create_interface_wrapper(action)
+#             interface_method.__doc__ = self._format_docstring(action)
+#             setattr(self, snake_name, interface_method)
 
-    def render(self, target: str = "anthropic") -> List[Dict[str, Any]]:
-        """
-        Render actions in specified target format.
+#     def render(self, target: str = "anthropic") -> List[Dict[str, Any]]:
+#         """
+#         Render actions in specified target format.
 
-        Args:
-            target: Format to render as ('anthropic' or 'openai')
-        """
-        seen_names = set()
-        tools = []
+#         Args:
+#             target: Format to render as ('anthropic' or 'openai')
+#         """
+#         seen_names = set()
+#         tools = []
 
-        for action in ide_actions["actions"]:
-            name = to_snake_case(action["name"])
-            if name in seen_names:
-                continue
-            seen_names.add(name)
+#         for action in ide_actions["actions"]:
+#             name = to_snake_case(action["name"])
+#             if name in seen_names:
+#                 continue
+#             seen_names.add(name)
 
-            properties = {}
-            required = []
+#             properties = {}
+#             required = []
 
-            for param in action.get("parameters", []):
-                param_name = to_snake_case(param["name"])
-                prop = {
-                    "type": param["type"],
-                    "description": param.get("description", ""),
-                }
+#             for param in action.get("parameters", []):
+#                 param_name = to_snake_case(param["name"])
+#                 prop = {
+#                     "type": param["type"],
+#                     "description": param.get("description", ""),
+#                 }
 
-                if target == "openai":
-                    if "enum" in param:
-                        prop["enum"] = param["enum"]
-                    if param.get("type") == "array" and "items" in param:
-                        prop["items"] = {
-                            "type": param["items"].get("type"),
-                        }
-                        if "enum" in param["items"]:
-                            prop["items"]["enum"] = param["items"]["enum"]
+#                 if target == "openai":
+#                     if "enum" in param:
+#                         prop["enum"] = param["enum"]
+#                     if param.get("type") == "array" and "items" in param:
+#                         prop["items"] = {
+#                             "type": param["items"].get("type"),
+#                         }
+#                         if "enum" in param["items"]:
+#                             prop["items"]["enum"] = param["items"]["enum"]
 
-                properties[param_name] = prop
+#                 properties[param_name] = prop
 
-                if not param.get("optional", False):
-                    required.append(param_name)
+#                 if not param.get("optional", False):
+#                     required.append(param_name)
 
-            if target == "anthropic":
-                tools.append(
-                    {
-                        "name": name,
-                        "description": action["description"],
-                        "input_schema": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        },
-                    }
-                )
-            else:  # openai
-                parameters = {
-                    "type": "object",
-                    "properties": properties,
-                }
-                if required:
-                    parameters["required"] = required
+#             if target == "anthropic":
+#                 tools.append(
+#                     {
+#                         "name": name,
+#                         "description": action["description"],
+#                         "input_schema": {
+#                             "type": "object",
+#                             "properties": properties,
+#                             "required": required,
+#                         },
+#                     }
+#                 )
+#             else:  # openai
+#                 parameters = {
+#                     "type": "object",
+#                     "properties": properties,
+#                 }
+#                 if required:
+#                     parameters["required"] = required
 
-                tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "description": action["description"],
-                            "parameters": parameters,
-                        },
-                    }
-                )
+#                 tools.append(
+#                     {
+#                         "type": "function",
+#                         "function": {
+#                             "name": name,
+#                             "description": action["description"],
+#                             "parameters": parameters,
+#                         },
+#                     }
+#                 )
 
-        return tools
+#         return tools
 
 
 class Runtime(BaseModel):
@@ -325,6 +297,7 @@ class Runtime(BaseModel):
     # Core configuration
     id: str
     object: Literal["instance"] = "instance"
+    vm: MorphVm
     # base_url: str = BASE_URL
     # timeout: int = 30
 
@@ -333,7 +306,7 @@ class Runtime(BaseModel):
         return self.id
 
     def snapshot(self) -> Snapshot:
-        return Snapshot.create(self)
+        return Snapshot.create(self.vm)
 
     def exec(self, command: Union[str, List[str]]):
         """
@@ -349,21 +322,7 @@ class Runtime(BaseModel):
             >>> runtime.exec("ls -la")
             >>> runtime.exec(["cd /tmp", "touch test.txt"])
         """
-        if isinstance(command, str):
-            command = [command]
-
-        response = morph_http_client.post(
-            f"/instance/{self.id}/exec",
-            json={"command": command},
-            headers=_get_headers(),
-        )
-        response.raise_for_status()
-        output = response.json()
-        return {
-            "stdout": output["stdout"],
-            "stderr": output["stderr"],
-            "exit_code": output["exit_code"],
-        }
+        return self.vm.exec(command)
 
     @property
     def remote_desktop_url(self):
@@ -376,24 +335,7 @@ class Runtime(BaseModel):
 
     def upload_file(self, local_file_path: str, remote_file_path: str, **kwargs):
         """Upload a file to the runtime instance"""
-        if not os.path.exists(local_file_path):
-            raise FileNotFoundError(f"Local file does not exist: {local_file_path}")
-
-        ssh_host = SSH_PORTAL_HOST
-        ssh_port = SSH_PORTAL_PORT
-        ssh_user = f"{self.id}:{kwargs.get('api_key')}"
-
-        ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
-        if not os.path.exists(ssh_key_path):
-            ssh_key_path = os.path.expanduser("~/.ssh/id_rsa")
-        if not os.path.exists(ssh_key_path):
-            raise FileNotFoundError(
-                f"You don't have an SSH key in your ~/.ssh directory. Please create one with `ssh-keygen`. This is required for uploading files to the runtime."
-            )
-
-        scp_command = f'scp -o "User={ssh_user}" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}'
-        logger.info(f"Uploading file to runtime: {scp_command}")
-        return subprocess.run(scp_command, shell=True)
+        return self.vm.upload_file(local_file_path, remote_file_path, **kwargs)
 
     def _prepare_oci_container(self, local_rootfs_path: str, init_cmd: str):
         # Check if local rootfs path exists
@@ -403,26 +345,26 @@ class Runtime(BaseModel):
             )
 
         # Upload rootfs to runtime using SCP
-        self.upload_file(local_rootfs_path, "/rootfs.tar")
+        self.vm.upload_file(local_rootfs_path, "/rootfs.tar")
 
         # Extract rootfs
-        self.exec(["tar -xvf /rootfs.tar -C /rootfs"])
+        self.vm.exec(["tar -xvf /rootfs.tar -C /rootfs"])
 
-        old_init_script = self.exec(["cat /config.json"])["stdout"]
+        old_init_script = self.vm.exec(["cat /config.json"])["stdout"]
 
         # Update init script
         json_data = json.loads(old_init_script)
         json_data["process"]["terminal"] = False
         json_data["process"]["args"] = init_cmd.split(" ")
         new_init_script = json.dumps(json_data)
-        self.exec([f"echo '{new_init_script}' > /config.json"])
+        self.vm.exec([f"echo '{new_init_script}' > /config.json"])
 
         # Start systemd service
-        self.exec(["systemctl stop runc.service"])
-        self.exec(["systemctl start runc.service"])
+        self.vm.exec(["systemctl stop runc.service"])
+        self.vm.exec(["systemctl start runc.service"])
 
         # Cleanup
-        self.exec(["rm /rootfs.tar"])
+        self.vm.exec(["rm /rootfs.tar"])
 
     @classmethod
     def create(
@@ -456,12 +398,8 @@ class Runtime(BaseModel):
         
         if snapshot_id:
             # create a runtime from the existing snapshot
-
-            resp = morph_http_client.post("/instance", params={"snapshot_id": snapshot_id})
-            resp.raise_for_status()
-
-            runtime = cls(**resp.json())
-            runtime._wait_ready()
+            vm = MorphVm.create(snapshot_id=snapshot_id)
+            runtime = Runtime(id=vm.id, vm=vm)
 
             logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
@@ -485,47 +423,24 @@ class Runtime(BaseModel):
             # create a runtime from the existing snapshot
             snapshot_id = snapshot.id
 
-            resp = morph_http_client.post("/instance", params={"snapshot_id": snapshot_id}, headers=_get_headers(api_key=kwargs.get("api_key")))
-            resp.raise_for_status()
-
-            runtime = cls(**resp.json())
-            runtime._wait_ready()
+            vm = MorphVm.create(snapshot_id=snapshot_id)
+            runtime = Runtime(id=vm.id, vm=vm)
 
             logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
             return runtime
 
-        config = _default_snapshot()
-
-        if vcpus:
-            config["vcpus"] = vcpus
-
-        if memory:
-            config["memory"] = memory
-
-        if disk_size:
-            config["disk_size"] = disk_size
-
-        if setup:
-            config["setup"] = setup
-
-        initial_snapshot = Snapshot._create_from_image(
-            image_id=config["image_id"],
+        vm = MorphVm.create(
             vcpus=vcpus,
             memory=memory,
             disk_size=disk_size,
-            readiness_check=config.get("readiness_check"),
             api_key=kwargs.get("api_key"),
+            digest=snapshot_digest,
         )
-        snapshot_id = initial_snapshot.id
-
-        resp = morph_http_client.post("/instance", params={"snapshot_id": snapshot_id}, headers=_get_headers(api_key=kwargs.get("api_key")))
-        resp.raise_for_status()
-
-        runtime = cls(**resp.json())
-        runtime._wait_ready()
+        
+        runtime = Runtime(id=vm.id, vm=vm)
 
         for command in setup or []:
-            runtime._execute([command])
+            vm._execute([command])
 
         if rootfs_path:
             if not init_cmd:
@@ -535,12 +450,6 @@ class Runtime(BaseModel):
                 local_rootfs_path=rootfs_path, init_cmd=init_cmd
             )
 
-        # save snapshot
-        snapshot = Snapshot.create(runtime, snapshot_digest)
-
-        # cleanup initial snapshot
-        Snapshot.delete(snapshot_id, api_key=kwargs.get("api_key"))
-
         logger.info(f"Remote desktop available at: {runtime.remote_desktop_url}\n")
         return runtime
 
@@ -548,19 +457,8 @@ class Runtime(BaseModel):
         self, num_clones: int = 1, api_key: Optional[str] = None
     ) -> List[Runtime]:
         """Create a clone of this runtime"""
-        resp = morph_http_client.post(
-            f"/instance/{self.instance_id}/clone",
-            json={"num_clones": num_clones},
-            headers=_get_headers(api_key=api_key),
-        )
-        resp.raise_for_status()
-
-        return [
-            Runtime(
-                **runtime
-            )
-            for runtime in resp.json()
-        ]
+        runtimes = self.vm.clone(num_clones=num_clones, api_key=api_key)
+        return [Runtime(id=r.id, vm=r) for r in runtimes]
 
     def __enter__(self) -> Runtime:
         return self
@@ -571,10 +469,7 @@ class Runtime(BaseModel):
     def stop(self):
         """Stop the runtime instance"""
         if self.instance_id:
-            try:
-                morph_http_client.delete(f"/instance/{self.instance_id}")
-            finally:
-                pass
+            self.vm.stop()
 
     @classmethod
     def list(cls, **kwargs) -> List[Runtime]:
@@ -582,26 +477,17 @@ class Runtime(BaseModel):
         resp = morph_http_client.get(
             "/instance", headers=_get_headers(api_key=kwargs.get("api_key"))
         )
+        # TODO: Figure out this API spec
         resp.raise_for_status()
         return [Runtime(**r) for r in resp.json()]
 
     def _wait_ready(self, timeout: Optional[int] = None):
         """Wait for runtime to be ready"""
-        wait_timeout = (timeout or 30)
-        deadline = time.time() + wait_timeout
-        while time.time() < deadline:
-            if self.status == "ready":
-                return
-            time.sleep(2.0)
-        raise TimeoutError(f"Runtime failed to become ready within {wait_timeout=}s")
+        return self.vm.wait_ready(timeout=timeout)
 
     @property
     def status(self) -> Optional[str]:
-        try:
-            return morph_http_client.get(f"/instance/{self.instance_id}").json().get("status")
-        except Exception as e:
-            logger.error(f"[Runtime.status] caught {e=}")
-            return None
+        return self.vm.status
 
     def _run(
         self, action: Dict[str, Any], timeout: int = 30, max_retries: int = 3
@@ -622,53 +508,48 @@ class Runtime(BaseModel):
             RuntimeError: If the action execution fails after all retries
             httpx.HTTPError: For any unhandled HTTP errors
         """
-        endpoint_url = self.get_endpoint_url()
+        raise NotImplementedError("Not implemented yet")
+        # endpoint_url = self.get_endpoint_url()
 
-        # Extract action name and parameters
-        action_name = action["action_type"]
-        action_args = action["parameters"]
+        # # Extract action name and parameters
+        # action_name = action["action_type"]
+        # action_args = action["parameters"]
 
-        # Format request data according to API requirements
-        request_data = {"action": action_name, "params": action_args}
+        # # Format request data according to API requirements
+        # request_data = {"action": action_name, "params": action_args}
 
-        # Add instance_id for specific action types
-        if (
-            action_name.startswith("Vercel")
-            or action_name.startswith("Db")
-            or action_name.startswith("Git")
-        ):
-            request_data["params"]["id"] = self.instance_id
+        # # Add instance_id for specific action types
+        # if (
+        #     action_name.startswith("Vercel")
+        #     or action_name.startswith("Db")
+        #     or action_name.startswith("Git")
+        # ):
+        #     request_data["params"]["id"] = self.instance_id
 
-        for attempt in range(max_retries):
-            try:
-                response = morph_http_client.post(
-                    endpoint_url,
-                    json=request_data,
-                    timeout=timeout,
-                )
-                response.raise_for_status()
-                # refresh the actions
-                self.interface._load_actions()
-                return response.json()
+        # for attempt in range(max_retries):
+        #     try:
+        #         response = morph_http_client.post(
+        #             endpoint_url,
+        #             json=request_data,
+        #             timeout=timeout,
+        #         )
+        #         response.raise_for_status()
+        #         # refresh the actions
+        #         self.interface._load_actions()
+        #         return response.json()
 
-            except httpx.HTTPError as e:
-                if attempt == max_retries - 1:
-                    return {
-                        "success": False,
-                        "result": {},
-                        "formattedActionOutput": f"Failed to execute action after {max_retries} attempts: {str(e)}",
-                        "message": f"Failed to execute action after {max_retries} attempts: {str(e)}",
-                    }
-                time.sleep(2)
+        #     except httpx.HTTPError as e:
+        #         if attempt == max_retries - 1:
+        #             return {
+        #                 "success": False,
+        #                 "result": {},
+        #                 "formattedActionOutput": f"Failed to execute action after {max_retries} attempts: {str(e)}",
+        #                 "message": f"Failed to execute action after {max_retries} attempts: {str(e)}",
+        #             }
+        #         time.sleep(2)
 
     def _execute(self, command: List[str]) -> Dict[str, Any]:
-        resp = morph_http_client.post(
-            f"/instance/{self.instance_id}/exec",
-            json={"command": command},
-            headers=self.headers,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self.vm.exec(command)
 
 
 if __name__ == "__main__":
