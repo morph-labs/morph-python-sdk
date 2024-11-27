@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import os
 import enum
-import json
 import time
 import logging
 import hashlib
 import subprocess
 
-from functools import wraps
 from datetime import datetime
 from typing import Any, Dict, Optional, Union, List, Literal
 
@@ -52,7 +50,7 @@ def _get_headers(api_key: Optional[str] = None):
     }
 
 morph_base_url = BASE_URL
-morph_api_base_vm = 'vm'
+morph_api_base_vm = 'api/morphvm'
 morphvm_http_client = httpx.Client(
     base_url=f"{morph_base_url}/{morph_api_base_vm}",
     follow_redirects=True,
