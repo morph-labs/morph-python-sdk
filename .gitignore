@@ -53,3 +53,6 @@ instance/
 **/test-results/
 **/playwright-report/
 **/playwright/.cache/
+
+# Docs
+_build/

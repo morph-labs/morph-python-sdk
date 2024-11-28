@@ -23,8 +23,8 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 # Constants
-BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so")
-SSH_PORTAL_HOST = BASE_URL.replace("https://", "").replace("http://", "")
+BASE_URL = os.getenv("MORPH_BASE_URL", "https://cloud.morph.so/api")
+SSH_PORTAL_HOST = BASE_URL.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
 SSH_PORTAL_PORT = os.getenv("SSH_PORTAL_PORT", "2222")
 
 API_ENDPOINT = "/instance/{instance_id}/codelink"
@@ -50,7 +50,7 @@ def _get_headers(api_key: Optional[str] = None):
     }
 
 morph_base_url = BASE_URL
-morph_api_base_vm = 'api/morphvm'
+morph_api_base_vm = 'morphvm'
 morphvm_http_client = httpx.Client(
     base_url=f"{morph_base_url}/{morph_api_base_vm}",
     follow_redirects=True,
@@ -222,7 +222,7 @@ class MorphVm(BaseModel):
 
         ssh_host = SSH_PORTAL_HOST
         ssh_port = SSH_PORTAL_PORT
-        ssh_user = f"{self.id}:{kwargs.get('api_key')}"
+        ssh_user = f"{self.id}:{kwargs.get('api_key', os.getenv('MORPH_API_KEY'))}"
 
         ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
         if not os.path.exists(ssh_key_path):
@@ -232,7 +232,7 @@ class MorphVm(BaseModel):
                 f"You don't have an SSH key in your ~/.ssh directory. Please create one with `ssh-keygen`. This is required for uploading files to the vm."
             )
 
-        scp_command = f'scp -o "User={ssh_user}" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}'
+        scp_command = f'scp -o StrictHostKeyChecking=no -o "User={ssh_user}" -i {ssh_key_path} -P {ssh_port} {local_file_path} {ssh_host}:{remote_file_path}'
         logger.info(f"Uploading file to vm: {scp_command}")
         return subprocess.run(scp_command, shell=True)
 
@@ -244,6 +244,7 @@ class MorphVm(BaseModel):
         disk_size: Optional[int] = None,
         snapshot_id: Optional[str] = None,
         digest: Optional[str] = None,
+        ports: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> MorphVm:
         """Create a new MorphVM instance"""
@@ -256,7 +257,14 @@ class MorphVm(BaseModel):
         if snapshot_id:
             # create a morphVM from the existing snapshot
 
-            resp = morphvm_http_client.post("/instance", params={"snapshot_id": snapshot_id})
+            resp = morphvm_http_client.post(
+                "/instance",
+                params={
+                    "snapshot_id": snapshot_id,
+                    "http_services": ports,
+                },
+                headers=_get_headers(api_key=kwargs.get("api_key")),
+            )
             resp.raise_for_status()
 
             runtime = cls(**resp.json())
@@ -283,7 +291,14 @@ class MorphVm(BaseModel):
             # create a VM from the existing snapshot
             snapshot_id = snapshot.id
 
-            resp = morphvm_http_client.post("/instance", params={"snapshot_id": snapshot_id}, headers=_get_headers(api_key=kwargs.get("api_key")))
+            resp = morphvm_http_client.post(
+                "/instance",
+                params={
+                    "snapshot_id": snapshot_id,
+                    "http_services": ports,
+                },
+                headers=_get_headers(api_key=kwargs.get("api_key")),
+            )
             resp.raise_for_status()
 
             vm = cls(**resp.json())
@@ -312,7 +327,14 @@ class MorphVm(BaseModel):
         )
         snapshot_id = initial_snapshot.id
 
-        resp = morphvm_http_client.post("/instance", params={"snapshot_id": snapshot_id}, headers=_get_headers(api_key=kwargs.get("api_key")))
+        resp = morphvm_http_client.post(
+            "/instance",
+            params={
+                "snapshot_id": snapshot_id,
+                "http_services": ports,
+            },
+            headers=_get_headers(api_key=kwargs.get("api_key")),
+        )
         resp.raise_for_status()
 
         vm = cls(**resp.json())
