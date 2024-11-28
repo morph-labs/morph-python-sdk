@@ -10,7 +10,6 @@ import subprocess
 from datetime import datetime
 from typing import Any, Dict, Optional, Union, List, Literal
 
-import fire
 import httpx
 
 from pydantic import BaseModel
@@ -50,9 +49,8 @@ def _get_headers(api_key: Optional[str] = None):
     }
 
 morph_base_url = BASE_URL
-morph_api_base_vm = 'morphvm'
 morphvm_http_client = httpx.Client(
-    base_url=f"{morph_base_url}/{morph_api_base_vm}",
+    base_url=f"{morph_base_url}",
     follow_redirects=True,
     headers=_get_headers(),
     timeout=None
@@ -415,8 +413,4 @@ class MorphVm(BaseModel):
         )
         resp.raise_for_status()
         return resp.json()
-
-
-if __name__ == "__main__":
-    fire.Fire(locals())
 

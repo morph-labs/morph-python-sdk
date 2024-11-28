@@ -34,7 +34,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "morphcloud=morphcloud.cli:main",
+            "morphcloud=morphcloud:main",
         ],
     },
     cmdclass={
