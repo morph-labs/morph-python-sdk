@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
+import time
 import enum
 import typing
 import logging
 
-from fasthtml.common import os
 import httpx
 
 from pydantic import BaseModel, Field
@@ -44,7 +45,7 @@ class Image(BaseModel):
         None, description="Description of the base image"
     )
     disk_size: int = Field(..., description="Size of the base image in bytes")
-    created: float = Field(
+    created: int = Field(
         ..., description="Unix timestamp of when the base image was created"
     )
     user_id: typing.Optional[str] = Field(
@@ -62,7 +63,7 @@ class Image(BaseModel):
         return [Image(**image) for image in response.json()]
 
 
-class SnapshotStatus(enum.Enum):
+class SnapshotStatus(enum.StrEnum):
     # the snapshot is being created and is not yet ready
     PENDING = "pending"
     # the snapshot is ready to be used
@@ -82,12 +83,12 @@ class Snapshot(BaseModel):
     object: typing.Literal["snapshot"] = Field(
         "snapshot", description="Object type, always 'snapshot'"
     )
-    created: float = Field(
+    created: int = Field(
         ..., description="Unix timestamp of when the snapshot was created"
     )
     status: SnapshotStatus = Field(..., description="Status of the snapshot")
-    vcpus: float = Field(..., description="VCPU Count of the snaphshot")
-    memory: float = Field(..., description="Memory of the snaphshot in megabytes")
+    vcpus: int = Field(..., description="VCPU Count of the snaphshot")
+    memory: int = Field(..., description="Memory of the snaphshot in megabytes")
     disk_size: int = Field(..., description="Size of the snapshot in megabytes")
     image_id: typing.Optional[str] = Field(
         ..., description="ID of the base image this snapshot was created from"
@@ -100,16 +101,18 @@ class Snapshot(BaseModel):
     )
 
     @classmethod
-    def list(cls) -> typing.List[Snapshot]:
+    def list(cls, digest: typing.Optional[str] = None) -> typing.List[Snapshot]:
         """List all snapshots available to the user."""
-        response = morph_api_client.get("/snapshot")
+        params = {}
+        if digest is not None:
+            params["digest"] = digest
+        response = morph_api_client.get("/snapshot", params=params)
         response.raise_for_status()
         return [Snapshot(**snapshot) for snapshot in response.json()]
 
 
     @classmethod
     def create(cls,
-        image_name: typing.Optional[str] = None,
         image_id: typing.Optional[str] = None,
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
@@ -120,7 +123,7 @@ class Snapshot(BaseModel):
         response = morph_api_client.post(
             "/snapshot",
             json={
-                "image_name": image_name,
+                # "image_name": image_name,
                 "image_id": image_id,
                 "vcpus": vcpus,
                 "memory": memory,
@@ -138,7 +141,7 @@ class Snapshot(BaseModel):
         response.raise_for_status()
 
 
-class InstanceStatus(enum.Enum):
+class InstanceStatus(enum.StrEnum):
     # the instance is being created and is not yet ready
     PENDING = "pending"
     # the instance is ready to be used
@@ -163,7 +166,7 @@ class InstanceExecResponse(BaseModel):
 class Instance(BaseModel):
     id: str
     object: typing.Literal["instance"] = "instance"
-    created: float
+    created: int
     status: InstanceStatus = InstanceStatus.PENDING
     snapshot_id: str
     internal_ip: typing.Optional[str] = None
@@ -253,4 +256,20 @@ class Instance(BaseModel):
         )
         response.raise_for_status()
         return InstanceExecResponse(**response.json())
+
+    def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+        """Wait until the instance is ready."""
+        start_time = time.time()
+        while self.status != InstanceStatus.READY:
+            if timeout is not None and time.time() - start_time > timeout:
+                raise TimeoutError("Instance did not become ready before timeout")
+            time.sleep(1)
+            self._refresh()
+            if self.status == InstanceStatus.ERROR:
+                raise RuntimeError("Instance encountered an error")
+
+    def _refresh(self) -> None:
+        """Refresh the instance data."""
+        instance = Instance.get(self.id)
+        self.__dict__.update(instance.__dict__)
 
