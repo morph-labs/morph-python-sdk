@@ -264,13 +264,14 @@ def snapshot_instance(instance_id, json_mode):
         click.echo(f"{snapshot.id}")
 
 
-@instance.command("clone")
+@instance.command("branch")
 @click.argument("instance_id")
 @click.option("--count", type=int, default=1, help="Number of clones to create")
-def clone_instance(instance_id, count):
+def branch_instance(instance_id, count):
     """Clone an instance"""
     instance = api.Instance.get(instance_id)
-    clones = instance.clone(count)
+    snapshot, clones = instance.branch(count)
+    click.echo(format_json(snapshot))
     for clone in clones:
         click.echo(format_json(clone))
 
@@ -286,14 +287,14 @@ def expose_http_service(instance_id, name, port):
     click.echo(f"Exposed HTTP service {name} on port {port}")
 
 
-@instance.command("unexpose-http")
+@instance.command("delete-http")
 @click.argument("instance_id")
 @click.argument("name")
-def unexpose_http_service(instance_id, name):
-    """Unexpose an HTTP service"""
+def hide_http_service(instance_id, name):
+    """Hide an exposed HTTP service"""
     instance = api.Instance.get(instance_id)
-    instance.unexpose_http_service(name)
-    click.echo(f"Unexposed HTTP service {name}")
+    instance.hide_http_service(name)
+    click.echo(f"Delete HTTP service {name}")
 
 
 @instance.command("exec")

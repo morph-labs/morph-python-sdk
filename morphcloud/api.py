@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import enum
+import json
 import typing
 import logging
 
@@ -20,7 +21,35 @@ logger.addHandler(handler)
 MORPH_API_BASE_URL = os.environ.get("MORPH_BASE_URL", "https://cloud.morph.so/api")
 MORPH_API_KEY = os.environ.get("MORPH_API_KEY")
 
-morph_api_client = httpx.Client(
+class ApiError(Exception):
+    """Custom exception for Morph API errors that includes the response body"""
+    def __init__(self, message: str, status_code: int, response_body: str):
+        self.status_code = status_code
+        self.response_body = response_body
+        super().__init__(f"{message}\nStatus Code: {status_code}\nResponse Body: {response_body}")
+
+class ApiClient(httpx.Client):
+    def raise_for_status(self, response: httpx.Response) -> None:
+        """Custom error handling that includes the response body in the error message"""
+        if response.is_error:
+            try:
+                # Try to parse and format JSON response
+                error_body = json.dumps(response.json(), indent=2)
+            except Exception:
+                # If JSON parsing fails, use raw text
+                error_body = response.text
+
+            message = f"HTTP Error {response.status_code} for url '{response.url}'"
+            raise ApiError(message, response.status_code, error_body)
+
+    def request(self, *args, **kwargs) -> httpx.Response:
+        """Override request method to use our custom error handling"""
+        response = super().request(*args, **kwargs)
+        if response.is_error:
+            self.raise_for_status(response)
+        return response
+
+morph_api_client = ApiClient(
     base_url=MORPH_API_BASE_URL,
     headers={
         "Content-Type": "application/json",
@@ -199,11 +228,16 @@ class Instance(BaseModel):
         response.raise_for_status()
         return Snapshot(**response.json())
 
-    def clone(self, count: int) -> typing.List[Instance]:
-        """Clone the instance."""
-        response = morph_api_client.post(f"/instance/{self.id}/clone", json={"count": count})
+    def branch(self, count: int) -> typing.Tuple[Snapshot, typing.List[Instance]]:
+        """Branch the instance."""
+        response = morph_api_client.post(f"/instance/{self.id}/branch", params={"count": count})
         response.raise_for_status()
-        return [Instance(**instance) for instance in response.json()]
+
+        _json = response.json()
+        snapshot = Snapshot(**_json["snapshot"])
+        instances = [Instance(**instance) for instance in _json["instances"]]
+
+        return snapshot, instances
 
     def expose_http_service(self, name: str, port: int) -> None:
         """Expose an HTTP service."""
@@ -213,7 +247,7 @@ class Instance(BaseModel):
         )
         response.raise_for_status()
 
-    def unexpose_http_service(self, name: str) -> None:
+    def hide_http_service(self, name: str) -> None:
         """Unexpose an HTTP service."""
         response = morph_api_client.delete(f"/instance/{self.id}/http/{name}")
         response.raise_for_status()
