@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import hashlib
 
 import click
 from . import api
@@ -21,38 +22,50 @@ def format_json(obj):
 def print_docker_style_table(headers, rows):
     """
     Print a table in Docker ps style with dynamic column widths using Click's echo.
-
     Args:
         headers (list): List of column headers
         rows (list): List of rows, where each row is a list of values
     """
+    # Handle empty input cases
+    if not headers:
+        return
+    
     # Calculate column widths based on content
     widths = []
     for i in range(len(headers)):
-        column_values = [str(row[i]) for row in rows]
-        widths.append(max(len(str(headers[i])), max(len(val) for val in column_values)))
-
+        # Initialize with header length
+        width = len(str(headers[i]))
+        
+        # Only check row values if rows exist
+        if rows:
+            column_values = [str(row[i]) if i < len(row) else '' for row in rows]
+            width = max(width, max(len(val) for val in column_values))
+        
+        widths.append(width)
+    
     # Print headers
     header_line = ""
     separator_line = ""
     for i, header in enumerate(headers):
         header_line += f"{str(header):<{widths[i]}}  "
         separator_line += "-" * widths[i] + "  "
-
+    
     click.echo(header_line.rstrip())
     click.echo(separator_line.rstrip())
-
-    # Print rows
-    for row in rows:
-        line = ""
-        for i, value in enumerate(row):
-            line += f"{str(value):<{widths[i]}}  "
-        click.echo(line.rstrip())
+    
+    # Print rows only if they exist
+    if rows:
+        for row in rows:
+            line = ""
+            for i in range(len(headers)):
+                # Handle case where row might have fewer columns than headers
+                value = str(row[i]) if i < len(row) else ''
+                line += f"{value:<{widths[i]}}  "
+            click.echo(line.rstrip())
 
 
 def unix_timestamp_to_datetime(timestamp):
     import datetime
-
     return datetime.datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -71,9 +84,7 @@ def image():
 
 
 @image.command("list")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def list_image(json_mode):
     """List all available images"""
     images = api.Image.list()
@@ -81,28 +92,16 @@ def list_image(json_mode):
         for image in images:
             click.echo(format_json(image))
     else:
-        headers = [
-            "ID",
-            "Name",
-            "Description",
-            "Disk Size (MB)",
-            "Created At",
-            "User ID",
-            "Is Preset",
-        ]
+        headers = ["ID", "Name", "Description", "Disk Size (MB)", "Created At"]
         rows = []
         for image in images:
-            rows.append(
-                [
-                    image.id,
-                    image.name,
-                    image.description,
-                    image.disk_size,
-                    unix_timestamp_to_datetime(image.created),
-                    image.user_id,
-                    image.is_preset,
-                ]
-            )
+            rows.append([
+                image.id,
+                image.name,
+                image.description,
+                image.disk_size,
+                unix_timestamp_to_datetime(image.created),
+            ])
         print_docker_style_table(headers, rows)
 
 
@@ -114,9 +113,7 @@ def snapshot():
 
 
 @snapshot.command("list")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def list_snapshots(json_mode):
     """List all snapshots"""
     snapshots = api.Snapshot.list()
@@ -135,17 +132,15 @@ def list_snapshots(json_mode):
         ]
         rows = []
         for snapshot in snapshots:
-            rows.append(
-                [
-                    snapshot.id,
-                    unix_timestamp_to_datetime(snapshot.created),
-                    snapshot.status,
-                    snapshot.vcpus,
-                    snapshot.memory,
-                    snapshot.disk_size,
-                    snapshot.image_id,
-                ]
-            )
+            rows.append([
+                snapshot.id,
+                unix_timestamp_to_datetime(snapshot.created),
+                snapshot.status,
+                snapshot.spec.vcpus,
+                snapshot.spec.memory,
+                snapshot.spec.disk_size,
+                snapshot.refs.image_id,
+            ])
         print_docker_style_table(headers, rows)
 
 
@@ -155,9 +150,7 @@ def list_snapshots(json_mode):
 @click.option("--memory", type=int, help="Memory in MB")
 @click.option("--disk-size", type=int, help="Disk size in MB")
 @click.option("--digest", help="User provided digest")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def create_snapshot(image_id, vcpus, memory, disk_size, digest, json_mode):
     """Create a new snapshot"""
     snapshot = api.Snapshot.create(
@@ -177,14 +170,16 @@ def create_snapshot(image_id, vcpus, memory, disk_size, digest, json_mode):
 @click.argument("snapshot_id")
 def delete_snapshot(snapshot_id):
     """Delete a snapshot"""
-    # snapshot = api.Snapshot(
-    #     id=snapshot_id,
-    #     object="snapshot",
-    #     created=0,
-    #     status=api.SnapshotStatus.READY,
-    #     vcpus=0, memory=0, disk_size=0, image_id=None)
-    # snapshot.delete()
-    # click.echo(f"Deleted snapshot {snapshot_id}")
+    snapshot = api.Snapshot(
+        id=snapshot_id,
+        object="snapshot",
+        created=0,
+        status=api.SnapshotStatus.READY,
+        spec=api.ResourceSpec(vcpus=0, memory=0, disk_size=0),
+        refs=api.SnapshotRefs(image_id="")
+    )
+    snapshot.delete()
+    click.echo(f"Deleted snapshot {snapshot_id}")
 
 
 # Instances
@@ -195,9 +190,7 @@ def instance():
 
 
 @instance.command("list")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def list_instances(json_mode):
     """List all instances"""
     instances = api.Instance.list()
@@ -213,28 +206,26 @@ def list_instances(json_mode):
             "VCPUs",
             "Memory (MB)",
             "Disk Size (MB)",
+            "IP Address",
         ]
         rows = []
         for instance in instances:
-            rows.append(
-                [
-                    instance.id,
-                    instance.snapshot_id,
-                    unix_timestamp_to_datetime(instance.created),
-                    instance.status,
-                    instance.vcpus,
-                    instance.memory,
-                    instance.disk_size,
-                ]
-            )
+            rows.append([
+                instance.id,
+                instance.refs.snapshot_id,
+                unix_timestamp_to_datetime(instance.created),
+                instance.status,
+                instance.spec.vcpus,
+                instance.spec.memory,
+                instance.spec.disk_size,
+                instance.networking.internal_ip or "pending",
+            ])
         print_docker_style_table(headers, rows)
 
 
 @instance.command("start")
 @click.argument("snapshot_id")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def start_instance(snapshot_id, json_mode):
     """Start a new instance from a snapshot"""
     instance = api.Instance.start(snapshot_id=snapshot_id)
@@ -248,8 +239,7 @@ def start_instance(snapshot_id, json_mode):
 @click.argument("instance_id")
 def stop_instance(instance_id):
     """Stop an instance"""
-    instance = api.Instance.get(instance_id)
-    instance.stop()
+    api.Instance.stop_by_id(instance_id)
     click.echo(f"{instance_id}")
 
 
@@ -263,9 +253,7 @@ def get_instance(instance_id):
 
 @instance.command("snapshot")
 @click.argument("instance_id")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 def snapshot_instance(instance_id, json_mode):
     """Create a snapshot from an instance"""
     instance = api.Instance.get(instance_id)
@@ -285,40 +273,6 @@ def clone_instance(instance_id, count):
     clones = instance.clone(count)
     for clone in clones:
         click.echo(format_json(clone))
-
-
-@instance.command("ssh-keys")
-@click.argument("instance_id")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
-def get_ssh_keys(instance_id, json_mode):
-    """Get SSH keys for an instance"""
-    instance = api.Instance.get(instance_id)
-    public_key, private_key = instance.get_ssh_keys()
-    if json_mode:
-        click.echo(
-            json.dumps({"public_key": public_key, "private_key": private_key}, indent=2)
-        )
-    else:
-        click.echo(f"Public key:\n{public_key}\n\nPrivate key:\n{private_key}")
-
-
-@instance.command("rotate-ssh-keys")
-@click.argument("instance_id")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
-def rotate_ssh_keys(instance_id, json_mode):
-    """Rotate SSH keys for an instance"""
-    instance = api.Instance.get(instance_id)
-    public_key, private_key = instance.rotate_ssh_keys()
-    if json_mode:
-        click.echo(
-            json.dumps({"public_key": public_key, "private_key": private_key}, indent=2)
-        )
-    else:
-        click.echo(f"New public key:\n{public_key}\n\nNew private key:\n{private_key}")
 
 
 @instance.command("expose-http")
@@ -366,15 +320,10 @@ def ssh_portal(instance_id, command):
     Pass commands after -- to include flags and options.
     Example: morphcloud instance ssh morphvm_12345 -- python3"""
     MORPH_API_KEY = os.getenv("MORPH_API_KEY", "")
-
     hostname = "localhost"
     port = 2222
-
     username = instance_id + ":" + MORPH_API_KEY
-
-    # Join the command parts if present
     cmd_str = " ".join(command) if command else None
-
     ssh_connect(hostname, username, port=port, command=cmd_str)
 
 
@@ -396,14 +345,17 @@ def port_forward(instance_id, remote_port, local_port):
     )
 
 
-@instance.command("run")
-@click.option("--name", help="Name of the container", default="python:3.11-slim")
+@instance.command("crun")
+@click.option("--image", help="Container image to deploy", default="python:3.11-slim")
+@click.option("--expose-http", "expose_http", multiple=True, help="HTTP service to expose")
+@click.option("--vcpus", type=int, help="Number of VCPUs", default=1)
+@click.option("--memory", type=int, help="Memory in MB", default=128)
+@click.option("--disk-size", type=int, help="Disk size in MB", default=700)
+@click.option("--force-rebuild", is_flag=True, help="Force rebuild the container")
 @click.option("--verbose/--no-verbose", default=True, help="Enable verbose logging")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
+@click.option("--json/--no-json", "json_mode", default=False, help="Output in JSON format")
 @click.argument("command", nargs=-1, required=False, type=click.UNPROCESSED)
-def run_oci_container(name, verbose, json_mode, command):
+def run_oci_container(image, expose_http, vcpus, memory, disk_size, force_rebuild, verbose, json_mode, command):
     """Run a new instance with a local container
 
     This command will use your local Docker daemon to build and run a container on a Morph instance.
@@ -415,18 +367,26 @@ def run_oci_container(name, verbose, json_mode, command):
         click.echo("Starting deployment process...")
         click.echo("Checking snapshots for minimal image")
 
-    exit_stack = ExitStack()
-    digest = "sha256:1c7b3"
+    # hash the image, vcpus, memory, and disk size to create a unique digest
+    digest = hashlib.sha256(
+        f"{image}{vcpus}{memory}{disk_size}".encode("utf-8")
+    ).hexdigest()
+
     snapshots = api.Snapshot.list(digest=digest)
+
+    if force_rebuild:
+        for snapshot in snapshots:
+            snapshot.delete()
+        snapshots = []
 
     if len(snapshots) == 0:
         if verbose:
             click.echo("No matching snapshot found, creating a new one")
         snapshot = api.Snapshot.create(
             image_id="morphvm-minimal",
-            vcpus=1,
-            memory=128,
-            disk_size=700,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
             digest=digest,
         )
     else:
@@ -434,8 +394,8 @@ def run_oci_container(name, verbose, json_mode, command):
 
     if verbose:
         click.echo("Starting a new instance")
+
     instance = api.Instance.start(snapshot_id=snapshot.id)
-    exit_stack.callback(instance.stop)
 
     if json_mode:
         click.echo(format_json(instance))
@@ -443,49 +403,37 @@ def run_oci_container(name, verbose, json_mode, command):
         click.echo(f"Instance {instance.id} created successfully")
 
     if verbose:
-        click.echo("Exposing port 8000")
-    instance.expose_http_service(name="web", port=8000)
-    instance._refresh()
-
-    if json_mode:
-        click.echo(format_json(instance))
-    elif verbose:
-        click.echo("Port 8000 exposed successfully")
-
-    if verbose:
         click.echo("Deploying container")
+
     instance.wait_until_ready()
 
     if not command:
-        command = ["python3.11", "-m", "http.server", "--bind", "0.0.0.0", "8000"]
+        command = ["sleep", "infinity"]
+
+    for service in expose_http:
+        name, port = service.split(":")
+        click.echo(f"Exposing port {port} as {name}")
+        instance.expose_http_service(name, int(port))
 
     deploy_container_to_instance(
         instance,
-        name,
-        ports={8000: 8000},
+        image,
         command=command,
     )
 
-    if verbose:
-        click.echo("Container deployed successfully")
+    click.echo(instance.id)
 
-    instance._refresh()
-    if json_mode:
-        click.echo(format_json(instance))
-
-    MORPH_BASE_URL = os.getenv("MORPH_BASE_URL", "http://localhost:9000")
-
-    web_url = f"{MORPH_BASE_URL}/api/instance/{instance.id}/http-service/web/"
-
-    click.echo(web_url)
 
 @instance.command("chat")
 @click.argument("instance_id")
-def chat(instance_id):
+@click.argument("instructions", nargs=-1, required=False, type=click.UNPROCESSED)
+def chat(instance_id, instructions):
     """Start an interactive chat session with an instance"""
+    if instructions:
+        print("Instructions:", instructions)
     from morphcloud._llm import agent_loop
-
     agent_loop(instance_id, os.getenv("MORPH_API_KEY", ""))
+
 
 if __name__ == "__main__":
     cli()

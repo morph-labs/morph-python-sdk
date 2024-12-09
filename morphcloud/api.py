@@ -10,7 +10,6 @@ import httpx
 
 from pydantic import BaseModel, Field
 
-
 logger = logging.getLogger("morphcloud.api")
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -18,10 +17,8 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(line
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-
 MORPH_API_BASE_URL = os.environ.get("MORPH_BASE_URL", "https://cloud.morph.so/api")
 MORPH_API_KEY = os.environ.get("MORPH_API_KEY")
-
 
 morph_api_client = httpx.Client(
     base_url=MORPH_API_BASE_URL,
@@ -32,36 +29,20 @@ morph_api_client = httpx.Client(
     timeout=None
 )
 
-
 class Image(BaseModel):
-    id: str = Field(
-        ..., description="Unique identifier for the base image, like img_xxxx"
-    )
-    object: typing.Literal["image"] = Field(
-        "image", description="Object type, always 'image'"
-    )
+    id: str = Field(..., description="Unique identifier for the base image, like img_xxxx")
+    object: typing.Literal["image"] = Field("image", description="Object type, always 'image'")
     name: str = Field(..., description="Name of the base image")
-    description: typing.Optional[str] = Field(
-        None, description="Description of the base image"
-    )
+    description: typing.Optional[str] = Field(None, description="Description of the base image")
     disk_size: int = Field(..., description="Size of the base image in bytes")
-    created: int = Field(
-        ..., description="Unix timestamp of when the base image was created"
-    )
-    user_id: typing.Optional[str] = Field(
-        None, description="ID of the user who created the base image, if applicable"
-    )
-    is_preset: bool = Field(
-        ..., description="Whether this is a Morph preset base image or a custom one"
-    )
+    created: int = Field(..., description="Unix timestamp of when the base image was created")
 
     @classmethod
     def list(cls) -> typing.List[Image]:
         """List all base images available to the user."""
         response = morph_api_client.get("/image")
         response.raise_for_status()
-        return [Image(**image) for image in response.json()]
-
+        return [Image(**image) for image in response.json()["data"]]
 
 class SnapshotStatus(enum.StrEnum):
     # the snapshot is being created and is not yet ready
@@ -75,30 +56,22 @@ class SnapshotStatus(enum.StrEnum):
     # the snapshot has been deleted
     DELETED = "deleted"
 
+class ResourceSpec(BaseModel):
+    vcpus: int = Field(..., description="VCPU Count of the snapshot")
+    memory: int = Field(..., description="Memory of the snapshot in megabytes")
+    disk_size: int = Field(..., description="Size of the snapshot in megabytes")
+
+class SnapshotRefs(BaseModel):
+    image_id: str
 
 class Snapshot(BaseModel):
-    id: str = Field(
-        ..., description="Unique identifier for the snapshot, like snapshot_xxxx"
-    )
-    object: typing.Literal["snapshot"] = Field(
-        "snapshot", description="Object type, always 'snapshot'"
-    )
-    created: int = Field(
-        ..., description="Unix timestamp of when the snapshot was created"
-    )
+    id: str = Field(..., description="Unique identifier for the snapshot, like snapshot_xxxx")
+    object: typing.Literal["snapshot"] = Field("snapshot", description="Object type, always 'snapshot'")
+    created: int = Field(..., description="Unix timestamp of when the snapshot was created")
     status: SnapshotStatus = Field(..., description="Status of the snapshot")
-    vcpus: int = Field(..., description="VCPU Count of the snaphshot")
-    memory: int = Field(..., description="Memory of the snaphshot in megabytes")
-    disk_size: int = Field(..., description="Size of the snapshot in megabytes")
-    image_id: typing.Optional[str] = Field(
-        ..., description="ID of the base image this snapshot was created from"
-    )
-    user_id: typing.Optional[str] = Field(
-        None, description="ID of the user who created the snapshot, if applicable"
-    )
-    digest: typing.Optional[str] = Field(
-        default=None, description="User provided digest of the snapshot content"
-    )
+    spec: ResourceSpec = Field(..., description="Resource specifications")
+    refs: SnapshotRefs = Field(..., description="Referenced resources")
+    digest: typing.Optional[str] = Field(default=None, description="User provided digest of the snapshot content")
 
     @classmethod
     def list(cls, digest: typing.Optional[str] = None) -> typing.List[Snapshot]:
@@ -108,8 +81,7 @@ class Snapshot(BaseModel):
             params["digest"] = digest
         response = morph_api_client.get("/snapshot", params=params)
         response.raise_for_status()
-        return [Snapshot(**snapshot) for snapshot in response.json()]
-
+        return [Snapshot(**snapshot) for snapshot in response.json()["data"]]
 
     @classmethod
     def create(cls,
@@ -123,23 +95,27 @@ class Snapshot(BaseModel):
         response = morph_api_client.post(
             "/snapshot",
             json={
-                # "image_name": image_name,
                 "image_id": image_id,
                 "vcpus": vcpus,
                 "memory": memory,
                 "disk_size": disk_size,
                 "digest": digest,
+                "readiness_check": {
+                    "type": "timeout",
+                    "timeout": 10.0
+                }
             },
         )
         response.raise_for_status()
         return Snapshot(**response.json())
 
-
     def delete(self) -> None:
         """Delete the snapshot."""
         response = morph_api_client.delete(f"/snapshot/{self.id}")
+        if response.status_code == 409:
+            logger.error(response.json())
+            raise RuntimeError("Snapshot is in use and cannot be deleted")
         response.raise_for_status()
-
 
 class InstanceStatus(enum.StrEnum):
     # the instance is being created and is not yet ready
@@ -151,37 +127,38 @@ class InstanceStatus(enum.StrEnum):
     # the instance encountered an error during
     ERROR = "error"
 
-
 class InstanceHttpService(BaseModel):
     name: str
     port: int
 
+class InstanceNetworking(BaseModel):
+    internal_ip: typing.Optional[str] = None
+    http_services: typing.List[InstanceHttpService] = Field(default_factory=list)
+
+class InstanceRefs(BaseModel):
+    snapshot_id: str
+    image_id: str
 
 class InstanceExecResponse(BaseModel):
     exit_code: int
     stdout: str
     stderr: str
 
-
 class Instance(BaseModel):
     id: str
     object: typing.Literal["instance"] = "instance"
     created: int
     status: InstanceStatus = InstanceStatus.PENDING
-    snapshot_id: str
-    internal_ip: typing.Optional[str] = None
-    vcpus: int
-    memory: int
-    disk_size: int
-    image_id: str
-    http_services: typing.List[InstanceHttpService] = Field(default_factory=list)
+    spec: ResourceSpec
+    refs: InstanceRefs
+    networking: InstanceNetworking
 
     @classmethod
     def list(cls) -> typing.List[Instance]:
         """List all instances available to the user."""
         response = morph_api_client.get("/instance")
         response.raise_for_status()
-        return [Instance(**instance) for instance in response.json()]
+        return [Instance(**instance) for instance in response.json()["data"]]
 
     @classmethod
     def start(
@@ -210,6 +187,12 @@ class Instance(BaseModel):
         response = morph_api_client.delete(f"/instance/{self.id}")
         response.raise_for_status()
 
+    @staticmethod
+    def stop_by_id(snapshot_id: str) -> None:
+        """Stop the instance by its ID."""
+        response = morph_api_client.delete(f"/instance/{snapshot_id}")
+        response.raise_for_status()
+
     def snapshot(self) -> Snapshot:
         """Save the instance as a snapshot."""
         response = morph_api_client.post(f"/instance/{self.id}/snapshot")
@@ -222,29 +205,17 @@ class Instance(BaseModel):
         response.raise_for_status()
         return [Instance(**instance) for instance in response.json()]
 
-    def get_ssh_keys(self) -> typing.Tuple[str, str]:
-        """Get the SSH keys for the instance."""
-        response = morph_api_client.get(f"/instance/{self.id}/ssh-key")
-        response.raise_for_status()
-        return response.json()["public_key"], response.json()["private_key"]
-
-    def rotate_ssh_keys(self) -> typing.Tuple[str, str]:
-        """Rotate the SSH keys for the instance."""
-        response = morph_api_client.post(f"/instance/{self.id}/ssh-key/rotate")
-        response.raise_for_status()
-        return response.json()["public_key"], response.json()["private_key"]
-
     def expose_http_service(self, name: str, port: int) -> None:
         """Expose an HTTP service."""
         response = morph_api_client.post(
-            f"/instance/{self.id}/http-service",
+            f"/instance/{self.id}/http",
             json={"name": name, "port": port},
         )
         response.raise_for_status()
 
     def unexpose_http_service(self, name: str) -> None:
         """Unexpose an HTTP service."""
-        response = morph_api_client.delete(f"/instance/{self.id}/http-service/{name}")
+        response = morph_api_client.delete(f"/instance/{self.id}/http/{name}")
         response.raise_for_status()
 
     def exec(self, command: typing.Union[str, typing.List[str]]) -> InstanceExecResponse:
@@ -272,4 +243,3 @@ class Instance(BaseModel):
         """Refresh the instance data."""
         instance = Instance.get(self.id)
         self.__dict__.update(instance.__dict__)
-

@@ -202,37 +202,3 @@ def forward_tunnel(local_port, remote_port, ssh_host, ssh_port=22, ssh_username=
         except:
             pass
 
-
-def main():
-    # Example: Forward local port 8080 to port 80 on the SSH server
-    forward_tunnel(
-        local_port=8080,
-        remote_port=80,
-        ssh_host='remote.server.com',
-        ssh_username='username',
-        ssh_password='password'
-    )
-
-if __name__ == '__main__':
-    main()
-
-if __name__ == "__main__":
-    MORPH_API_KEY = os.getenv("MORPH_API_KEY", "")
-
-    if not MORPH_API_KEY:
-        print("MORPH_API_KEY environment variable not set")
-        sys.exit(1)
-
-    if len(sys.argv) < 2:
-        print("Usage: python ssh.py <instance_id> [command]")
-        sys.exit(1)
-
-    instance_id = sys.argv[1]
-    command = ' '.join(sys.argv[2:]) if len(sys.argv) > 2 else None
-
-    hostname = "localhost"
-    port = 2222
-
-    username = instance_id + ":" + MORPH_API_KEY
-
-    ssh_connect(hostname, username, port=port, command=command)

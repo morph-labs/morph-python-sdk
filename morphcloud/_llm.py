@@ -199,7 +199,6 @@ def ssh_connect_and_run(
         "\033[?25h"  # Show cursor
         "\033[?7h"  # Enable line wrapping
         "\033[?47l"  # Restore screen
-        "\033[?1049l"  # Exit alternate screen buffer
         "\033[!p"  # Soft reset
         "\033[?1l"  # Reset cursor keys to default
         "\033[?12l"  # Stop blinking cursor

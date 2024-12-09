@@ -50,7 +50,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/containers/{container_name}
+WorkingDirectory=/var/lib/containers/{container_name}
 ExecStart=/usr/bin/crun run {container_name}
 ExecStop=/usr/bin/crun delete -f {container_name}
 Restart=always
@@ -71,11 +71,15 @@ def deploy_container(
     log = logging.getLogger("DeployContainer")
 
     try:
+        # Create necessary directories first
+        log.info("Creating necessary directories")
+        execute_remote_command(ssh_client, "mkdir -p /var/lib/containers /var/log/containers")
+
         # Stop the service if it exists
         log.info(f"Stopping service {container_config.name} if it exists")
         try:
             execute_remote_command(
-                ssh_client, f"systemctl stop {container_config.name}", ignore_errors=True
+                ssh_client, f"systemctl stop {container_config.name}"
             )
         except Exception as e:
             log.debug(f"Service {container_config.name} may not exist yet: {e}")
@@ -102,6 +106,26 @@ def deploy_container(
 
         log.info(f"Creating temporary container with command: {' '.join(create_cmd)}")
         subprocess.run(create_cmd, check=True, capture_output=True, text=True)
+
+        # Estimate container size and check available space
+        log.info("Checking available space for container deployment")
+        container_size = estimate_container_size(container_cmd)
+        
+        # Get available space in /var/lib/containers directory
+        df_output = execute_remote_command(ssh_client, "df -B1 /var/lib")
+        # Skip header line and split into columns, get available space column
+        available_bytes = int(df_output.split('\n')[1].split()[3])
+        
+        if container_size > available_bytes:
+            raise Exception(
+                f"Not enough space for container deployment. "
+                f"Required: {container_size / (1024*1024):.2f} MB, "
+                f"Available: {available_bytes / (1024*1024):.2f} MB"
+            )
+        
+        log.info(f"Sufficient space available. Proceeding with deployment "
+                f"(required: {container_size / (1024*1024):.2f} MB, "
+                f"available: {available_bytes / (1024*1024):.2f} MB)")
 
         # Get container configuration
         log.info("Getting container configuration")
@@ -134,13 +158,144 @@ def deploy_container(
         remove_temporary_container(container_cmd)
 
 
+def upload_oci_spec(ssh_client: paramiko.SSHClient, oci_spec: dict, container_name: str):
+    container_path = f"/var/lib/containers/{container_name}"
+    log = logging.getLogger("UploadOCISpec")
+    log.info(f"Uploading OCI spec to {container_path}")
+
+    execute_remote_command(
+        ssh_client, f"mkdir -p {container_path}"
+    )
+
+    with ssh_client.open_sftp() as sftp, tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp:
+        json.dump(oci_spec, tmp, indent=2)
+        tmp.flush()
+        remote_path = f"{container_path}/config.json"
+        sftp.put(tmp.name, remote_path)
+        log.info(f"Uploaded OCI spec to {remote_path}")
+    os.remove(tmp.name)  # Clean up the temporary file
+
+
+def stream_container_export(
+    ssh_client: paramiko.SSHClient, export_proc: subprocess.Popen, container_name: str
+):
+    container_path = f"/var/lib/containers/{container_name}"
+    rootfs_path = f"{container_path}/rootfs"
+
+    log = logging.getLogger("StreamContainerExport")
+    log.info("Starting remote tar extraction")
+    execute_remote_command(ssh_client, f"mkdir -p {rootfs_path}")
+
+    transport = ssh_client.get_transport() 
+    if transport is None:
+        raise Exception("Failed to get transport for SSH client")
+    channel = transport.open_session()
+    channel.exec_command(f"cd {rootfs_path} && tar -xf -")
+
+    if export_proc.stdout is None or export_proc.stderr is None:
+        raise Exception("Failed to open stdout/stderr for container export process")
+
+    log.info("Streaming container data")
+    try:
+        while True:
+            data = export_proc.stdout.read(4096)
+            if not data:
+                break
+            channel.sendall(data)
+        export_proc.wait()
+        error = export_proc.stderr.read().decode()
+        if export_proc.returncode != 0:
+            raise Exception(f"Container export failed: {error}")
+    except Exception as e:
+        log.error(f"Error during data transfer: {e}")
+        raise
+
+    log.info("Finalizing data transfer")
+    channel.shutdown_write()
+
+    exit_status = channel.recv_exit_status()
+    if exit_status != 0:
+        error = channel.recv_stderr(4096).decode()
+        raise Exception(
+            f"Failed to extract container (exit status {exit_status}): {error}"
+        )
+
+    log.info("Finished streaming container data")
+
+
+def setup_systemd_service(ssh_client: paramiko.SSHClient, container_name: str):
+    log = logging.getLogger("SystemdServiceManager")
+    try:
+        log.info("Creating logs directory")
+        execute_remote_command(ssh_client, "mkdir -p /var/log/containers")
+
+        service_file = f"/etc/systemd/system/{container_name}.service"
+        log.info(f"Creating systemd service file: {service_file}")
+        service_content = SERVICE_CONTENT_TEMPLATE.format(
+            container_name=container_name
+        )
+        cmd = f'cat > {service_file} << "EOF"\n{service_content}EOF'
+        execute_remote_command(ssh_client, cmd)
+
+        execute_remote_command(ssh_client, f"chmod 644 {service_file}")
+
+        log.info("Reloading systemd daemon")
+        execute_remote_command(ssh_client, "systemctl daemon-reload")
+
+        log.info(f"Enabling {container_name} service")
+        execute_remote_command(ssh_client, f"systemctl enable {container_name}")
+
+        log.info(f"Starting {container_name} service")
+        execute_remote_command(ssh_client, f"systemctl start {container_name}")
+
+        log.info("Waiting for service to become active...")
+        execute_remote_command(
+            ssh_client, f"systemctl is-active --wait {container_name}"
+        )
+
+    except Exception as e:
+        log.error(f"Failed to setup systemd service: {e}")
+        raise
+
+
+def cleanup_service(ssh_client: paramiko.SSHClient, container_name: str):
+    log = logging.getLogger("CleanupService")
+    try:
+        log.info(f"Stopping service {container_name}")
+        execute_remote_command(ssh_client, f"systemctl stop {container_name}")
+
+        log.info(f"Disabling service {container_name}")
+        execute_remote_command(ssh_client, f"systemctl disable {container_name}")
+
+        log.info(f"Removing service file")
+        execute_remote_command(
+            ssh_client, f"rm -f /etc/systemd/system/{container_name}.service"
+        )
+
+        log.info("Reloading systemd daemon")
+        execute_remote_command(ssh_client, "systemctl daemon-reload")
+
+        log.info("Cleaning up container directory")
+        execute_remote_command(
+            ssh_client, f"rm -rf /var/lib/containers/{container_name}"
+        )
+
+        log.info("Cleaning up log files")
+        execute_remote_command(
+            ssh_client, f"rm -f /var/log/containers/{container_name}.*"
+        )
+
+    except Exception as e:
+        log.error(f"Error during service cleanup: {e}")
+        raise
+
 def execute_remote_command(
     ssh_client: paramiko.SSHClient, command: str
 ) -> str:
     log = logging.getLogger("ExecuteRemoteCommand")
     log.info(f"Executing: {command}")
 
-    stdin, stdout, stderr = ssh_client.exec_command(command)
+    _, stdout, stderr = ssh_client.exec_command(command)
     output = stdout.read().decode("utf-8", errors="replace")
     error = stderr.read().decode("utf-8", errors="replace")
 
@@ -207,6 +362,15 @@ def prepare_oci_spec(container_info, container_config: ContainerConfig) -> dict:
                     "CAP_AUDIT_WRITE",
                     "CAP_KILL",
                     "CAP_NET_BIND_SERVICE",
+                    "CAP_NET_RAW",           # For network tooling
+                    "CAP_SYS_PTRACE",        # For debugging
+                    "CAP_DAC_OVERRIDE",      # For file permissions
+                    "CAP_SETUID",            # For changing user
+                    "CAP_SETGID",            # For changing group
+                    "CAP_SYS_ADMIN",         # For mount operations
+                    "CAP_NET_ADMIN",         # For network admin
+                    "CAP_IPC_LOCK",          # For memory locking
+                    "CAP_SYS_RESOURCE"       # For resource limits
                 ],
                 "effective": [
                     "CAP_AUDIT_WRITE",
@@ -276,189 +440,58 @@ def prepare_oci_spec(container_info, container_config: ContainerConfig) -> dict:
                 "source": "cgroup",
                 "options": ["nosuid", "noexec", "nodev", "relatime", "ro"],
             },
+            {
+                "destination": "/etc/resolv.conf",
+                "type": "bind",
+                "source": "/etc/resolv.conf",
+                "options": ["rbind", "ro"],
+            },
+            {
+                "destination": "/etc/hosts",
+                "type": "bind",
+                "source": "/etc/hosts",
+                "options": ["rbind", "ro"]
+            },
+            {
+                "destination": "/etc/timezone",
+                "type": "bind",
+                "source": "/etc/timezone",
+                "options": ["rbind", "ro"]
+            },
+            {
+                "destination": "/etc/ssl/certs",
+                "type": "bind",
+                "source": "/etc/ssl/certs",
+                "options": ["rbind", "ro"]
+            },
+            {
+                "destination": "/etc/localtime",
+                "type": "bind",
+                "source": "/etc/localtime",
+                "options": ["rbind", "ro"]
+            }
         ],
         "linux": {
             "namespaces": [
                 {"type": "pid"},
-                {"type": "ipc"},
                 {"type": "uts"},
                 {"type": "mount"},
-            ]
+            ],
+            "sysctls": {
+                "net.ipv4.ping_group_range": "0 2147483647",  # Allow ping
+                "net.core.somaxconn": "65535",                # Higher connection limits
+                "net.ipv4.ip_unprivileged_port_start": "0"    # Allow binding to low ports
+            }
         },
     }
     return oci_spec
 
 
-# def prepare_oci_spec(container_info, container_config: ContainerConfig) -> dict:
-#     log = logging.getLogger("PrepareOCISpec")
-#     log.info("Preparing OCI spec")
-#
-#     config = container_info.get("Config", {})
-#     host_config = container_info.get("HostConfig", {})
-#
-#     # Merge environment variables
-#     env_vars = config.get("Env", [])
-#     env_dict = dict(var.split("=", 1) for var in env_vars)
-#
-#     # Update with environment variables from container_config
-#     env_dict.update(container_config.environment)
-#
-#     # Convert back to list format
-#     env_list = [f"{key}={value}" for key, value in env_dict.items()]
-#
-#     # Command to execute
-#     if container_config.command:
-#         command = container_config.command
-#     else:
-#         command = config.get("Entrypoint") or []
-#         command += config.get("Cmd") or []
-#
-#     if not command:
-#         raise Exception("No command specified for container")
-#
-#     # Get user
-#     user = container_config.environment.get("USER") or config.get("User", "")
-#     if user:
-#         if ":" in user:
-#             uid, gid = user.split(":")
-#         else:
-#             uid, gid = user, '0'
-#     else:
-#         uid, gid = '0', '0'
-#
-#     # Prepare capabilities (include all for less restriction)
-#     all_capabilities = [
-#         "CAP_AUDIT_CONTROL", "CAP_AUDIT_READ", "CAP_AUDIT_WRITE", "CAP_BLOCK_SUSPEND",
-#         "CAP_BPF", "CAP_CHECKPOINT_RESTORE", "CAP_CHOWN", "CAP_DAC_OVERRIDE",
-#         "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID", "CAP_IPC_LOCK",
-#         "CAP_IPC_OWNER", "CAP_KILL", "CAP_LEASE", "CAP_LINUX_IMMUTABLE",
-#         "CAP_MAC_ADMIN", "CAP_MAC_OVERRIDE", "CAP_MKNOD", "CAP_NET_ADMIN",
-#         "CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST", "CAP_NET_RAW", "CAP_PERFMON",
-#         "CAP_SETGID", "CAP_SETFCAP", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_ADMIN",
-#         "CAP_SYS_BOOT", "CAP_SYS_CHROOT", "CAP_SYS_MODULE", "CAP_SYS_NICE",
-#         "CAP_SYS_PACCT", "CAP_SYS_PTRACE", "CAP_SYS_RAWIO", "CAP_SYS_RESOURCE",
-#         "CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_SYSLOG", "CAP_WAKE_ALARM"
-#     ]
-#
-#     # Prepare namespaces (include network namespace for isolation)
-#     namespaces = [
-#         {"type": "pid"},
-#         {"type": "ipc"},
-#         {"type": "uts"},
-#         {"type": "mount"},
-#         {"type": "network"},
-#     ]
-#
-#     # Prepare mounts
-#     mounts = [
-#         {"destination": "/proc", "type": "proc", "source": "proc"},
-#         {
-#             "destination": "/dev",
-#             "type": "tmpfs",
-#             "source": "tmpfs",
-#             "options": ["nosuid", "strictatime", "mode=755", "size=65536k"],
-#         },
-#         {
-#             "destination": "/dev/pts",
-#             "type": "devpts",
-#             "source": "devpts",
-#             "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"],
-#         },
-#         {
-#             "destination": "/dev/shm",
-#             "type": "tmpfs",
-#             "source": "shm",
-#             "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"],
-#         },
-#         {
-#             "destination": "/dev/mqueue",
-#             "type": "mqueue",
-#             "source": "mqueue",
-#             "options": ["nosuid", "noexec", "nodev"],
-#         },
-#         {"destination": "/sys", "type": "sysfs", "source": "sysfs"},
-#         {
-#             "destination": "/sys/fs/cgroup",
-#             "type": "cgroup",
-#             "source": "cgroup",
-#             "options": ["nosuid", "noexec", "nodev", "relatime", "ro"],
-#         },
-#     ]
-#
-#     # Include volume mounts from container_config
-#     for host_path, container_path in container_config.volumes.items():
-#         mounts.append({
-#             "destination": container_path,
-#             "type": "bind",
-#             "source": host_path,
-#             "options": ["rbind", "rw"]
-#         })
-#
-#     # Include volumes from the original container spec
-#     volumes = config.get("Volumes", {})
-#     for container_path in volumes.keys():
-#         # Mount as tmpfs to avoid conflicts
-#         mounts.append({
-#             "destination": container_path,
-#             "type": "tmpfs",
-#             "source": "tmpfs",
-#             "options": ["rw", "nosuid", "nodev", "noexec", "relatime", "size=65536k"]
-#         })
-#
-#     # Prepare OCI spec
-#     oci_spec = {
-#         "ociVersion": "1.0.0",
-#         "process": {
-#             "terminal": False,
-#             "user": {"uid": int(uid), "gid": int(gid)},
-#             "args": command,
-#             "env": env_list,
-#             "cwd": container_config.working_dir or config.get("WorkingDir") or "/",
-#             "capabilities": {
-#                 "bounding": all_capabilities,
-#                 "effective": all_capabilities,
-#                 "permitted": all_capabilities,
-#                 "inheritable": all_capabilities,
-#                 "ambient": all_capabilities,
-#             },
-#             "rlimits": [{"type": "RLIMIT_NOFILE", "hard": 1048576, "soft": 1048576}],
-#             "noNewPrivileges": False,
-#         },
-#         "root": {"path": "rootfs", "readonly": False},
-#         "mounts": mounts,
-#         "linux": {
-#             "namespaces": namespaces,
-#             "maskedPaths": [],
-#             "readonlyPaths": [],
-#         },
-#     }
-#
-#     return oci_spec
-#
-
-def upload_oci_spec(ssh_client: paramiko.SSHClient, oci_spec: dict, container_name: str):
-    container_path = f"/root/containers/{container_name}"
-    log = logging.getLogger("UploadOCISpec")
-    log.info(f"Uploading OCI spec to {container_path}")
-
-    execute_remote_command(
-        ssh_client, f"rm -rf {container_path} && mkdir -p {container_path}"
-    )
-
-    with ssh_client.open_sftp() as sftp, tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp:
-        json.dump(oci_spec, tmp, indent=2)
-        tmp.flush()
-        remote_path = f"{container_path}/config.json"
-        sftp.put(tmp.name, remote_path)
-        log.info(f"Uploaded OCI spec to {remote_path}")
-    os.remove(tmp.name)  # Clean up the temporary file
-
-
-def export_container(container_cmd: str) -> subprocess.Popen:
+def export_container(container_cmd: str, container_name: str = "temp_container"):
     log = logging.getLogger("ExportContainer")
     log.info("Starting container export")
     export_proc = subprocess.Popen(
-        [container_cmd, "export", "temp_container"],
+        [container_cmd, "export", container_name],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
@@ -466,116 +499,69 @@ def export_container(container_cmd: str) -> subprocess.Popen:
     return export_proc
 
 
-def stream_container_export(
-    ssh_client: paramiko.SSHClient, export_proc: subprocess.Popen, container_name: str
-):
-    container_path = f"/root/containers/{container_name}"
-    rootfs_path = f"{container_path}/rootfs"
-
-    log = logging.getLogger("StreamContainerExport")
-    log.info("Starting remote tar extraction")
-    execute_remote_command(ssh_client, f"mkdir -p {rootfs_path}")
-
-    channel = ssh_client.get_transport().open_session()
-    channel.exec_command(f"cd {rootfs_path} && tar -xf -")
-
-    log.info("Streaming container data")
+def estimate_container_size(container_cmd: str, container_name: str = "temp_container") -> int:
+    """
+    Estimates the size of a container's rootfs in bytes.
+    
+    Args:
+        container_cmd: The container runtime command (docker/podman)
+        container_name: Name of the container to analyze
+        
+    Returns:
+        int: Estimated size in bytes
+        
+    Raises:
+        subprocess.CalledProcessError: If container inspection fails
+        ValueError: If size information cannot be parsed
+    """
+    log = logging.getLogger("EstimateContainerSize")
+    
     try:
-        while True:
-            data = export_proc.stdout.read(4096)
-            if not data:
-                break
-            channel.sendall(data)
-        export_proc.wait()
-        error = export_proc.stderr.read().decode()
-        if export_proc.returncode != 0:
-            raise Exception(f"Container export failed: {error}")
-    except Exception as e:
-        log.error(f"Error during data transfer: {e}")
+        # Get detailed container information
+        inspect_cmd = [container_cmd, "inspect", container_name]
+        result = subprocess.run(
+            inspect_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        container_info = json.loads(result.stdout)[0]
+        
+        # Get base image size
+        image_id = container_info.get("Image")
+        if not image_id:
+            raise ValueError("Could not determine container image ID")
+            
+        image_cmd = [container_cmd, "inspect", image_id]
+        image_result = subprocess.run(
+            image_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        image_info = json.loads(image_result.stdout)[0]
+        
+        # Get base image size
+        base_size = image_info.get("Size", 0)
+        
+        # Get size of writable layer (container changes)
+        container_size = container_info.get("SizeRw", 0)
+        
+        # Total estimated size with 10% buffer for metadata and padding
+        total_size = int((base_size + container_size) * 1.1)
+        
+        log.info(f"Estimated container size: {total_size / (1024*1024):.2f} MB "
+                f"(base: {base_size / (1024*1024):.2f} MB, "
+                f"writable: {container_size / (1024*1024):.2f} MB)")
+        
+        return total_size
+        
+    except subprocess.CalledProcessError as e:
+        log.error(f"Failed to inspect container or image: {e}")
         raise
-
-    log.info("Finalizing data transfer")
-    channel.shutdown_write()
-
-    exit_status = channel.recv_exit_status()
-    if exit_status != 0:
-        error = channel.recv_stderr(4096).decode()
-        raise Exception(
-            f"Failed to extract container (exit status {exit_status}): {error}"
-        )
-
-    log.info("Finished streaming container data")
-
-
-def setup_systemd_service(ssh_client: paramiko.SSHClient, container_name: str):
-    log = logging.getLogger("SystemdServiceManager")
-    try:
-        log.info("Creating logs directory")
-        execute_remote_command(ssh_client, "mkdir -p /var/log/containers")
-
-        service_file = f"/etc/systemd/system/{container_name}.service"
-        log.info(f"Creating systemd service file: {service_file}")
-        service_content = SERVICE_CONTENT_TEMPLATE.format(
-            container_name=container_name
-        )
-        cmd = f'cat > {service_file} << "EOF"\n{service_content}EOF'
-        execute_remote_command(ssh_client, cmd)
-
-        execute_remote_command(ssh_client, f"chmod 644 {service_file}")
-
-        log.info("Reloading systemd daemon")
-        execute_remote_command(ssh_client, "systemctl daemon-reload")
-
-        log.info(f"Enabling {container_name} service")
-        execute_remote_command(ssh_client, f"systemctl enable {container_name}")
-
-        log.info(f"Starting {container_name} service")
-        execute_remote_command(ssh_client, f"systemctl start {container_name}")
-
-        log.info("Waiting for service to become active...")
-        execute_remote_command(
-            ssh_client, f"systemctl is-active --wait {container_name}"
-        )
-
-        # log.info("Service status:")
-        # execute_remote_command(ssh_client, f"systemctl status {container_name}")
-
-    except Exception as e:
-        log.error(f"Failed to setup systemd service: {e}")
-        raise
-
-
-def cleanup_service(ssh_client: paramiko.SSHClient, container_name: str):
-    log = logging.getLogger("CleanupService")
-    try:
-        log.info(f"Stopping service {container_name}")
-        execute_remote_command(ssh_client, f"systemctl stop {container_name}")
-
-        log.info(f"Disabling service {container_name}")
-        execute_remote_command(ssh_client, f"systemctl disable {container_name}")
-
-        log.info(f"Removing service file")
-        execute_remote_command(
-            ssh_client, f"rm -f /etc/systemd/system/{container_name}.service"
-        )
-
-        log.info("Reloading systemd daemon")
-        execute_remote_command(ssh_client, "systemctl daemon-reload")
-
-        log.info("Cleaning up container directory")
-        execute_remote_command(
-            ssh_client, f"rm -rf /root/containers/{container_name}"
-        )
-
-        log.info("Cleaning up log files")
-        execute_remote_command(
-            ssh_client, f"rm -f /var/log/containers/{container_name}.*"
-        )
-
-    except Exception as e:
-        log.error(f"Error during service cleanup: {e}")
-        raise
-
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        log.error(f"Failed to parse container/image information: {e}")
+        raise ValueError(f"Could not determine container size: {e}")
 
 def remove_temporary_container(container_cmd: str):
     log = logging.getLogger("RemoveTemporaryContainer")
@@ -610,7 +596,7 @@ def deploy_container_to_instance(
     try:
         config = ContainerConfig(
             image=image,
-            name="app",
+            name="default",
             ports=ports,
             environment=environment,
             command=command,
@@ -624,44 +610,3 @@ def deploy_container_to_instance(
     finally:
         ssh_client.close()
 
-
-def main():
-    setup_logging(True)
-    log = logging.getLogger("Main")
-    remote_host = "localhost"
-    remote_user = "morphvm_yqcsj5kd:" + os.environ.get("MORPH_API_KEY", "")
-    remote_port = 2222
-    container_cmd = "docker"
-
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    try:
-        log.info(f"Connecting to {remote_host}:{remote_port}")
-        ssh_client.connect(
-            remote_host, port=remote_port, username=remote_user
-        )
-
-        config = ContainerConfig(
-            image="python:3.11-slim",
-            name="python-app",
-            ports={8080: 8080},
-            environment={
-                "PYTHONUNBUFFERED": "1",
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "PYTHONPATH": "/usr/local/lib/python3.11/site-packages:/usr/local/lib/python3.11",
-            },
-            command=["python3.11", "-m", "http.server", "--bind", "0.0.0.0", "8080"],
-        )
-
-        deploy_container(ssh_client, config, container_cmd=container_cmd)
-
-    except Exception as e:
-        log.error(f"Deployment failed: {e}")
-        sys.exit(1)
-    finally:
-        ssh_client.close()
-
-if __name__ == "__main__":
-    main()
