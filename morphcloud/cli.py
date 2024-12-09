@@ -287,7 +287,7 @@ def expose_http_service(instance_id, name, port):
     click.echo(f"Exposed HTTP service {name} on port {port}")
 
 
-@instance.command("delete-http")
+@instance.command("hide-http")
 @click.argument("instance_id")
 @click.argument("name")
 def hide_http_service(instance_id, name):
