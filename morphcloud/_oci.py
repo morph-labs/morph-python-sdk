@@ -9,6 +9,8 @@ from typing import List, Dict, Optional
 
 import paramiko
 
+from .api import Instance
+
 
 def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
@@ -574,20 +576,6 @@ def remove_temporary_container(container_cmd: str):
         log.error(f"Failed to remove temporary container: {e}")
 
 
-from .api import Instance
-
-
-def get_ssh_client_for_instance(instance: Instance) -> paramiko.SSHClient:
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh_client.connect(
-        "localhost",
-        port=2222,
-        username=instance.id + ":" + os.environ.get("MORPH_API_KEY", ""),
-    )
-    return ssh_client
-
-
 def deploy_container_to_instance(
     instance: Instance,
     image: str,
@@ -596,7 +584,7 @@ def deploy_container_to_instance(
     command: Optional[List[str]] = None,
 ):
     log = logging.getLogger("DeployContainerToInstance")
-    ssh_client = get_ssh_client_for_instance(instance)
+    ssh_client = instance.ssh_connect()
 
     try:
         config = ContainerConfig(
@@ -614,3 +602,4 @@ def deploy_container_to_instance(
         raise
     finally:
         ssh_client.close()
+

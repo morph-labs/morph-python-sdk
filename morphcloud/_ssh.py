@@ -69,24 +69,10 @@ def interactive_shell(chan):
 
 
 def ssh_connect(
-    hostname, username, password=None, key_filename=None, port=22, command=None
+    ssh: paramiko.SSHClient, command=None
 ):
     """Establish SSH connection and execute a command or start interactive session"""
     try:
-        # Create a new SSH client
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        # Connect to the remote server
-        connect_kwargs = {"hostname": hostname, "username": username, "port": port}
-
-        if password:
-            connect_kwargs["password"] = password
-        if key_filename:
-            connect_kwargs["key_filename"] = key_filename
-
-        ssh.connect(**connect_kwargs)
-
         rows, cols = get_terminal_size()
         term = os.getenv("TERM", "xterm")
 
@@ -113,7 +99,7 @@ def ssh_connect(
 
 
 def forward_tunnel(
-    local_port, remote_port, ssh_host, ssh_port=22, ssh_username=None, ssh_password=None
+    client: paramiko.SSHClient, local_port, remote_port
 ):
     """
     Forward a local port to a remote port on the SSH server with verbose logging.
@@ -146,14 +132,6 @@ def forward_tunnel(
             client_socket.close()
 
     try:
-        print(f"Connecting to SSH server {ssh_host}:{ssh_port}")
-        client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        client.connect(ssh_host, ssh_port, username=ssh_username, password=ssh_password)
-        print("SSH connection established")
-
         transport = client.get_transport()
 
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -162,7 +140,7 @@ def forward_tunnel(
         server.listen(5)
 
         print(f"Local server listening on localhost:{local_port}")
-        print(f"Forwarding to {ssh_host}:{remote_port}")
+        print(f"Forwarding to {remote_port}")
 
         while True:
             try:

@@ -4,6 +4,7 @@ import json
 import hashlib
 
 import click
+
 from . import api
 
 
@@ -318,12 +319,11 @@ def ssh_portal(instance_id, command):
     """Start an SSH session to an instance"""
     from morphcloud._ssh import ssh_connect
 
-    MORPH_API_KEY = os.getenv("MORPH_API_KEY", "")
-    hostname = "localhost"
-    port = 2222
-    username = instance_id + ":" + MORPH_API_KEY
+    instance = client.instances.get(instance_id)
+    ssh_client = instance.ssh_connect()
+
     cmd_str = " ".join(command) if command else None
-    ssh_connect(hostname, username, port=port, command=cmd_str)
+    ssh_connect(ssh_client, command=cmd_str)
 
 
 @instance.command("port-forward")
@@ -337,12 +337,14 @@ def port_forward(instance_id, remote_port, local_port):
     if not local_port:
         local_port = remote_port
 
+    instance = client.instances.get(instance_id)
+
+    ssh_client = instance.ssh_connect()
+
     forward_tunnel(
+        ssh_client,
         local_port=local_port,
         remote_port=remote_port,
-        ssh_host="localhost",
-        ssh_username=instance_id + ":" + os.getenv("MORPH_API_KEY", ""),
-        ssh_port=2222,
     )
 
 
@@ -355,6 +357,7 @@ def port_forward(instance_id, remote_port, local_port):
 @click.option("--memory", type=int, help="Memory in MB", default=128)
 @click.option("--disk-size", type=int, help="Disk size in MB", default=700)
 @click.option("--force-rebuild", is_flag=True, help="Force rebuild the container")
+@click.option("--instance-id", default=None, help="Instance ID to deploy the container. If set will use the existing instance")
 @click.option("--verbose/--no-verbose", default=True, help="Enable verbose logging")
 @click.option(
     "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
@@ -367,45 +370,69 @@ def run_oci_container(
     memory,
     disk_size,
     force_rebuild,
+    instance_id,
     verbose,
     json_mode,
     command,
 ):
-    """Run a new instance with a local container"""
+    """Run an OCI container on a Morph instance. If instance_id is not provided, a new instance will be created."""
     from morphcloud._oci import deploy_container_to_instance
 
     if verbose:
         click.echo("Starting deployment process...")
         click.echo("Checking snapshots for minimal image")
 
-    digest = hashlib.sha256(
-        f"{image}{vcpus}{memory}{disk_size}".encode("utf-8")
-    ).hexdigest()
+    if not instance_id:
+        digest = hashlib.sha256(
+            f"{image}{vcpus}{memory}{disk_size}".encode("utf-8")
+        ).hexdigest()
 
-    snapshots = client.snapshots.list(digest=digest)
+        snapshots = client.snapshots.list(digest=digest)
 
-    if force_rebuild:
-        for snapshot in snapshots:
-            snapshot.delete()
-        snapshots = []
+        if force_rebuild:
+            for snapshot in snapshots:
+                snapshot.delete()
+            snapshots = []
 
-    if len(snapshots) == 0:
+        if len(snapshots) == 0:
+            if verbose:
+                click.echo("No matching snapshot found, creating a new one")
+            snapshot = client.snapshots.create(
+                image_id="morphvm-minimal",
+                vcpus=vcpus,
+                memory=memory,
+                disk_size=disk_size,
+                digest=digest,
+            )
+        else:
+            snapshot = snapshots[0]
+
         if verbose:
-            click.echo("No matching snapshot found, creating a new one")
-        snapshot = client.snapshots.create(
-            image_id="morphvm-minimal",
-            vcpus=vcpus,
-            memory=memory,
-            disk_size=disk_size,
-            digest=digest,
-        )
+            click.echo("Starting a new instance")
+
+        instance = client.instances.start(snapshot_id=snapshot.id)
+
+        instance.wait_until_ready()
+
+        for service in expose_http:
+            name, port = service.split(":")
+            click.echo(f"Exposing port {port} as {name}")
+            instance.expose_http_service(name, int(port))
     else:
-        snapshot = snapshots[0]
+        instance = client.instances.get(instance_id)
 
-    if verbose:
-        click.echo("Starting a new instance")
+        # Check if the instance is running
+        instance.wait_until_ready()
 
-    instance = client.instances.start(snapshot_id=snapshot.id)
+        # Add the HTTP services if provided and not already exposed
+        for service in expose_http:
+            name, port = service.split(":")
+            if not any(
+                svc.name == name and svc.port == int(port)
+                for svc in instance.networking.http_services
+            ):
+                click.echo(f"Exposing port {port} as {name}")
+                instance.expose_http_service(name, int(port))
 
     if json_mode:
         click.echo(format_json(instance))
@@ -415,15 +442,8 @@ def run_oci_container(
     if verbose:
         click.echo("Deploying container")
 
-    instance.wait_until_ready()
-
     if not command:
         command = ["sleep", "infinity"]
-
-    for service in expose_http:
-        name, port = service.split(":")
-        click.echo(f"Exposing port {port} as {name}")
-        instance.expose_http_service(name, int(port))
 
     deploy_container_to_instance(instance, image, command=command)
     click.echo(instance.id)

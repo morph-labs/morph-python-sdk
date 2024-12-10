@@ -6,21 +6,10 @@ import enum
 import json
 import typing
 import asyncio
-import logging
 
 import httpx
 
 from pydantic import BaseModel, Field, PrivateAttr
-
-
-logger = logging.getLogger("morphcloud.api")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
 
 
 class ApiError(Exception):
@@ -279,18 +268,14 @@ class Snapshot(BaseModel):
     def delete(self) -> None:
         """Delete the snapshot."""
         response = self._api._client._http_client.delete(f"/snapshot/{self.id}")
-        if response.status_code == 409:
-            logger.error(response.json())
-            raise RuntimeError("Snapshot is in use and cannot be deleted")
+        response.raise_for_status()
 
     async def adelete(self) -> None:
         """Delete the snapshot."""
         response = await self._api._client._async_http_client.delete(
             f"/snapshot/{self.id}"
         )
-        if response.status_code == 409:
-            logger.error(response.json())
-            raise RuntimeError("Snapshot is in use and cannot be deleted")
+        response.raise_for_status()
 
 
 class InstanceStatus(enum.StrEnum):
@@ -524,3 +509,21 @@ class Instance(BaseModel):
         instance = await self._api.aget(self.id)
         for key, value in instance.model_dump().items():
             setattr(self, key, value)
+
+    def ssh_connect(self):
+        """Create an paramiko SSHClient and connect to the instance"""
+        import paramiko
+
+        hostname = os.environ.get("MORPH_SSH_HOSTNAME", "ssh.cloud.morph.so")
+        port = int(os.environ.get("MORPH_SSH_PORT") or 22)
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        if self._api._client.api_key is None:
+            raise ValueError("API key must be provided to connect to the instance")
+
+        username = self.id + ":" + self._api._client.api_key
+
+        client.connect(hostname, port=port, username=username, password="")
+        return client
