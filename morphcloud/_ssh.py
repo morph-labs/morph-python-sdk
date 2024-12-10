@@ -16,8 +16,8 @@ def get_terminal_size():
     """Get the size of the terminal window."""
     try:
         # Initialize winsize structure
-        size = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, ' ' * 8)
-        rows, cols, xpix, ypix = struct.unpack('HHHH', size)
+        size = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, " " * 8)
+        rows, cols, xpix, ypix = struct.unpack("HHHH", size)
         return rows, cols
     except:
         return (24, 80)
@@ -68,7 +68,9 @@ def interactive_shell(chan):
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, oldtty)
 
 
-def ssh_connect(hostname, username, password=None, key_filename=None, port=22, command=None):
+def ssh_connect(
+    hostname, username, password=None, key_filename=None, port=22, command=None
+):
     """Establish SSH connection and execute a command or start interactive session"""
     try:
         # Create a new SSH client
@@ -86,7 +88,7 @@ def ssh_connect(hostname, username, password=None, key_filename=None, port=22, c
         ssh.connect(**connect_kwargs)
 
         rows, cols = get_terminal_size()
-        term = os.getenv('TERM', 'xterm')
+        term = os.getenv("TERM", "xterm")
 
         if command:
             # Open a new session
@@ -110,10 +112,13 @@ def ssh_connect(hostname, username, password=None, key_filename=None, port=22, c
             ssh.close()
 
 
-def forward_tunnel(local_port, remote_port, ssh_host, ssh_port=22, ssh_username=None, ssh_password=None):
+def forward_tunnel(
+    local_port, remote_port, ssh_host, ssh_port=22, ssh_username=None, ssh_password=None
+):
     """
     Forward a local port to a remote port on the SSH server with verbose logging.
     """
+
     def handler(client_socket, channel):
         try:
             # print(f"New connection handler started")
@@ -134,7 +139,7 @@ def forward_tunnel(local_port, remote_port, ssh_host, ssh_port=22, ssh_username=
                     # print(f"Server -> Client: {len(data)} bytes")
                     client_socket.send(data)
         except Exception as e:
-            print(f'Handler error: {str(e)}')
+            print(f"Handler error: {str(e)}")
         finally:
             print("Cleaning up connection")
             channel.close()
@@ -145,55 +150,50 @@ def forward_tunnel(local_port, remote_port, ssh_host, ssh_port=22, ssh_username=
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        client.connect(
-            ssh_host,
-            ssh_port,
-            username=ssh_username,
-            password=ssh_password
-        )
+
+        client.connect(ssh_host, ssh_port, username=ssh_username, password=ssh_password)
         print("SSH connection established")
-        
+
         transport = client.get_transport()
-        
+
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-        server.bind(('127.0.0.1', local_port))
+        server.bind(("127.0.0.1", local_port))
         server.listen(5)
-        
+
         print(f"Local server listening on localhost:{local_port}")
         print(f"Forwarding to {ssh_host}:{remote_port}")
-        
+
         while True:
             try:
                 client_socket, addr = server.accept()
                 print(f"New connection from {addr}")
                 # print(f"Opening channel to remote port {remote_port}")
-                
+
                 channel = transport.open_channel(
-                    'direct-tcpip',
-                    ('127.0.0.1', remote_port),  # Connect to localhost on remote
-                    client_socket.getpeername()
+                    "direct-tcpip",
+                    ("127.0.0.1", remote_port),  # Connect to localhost on remote
+                    client_socket.getpeername(),
                 )
-                
+
                 if channel is None:
                     print("Failed to create channel")
                     client_socket.close()
                     continue
-                
+
                 # print("Channel established successfully")
                 thr = threading.Thread(target=handler, args=(client_socket, channel))
                 thr.daemon = True
                 thr.start()
-                
+
             except KeyboardInterrupt:
                 print("\nShutting down...")
                 break
             except Exception as e:
-                print(f'Connection error: {str(e)}')
-                
+                print(f"Connection error: {str(e)}")
+
     except Exception as e:
-        print(f'Forward server error: {str(e)}')
+        print(f"Forward server error: {str(e)}")
     finally:
         try:
             server.close()
@@ -201,4 +201,3 @@ def forward_tunnel(local_port, remote_port, ssh_host, ssh_port=22, ssh_username=
             print("Cleanup complete")
         except:
             pass
-

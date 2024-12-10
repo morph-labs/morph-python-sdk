@@ -36,19 +36,30 @@ class TextScrambler:
     """
 
     __slots__ = (
-        'config', 'step_count', 'control', '_running', '_animation_thread',
-        '_char_cache', '_resolved_positions', '_print_lock', 'control_lock'
+        "config",
+        "step_count",
+        "control",
+        "_running",
+        "_animation_thread",
+        "_char_cache",
+        "_resolved_positions",
+        "_print_lock",
+        "control_lock",
     )
 
     def __init__(self, config: ScrambleConfig):
         self.config = config
         random.seed(self.config.seed)
-        
+
         # Pre-generate random characters
-        self._char_cache = array.array('u', 
-            [chr(random.randint(config.range[0], config.range[1])) 
-             for _ in range(1024)])
-        
+        self._char_cache = array.array(
+            "u",
+            [
+                chr(random.randint(config.range[0], config.range[1]))
+                for _ in range(1024)
+            ],
+        )
+
         self._running = False
         self._animation_thread = None
         self._resolved_positions: List[int] = []  # Changed from set to list
@@ -61,7 +72,7 @@ class TextScrambler:
         self.step_count = 0
         text_len = len(self.config.text)
         # Initialize array with exact text length
-        self.control = array.array('i', [self.config.scramble] * text_len)
+        self.control = array.array("i", [self.config.scramble] * text_len)
         self._resolved_positions = []  # Reset the list
 
     @lru_cache(maxsize=128)
@@ -94,7 +105,7 @@ class TextScrambler:
         """Generate current frame of the animation."""
         text = self.config.text
         text_len = len(text)
-        result = [' '] * text_len
+        result = [" "] * text_len
 
         with self.control_lock:
             current_control = list(self.control)
@@ -118,13 +129,12 @@ class TextScrambler:
             else:
                 result[i] = self._get_random_char(self.step_count + i)
 
-        result_text = ''.join(result)
+        result_text = "".join(result)
 
         # Check if animation is complete
         with self.control_lock:
-            is_complete = (
-                len(self._resolved_positions) == text_len and 
-                all(c <= 0 for c in self.control)
+            is_complete = len(self._resolved_positions) == text_len and all(
+                c <= 0 for c in self.control
             )
 
         if is_complete:
@@ -141,7 +151,9 @@ class TextScrambler:
 
         # Validate monotonicity
         with self.control_lock:
-            if not all(self.control[i] <= self.control[i - 1] for i in range(1, text_len)):
+            if not all(
+                self.control[i] <= self.control[i - 1] for i in range(1, text_len)
+            ):
                 with self._print_lock:
                     # print("\n[Error] control_array is not monotonically decreasing!")
                     # print(f"Resolved Positions: {self._resolved_positions}")
@@ -188,13 +200,15 @@ class TextScrambler:
         if self._running:
             with self.control_lock:
                 # print("\n[Info] Animation completed naturally.")
-                self.control[:] = array.array('i', [0] * len(self.control))
+                self.control[:] = array.array("i", [0] * len(self.control))
                 with jsonlines.open("/home/pv/Downloads/scramble_log.txt", "a") as f:
-                    f.write(dict(
-                        resolved_positions=list(self._resolved_positions),
-                        text_len=len(self.config.text),
-                        control_array=list(self.control)
-                    ))
+                    f.write(
+                        dict(
+                            resolved_positions=list(self._resolved_positions),
+                            text_len=len(self.config.text),
+                            control_array=list(self.control),
+                        )
+                    )
             # Perform a final draw to update the display
             self._draw()
             # Trigger final frame
@@ -228,19 +242,19 @@ def scramble_print(text: str, **config_overrides):
     Run the scrambler in parallel on every line of the input string.
     This allows multiline outputs or ASCII art to be printed with the scramble effect.
     """
-    lines = text.split('\n')
+    lines = text.split("\n")
     terminal_width = shutil.get_terminal_size().columns
 
-    current_frames = [''] * len(lines)
+    current_frames = [""] * len(lines)
     active_scramblers = []  # Track active scramblers
     done = threading.Event()  # Use event for completion
     lock = threading.Lock()
-    
+
     def redraw_all():
         # Move cursor to top
-        print('\033[H', end='', flush=True)
+        print("\033[H", end="", flush=True)
         # Clear screen
-        print('\033[J', end='', flush=True)
+        print("\033[J", end="", flush=True)
         # Print each line
         for frame in current_frames:
             print(frame, flush=True)
@@ -256,10 +270,15 @@ def scramble_print(text: str, **config_overrides):
     def on_frame_factory(idx):
         def on_frame(line_text):
             with lock:
-                display_text = line_text[:terminal_width] if not config_overrides.get('overflow', False) else line_text
+                display_text = (
+                    line_text[:terminal_width]
+                    if not config_overrides.get("overflow", False)
+                    else line_text
+                )
                 current_frames[idx] = display_text
                 redraw_all()
                 check_completion()
+
         return on_frame
 
     def on_end_factory(idx, final_text):
@@ -268,6 +287,7 @@ def scramble_print(text: str, **config_overrides):
                 current_frames[idx] = final_text
                 redraw_all()
                 check_completion()
+
         return on_end
 
     # Create scramblers for non-empty lines
@@ -280,17 +300,17 @@ def scramble_print(text: str, **config_overrides):
         base_config = ScrambleConfig(text=line)
         conf_dict = dict(base_config.__dict__)
         conf_dict.update(config_overrides)
-        
+
         # Set callbacks
-        conf_dict['on_animation_frame'] = on_frame_factory(i)
-        conf_dict['on_animation_end'] = on_end_factory(i, line)
-        
+        conf_dict["on_animation_frame"] = on_frame_factory(i)
+        conf_dict["on_animation_end"] = on_end_factory(i, line)
+
         line_config = ScrambleConfig(**conf_dict)
         s = TextScrambler(line_config)
         active_scramblers.append(s)
 
     # Initialize display
-    print('\033[2J', end='', flush=True)
+    print("\033[2J", end="", flush=True)
     redraw_all()
 
     # Start all animations
@@ -304,7 +324,7 @@ def scramble_print(text: str, **config_overrides):
             if not any(s._running for s in active_scramblers):
                 done.set()
                 break
-            
+
     except KeyboardInterrupt:
         # Clean shutdown on interrupt
         for s in active_scramblers:
@@ -339,10 +359,10 @@ if __name__ == "__main__":
         SCRAMBLE_TEXT,
         speed=2.0,
         seed=1,
-        step=1,          # Reduced step size from 2 to 1
-        scramble=3,      # Increased for more visible effect
-        chance=1.0,      # Set to 1.0 for deterministic resolution
-        overflow=True,   # Allow full-width ASCII art
+        step=1,  # Reduced step size from 2 to 1
+        scramble=3,  # Increased for more visible effect
+        chance=1.0,  # Set to 1.0 for deterministic resolution
+        overflow=True,  # Allow full-width ASCII art
     )
 
     COLORS = {
@@ -354,6 +374,4 @@ if __name__ == "__main__":
     }
 
     print(f"{COLORS['TEXT']}Welcome to the Morph VM chat cli.{COLORS['RESET']}")
-    print(f"{COLORS['SECONDARY']}Type 'exit' or 'quit' to stop.{COLORS['RESET']}\n")    
-
-    
+    print(f"{COLORS['SECONDARY']}Type 'exit' or 'quit' to stop.{COLORS['RESET']}\n")
