@@ -10,48 +10,32 @@ MorphCloud is a platform designed to spin up remote AI devboxes we call runtimes
 
 Python 3.8 or higher
 
-Go to [https//:cloud.morph.so](http://cloud.morph.so), log in with the provided credentials and create an API key.
+Go to [https//:cloud.morph.so](https://cloud.morph.so/web/api-keys), log in with the provided credentials and create an API key.
 
-Set the API key as an environment variable  MORPH\_API\_KEY.
+Set the API key as an environment variable  `MORPH_API_KEY`.
 
 ### Installation
 
 ```
-   git clone https://github.com/morph-labs/morph-python-sdk.git  
-   cd morphcloud  
-```
-   (activate any python environment as needed)...  
-``` 
-   pip install -e .  
+pip install git+https://github.com/morph-labs/morph-python-sdk.git
 ```
 
-export MORPH\_API\_KEY=your\_api\_key\_here
+Export the API key:
+
+```
+export MORPH_API_KEY="your-api-key"
+```
 
 ## Quick Start
 
 To start using MorphCloud, you can create and manage runtime instances using the provided classes and methods. Here's a basic example to create a runtime instance:
 
 ```py
-from morphcloud import Runtime
+from morphcloud.api import MorphClient
 
-runtime = Runtime.create() # This will print a url allowing you to view the runtime remote desktop url
+client = MorphClient()
 
-# The runtime instance is stopped and deleted upon script termination.
-
-# Alternatively you could create a runtime only for a specific function using:
-
-with Runtime.create() as runtime:
-     # You can perform any actions inside of the environment in here.
-     # .....
-     result = runtime.execute.semantic_search (query="a function that ...", max_results=5)
-)
-print(result) # {success:True, result: {results: [...]}}
-func_refs = results [0]['refs']
-
-linter_result = runtime.execute.lint(files = ["my_repo/file1.py", "my_repo/file2.py"])
-   
-
-# Outside of the with scope the runtime instance is stopped and deleted.
+instance = client.instance.from_image("python:3.8")
 ```
 
 ## Configure the Runtime
