@@ -18,7 +18,6 @@ except ImportError:
 if readline:
     readline.parse_and_bind("tab: complete")
 
-import paramiko
 from anthropic import Anthropic
 from pydantic import BaseModel
 
@@ -114,15 +113,9 @@ def add_cache_control_to_last_content(
 
 
 def ssh_connect_and_run(
-    instance_id: str, morph_api_key: str, command: str
+    instance, command: str
 ) -> Dict[str, Any]:
-    hostname = "localhost"
-    port = 2222
-    username = f"{instance_id}:{morph_api_key}"
-
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(hostname, port=port, username=username, password="")
+    ssh = instance.ssh_connect()
 
     # Start the command
     channel = ssh.get_transport().open_session()
@@ -217,14 +210,14 @@ def ssh_connect_and_run(
 
 
 def run_tool(
-    tool_call: ToolCall, instance_id: str, morph_api_key: str
+    tool_call: ToolCall, instance
 ) -> Dict[str, Any]:
     if tool_call.name == "run_command":
         cmd = tool_call.input.get("command", "")
         print(
             f"{COLORS['SECONDARY']}[DEBUG]{COLORS['RESET']} Running SSH command: {COLORS['TEXT']}{cmd}{COLORS['RESET']}"
         )
-        result = ssh_connect_and_run(instance_id, morph_api_key, cmd)
+        result = ssh_connect_and_run(instance, cmd)
         return result
     else:
         return {"error": f"Unknown tool '{tool_call.name}'"}
@@ -239,7 +232,7 @@ def call_model(client: Anthropic, system: str, messages: List[Dict], tools: List
         tools=tools,
         stream=True,
         extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
-    )
+    ) # type: ignore
 
 
 def process_assistant_message(response_stream):
@@ -313,7 +306,7 @@ def process_assistant_message(response_stream):
     return response_msg, tool_use_active
 
 
-def agent_loop(instance_id: str, morph_api_key: str):
+def agent_loop(instance):
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
     tools = [
@@ -394,7 +387,7 @@ def agent_loop(instance_id: str, morph_api_key: str):
                     f"\n{COLORS['SECONDARY']}[DEBUG]{COLORS['RESET']} Tool call received: name='{COLORS['PRIMARY']}{tool_name}{COLORS['RESET']}' input={COLORS['TEXT']}{tool_input}{COLORS['RESET']}"
                 )
                 tool_call = ToolCall(name=tool_name, input=tool_input)
-                tool_result = run_tool(tool_call, instance_id, morph_api_key)
+                tool_result = run_tool(tool_call, instance)
 
                 messages.append(
                     {
