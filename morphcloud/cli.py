@@ -458,7 +458,10 @@ def chat(instance_id, instructions):
         print("Instructions:", instructions)
     from morphcloud._llm import agent_loop
 
-    agent_loop(instance_id, os.getenv("MORPH_API_KEY", ""))
+
+    instance = client.instances.get(instance_id)
+
+    agent_loop(instance)
 
 
 if __name__ == "__main__":
