@@ -130,12 +130,9 @@ morph instance exec <instance-id> <command>
 # SSH into instance
 morph instance ssh <instance-id> [command]
 
-# Direct SSH access
-You can also SSH directly into a MorphVM instance using the following format:
-```bash
+# Direct SSH access (alternative method)
+# You can also SSH directly into a MorphVM instance using:
 ssh {instance-id}@ssh.cloud.morph.so
-```
-This provides a convenient way to access your instances without using the CLI.
 
 # Port forwarding
 morph instance port-forward <instance-id> <remote-port> [local-port]
