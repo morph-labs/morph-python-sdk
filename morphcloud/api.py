@@ -13,6 +13,7 @@ import httpx
 
 from pydantic import BaseModel, Field, PrivateAttr
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 
 
 @lru_cache
@@ -189,7 +190,10 @@ class SnapshotRefs(BaseModel):
     image_id: str
 
 
-class SnapshotAPI(BaseAPI):
+class SnapshotAPI:
+    def __init__(self, client: MorphCloudClient):
+        self._client = client
+
     def list(
         self,
         digest: typing.Optional[str] = None,
@@ -213,7 +217,7 @@ class SnapshotAPI(BaseAPI):
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> typing.List[Snapshot]:
-        """List all snapshots available to the user."""
+        """List all snapshots available to the user."""        
         params = {}
         if digest is not None:
             params["digest"] = digest
@@ -249,10 +253,7 @@ class SnapshotAPI(BaseAPI):
             body["digest"] = digest
         if metadata is not None:
             body["metadata"] = metadata
-        response = self._client._http_client.post(
-            "/snapshot",
-            json=body,
-        )
+        response = self._client._http_client.post("/snapshot", json=body)
         return Snapshot.model_validate(response.json())._set_api(self)
 
     async def acreate(
@@ -278,42 +279,37 @@ class SnapshotAPI(BaseAPI):
             body["digest"] = digest
         if metadata is not None:
             body["metadata"] = metadata
-        response = await self._client._async_http_client.post(
-            "/snapshot",
-            json=body,
-        )
+        response = await self._client._async_http_client.post("/snapshot", json=body)
         return Snapshot.model_validate(response.json())._set_api(self)
 
     def get(self, snapshot_id: str) -> Snapshot:
-        """Get a snapshot by ID."""
         response = self._client._http_client.get(f"/snapshot/{snapshot_id}")
         return Snapshot.model_validate(response.json())._set_api(self)
 
     async def aget(self, snapshot_id: str) -> Snapshot:
-        """Get a snapshot by ID."""
         response = await self._client._async_http_client.get(f"/snapshot/{snapshot_id}")
         return Snapshot.model_validate(response.json())._set_api(self)
 
 
+# ---------------------------------------------------------------------
+# Snapshot Model with .setup() and chain‐hash persistence
+# ---------------------------------------------------------------------
 class Snapshot(BaseModel):
     id: str = Field(
-        ..., description="Unique identifier for the snapshot, like snapshot_xxxx"
+        ..., description="Unique identifier for the snapshot, e.g. snapshot_xxxx"
     )
     object: typing.Literal["snapshot"] = Field(
         "snapshot", description="Object type, always 'snapshot'"
     )
-    created: int = Field(
-        ..., description="Unix timestamp of when the snapshot was created"
-    )
-    status: SnapshotStatus = Field(..., description="Status of the snapshot")
+    created: int = Field(..., description="Unix timestamp of snapshot creation")
+    status: SnapshotStatus = Field(..., description="Snapshot status")
     spec: ResourceSpec = Field(..., description="Resource specifications")
     refs: SnapshotRefs = Field(..., description="Referenced resources")
     digest: typing.Optional[str] = Field(
-        default=None, description="User provided digest of the snapshot content"
+        default=None, description="User provided digest"
     )
     metadata: typing.Dict[str, str] = Field(
-        default_factory=dict,
-        description="User provided metadata for the snapshot",
+        default_factory=dict, description="User provided metadata"
     )
 
     _api: SnapshotAPI = PrivateAttr()
@@ -323,50 +319,115 @@ class Snapshot(BaseModel):
         return self
 
     def delete(self) -> None:
-        """Delete the snapshot."""
         response = self._api._client._http_client.delete(f"/snapshot/{self.id}")
         response.raise_for_status()
 
     async def adelete(self) -> None:
-        """Delete the snapshot."""
         response = await self._api._client._async_http_client.delete(
             f"/snapshot/{self.id}"
         )
         response.raise_for_status()
 
     def set_metadata(self, metadata: typing.Dict[str, str]) -> None:
-        """Set metadata for the snapshot."""
         response = self._api._client._http_client.post(
-            f"/snapshot/{self.id}/metadata",
-            json=metadata,
+            f"/snapshot/{self.id}/metadata", json=metadata
         )
         response.raise_for_status()
         self._refresh()
 
     async def aset_metadata(self, metadata: typing.Dict[str, str]) -> None:
-        """Set metadata for the snapshot."""
         response = await self._api._client._async_http_client.post(
-            f"/snapshot/{self.id}/metadata",
-            json=metadata,
+            f"/snapshot/{self.id}/metadata", json=metadata
         )
         response.raise_for_status()
         await self._refresh_async()
 
     def _refresh(self) -> None:
         refreshed = self._api.get(self.id)
-        # Use pydantic's parse_obj to ensure fields remain typed
         updated = type(self).model_validate(refreshed.model_dump())
-
-        # Now 'updated' is a fully validated model. Update self with these fields:
         for key, value in updated.__dict__.items():
             setattr(self, key, value)
 
     async def _refresh_async(self) -> None:
-        """Refresh the snapshot data."""
         refreshed = await self._api.aget(self.id)
         updated = type(self).model_validate(refreshed.model_dump())
         for key, value in updated.__dict__.items():
             setattr(self, key, value)
+
+    @staticmethod
+    def compute_chain_hash(parent_chain_hash: str, command: str) -> str:
+        """
+        Computes a chain hash based on the parent's chain hash and the command.
+        """
+        hasher = hashlib.sha256()
+        hasher.update(parent_chain_hash.encode("utf-8"))
+        hasher.update(b"\n")
+        hasher.update(command.encode("utf-8"))
+        return hasher.hexdigest()
+
+    def setup(self, command: str) -> Snapshot:
+        """
+        Applies a single setup command on top of this snapshot.
+        This method computes a new chain hash from the parent's chain hash (stored in metadata)
+        and the provided command. It then makes a single lookup (via the metadata filter) to see
+        if a snapshot with that chain hash already exists. If so, it returns the cached snapshot;
+        otherwise, it spins up an instance from the current snapshot, runs the command, snapshots
+        the result, stores the new chain hash in metadata, and returns the new snapshot.
+        """
+        parent_chain_hash = self.metadata.get("chain_hash", "")
+        new_chain_hash = Snapshot.compute_chain_hash(parent_chain_hash, command)
+
+        # Look up snapshot with matching chain hash using the metadata filter.
+        candidates = self._api.list(metadata={"chain_hash": new_chain_hash})
+        if candidates:
+            print(f"[Snapshot.setup] Using cached layer for command: {command!r}")
+            return candidates[0]
+
+        print(f"[Snapshot.setup] Building layer for command: {command!r}")
+        new_snap = self._apply_single_command(command)
+        # Persist the computed chain hash in the new snapshot's metadata.
+        new_snap.set_metadata({"chain_hash": new_chain_hash})
+        return new_snap
+
+    async def asetup(self, command: str) -> Snapshot:
+        return await asyncio.to_thread(self.setup, command)
+
+    def _apply_single_command(self, command: str) -> Snapshot:
+        """
+        Internal helper that:
+          1. Starts an instance from this snapshot,
+          2. Runs the provided command via SSH with a PTY,
+          3. Snapshots the modified instance,
+          4. Stops the instance,
+          5. Returns the new snapshot.
+        """
+        instance = self._api._client.instances.start(self.id)
+        try:
+            instance.wait_until_ready(timeout=300)
+            print(f"[Snapshot._apply_single_command] Running command: {command}")
+            ssh_client = instance.ssh_connect()
+            try:
+                channel = ssh_client.get_transport().open_session()
+                channel.get_pty(width=120, height=40)
+                channel.exec_command(command)
+                while not channel.exit_status_ready():
+                    time.sleep(1)
+                exit_code = channel.recv_exit_status()
+                stdout = channel.recv(65535).decode("utf-8", errors="replace")
+                stderr = channel.recv_stderr(65535).decode("utf-8", errors="replace")
+                if exit_code != 0:
+                    print(
+                        "[Snapshot._apply_single_command] Warning: Non-zero exit code!"
+                    )
+                    print("STDOUT:", stdout)
+                    print("STDERR:", stderr)
+                channel.close()
+            finally:
+                ssh_client.close()
+            new_snapshot = instance.snapshot()
+        finally:
+            instance.stop()
+        return new_snapshot
 
 
 class InstanceStatus(enum.StrEnum):
