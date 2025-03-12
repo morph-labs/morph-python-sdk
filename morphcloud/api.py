@@ -372,6 +372,7 @@ class Snapshot(BaseModel):
 class InstanceStatus(enum.StrEnum):
     PENDING = "pending"
     READY = "ready"
+    PAUSED = "paused"
     SAVING = "saving"
     ERROR = "error"
 
@@ -489,6 +490,34 @@ class Instance(BaseModel):
     async def astop(self) -> None:
         """Stop the instance."""
         await self._api.astop(self.id)
+
+    def pause(self) -> None:
+        """Pause the instance."""
+        response = self._api._client._http_client.post(f"/instance/{self.id}/pause")
+        response.raise_for_status()
+        self._refresh()
+
+    async def apause(self) -> None:
+        """Pause the instance."""
+        response = await self._api._client._async_http_client.post(
+            f"/instance/{self.id}/pause"
+        )
+        response.raise_for_status()
+        await self._refresh_async()
+
+    def resume(self) -> None:
+        """Resume the instance."""
+        response = self._api._client._http_client.post(f"/instance/{self.id}/resume")
+        response.raise_for_status()
+        self._refresh()
+
+    async def aresume(self) -> None:
+        """Resume the instance."""
+        response = await self._api._client._async_http_client.post(
+            f"/instance/{self.id}/resume"
+        )
+        response.raise_for_status()
+        await self._refresh_async()
 
     def snapshot(self, digest: typing.Optional[str] = None) -> Snapshot:
         """Save the instance as a snapshot."""

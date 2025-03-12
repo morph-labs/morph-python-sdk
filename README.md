@@ -108,6 +108,12 @@ morphcloud instance list [--json]
 # Start a new instance from snapshot
 morphcloud instance start <snapshot-id> [--json]
 
+# Pause an instance (suspends the instance and saves its state in a new snapshot)
+morphcloud instance pause <instance-id>
+
+# Resume a paused instance
+morphcloud instance resume <instance-id>
+
 # Stop an instance
 morphcloud instance stop <instance-id>
 

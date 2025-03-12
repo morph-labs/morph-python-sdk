@@ -367,6 +367,24 @@ def stop_instance(instance_id):
     click.echo(f"{instance_id}")
 
 
+@instance.command("pause")
+@click.argument("instance_id")
+def pause_instance(instance_id):
+    """Pause an instance"""
+    instance = client.instances.get(instance_id)
+    instance.pause()
+    click.echo(f"{instance_id}")
+
+
+@instance.command("resume")
+@click.argument("instance_id")
+def resume_instance(instance_id):
+    """Resume a paused instance"""
+    instance = client.instances.get(instance_id)
+    instance.resume()
+    click.echo(f"{instance_id}")
+
+
 @instance.command("get")
 @click.argument("instance_id")
 def get_instance(instance_id):
