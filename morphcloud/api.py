@@ -396,7 +396,7 @@ class Snapshot(BaseModel):
         return hasher.hexdigest()
 
     def _run_command_effect(
-        self, instance: Instance, command: str, background: bool, get_pty: bool
+        self, instance: Instance, command: str, background: bool, get_pty: bool, verbose: bool = False
     ) -> None:
         """
         Executes a shell command on the given instance, streaming output via Rich.
@@ -410,27 +410,30 @@ class Snapshot(BaseModel):
             channel.exec_command(command)
 
             if background:
-                console.print(
-                    f"[blue]Command is running in the background:[/blue] {command}"
-                )
+                if verbose:
+                    console.print(f"[blue]Command is running in the background:[/blue] {command}")
                 channel.close()
                 return
 
-            console.print(
-                f"[bold blue]🔧 Running command (foreground):[/bold blue] [yellow]{command}[/yellow]"
-            )
+            if verbose:
+                console.print(f"[bold blue]🔧 Running command (foreground):[/bold blue] [yellow]{command}[/yellow]")
+            
             output_buffer = ""
-            panel = Panel(
-                output_buffer or "[dim]No output yet...[/dim]",
-                title="📄 Command Output",
-                border_style="cyan",
-            )
-            with Live(panel, console=console, refresh_per_second=4) as live:
-                while not channel.exit_status_ready():
-                    if channel.recv_ready():
-                        data = channel.recv(1024).decode("utf-8", errors="replace")
-                        if data:
-                            output_buffer += data
+            if verbose:
+                panel = Panel(
+                    output_buffer or "[dim]No output yet...[/dim]",
+                    title="📄 Command Output",
+                    border_style="cyan",
+                )
+                live = Live(panel, console=console, refresh_per_second=4)
+                live.start()
+
+            while not channel.exit_status_ready():
+                if channel.recv_ready():
+                    data = channel.recv(1024).decode("utf-8", errors="replace")
+                    if data:
+                        output_buffer += data
+                        if verbose:
                             live.update(
                                 Panel(
                                     output_buffer,
@@ -438,11 +441,12 @@ class Snapshot(BaseModel):
                                     border_style="cyan",
                                 )
                             )
-                    time.sleep(0.2)
-                while channel.recv_ready():
-                    data = channel.recv(1024).decode("utf-8", errors="replace")
-                    if data:
-                        output_buffer += data
+                time.sleep(0.2)
+            while channel.recv_ready():
+                data = channel.recv(1024).decode("utf-8", errors="replace")
+                if data:
+                    output_buffer += data
+                    if verbose:
                         live.update(
                             Panel(
                                 output_buffer,
@@ -450,14 +454,23 @@ class Snapshot(BaseModel):
                                 border_style="cyan",
                             )
                         )
-                exit_code = channel.recv_exit_status()
-                if exit_code != 0:
+            
+            if verbose:
+                live.stop()
+
+            exit_code = channel.recv_exit_status()
+            if exit_code != 0:
+                if verbose:
                     console.print(
                         f"[bold red]⚠️ Warning:[/bold red] Command exited with code [red]{exit_code}[/red]"
                     )
+                else:
+                    console.print(f"Command failed with exit code {exit_code}")
+            
             channel.close()
         finally:
             ssh_client.close()
+
 
     def _cache_effect(
         self,
@@ -523,7 +536,7 @@ class Snapshot(BaseModel):
         )
         return new_snapshot
 
-    def setup(self, command: str) -> Snapshot:
+    def setup(self, command: str, verbose: bool = False) -> Snapshot:
         """
         Run a command (with get_pty=True, in the foreground) on top of this snapshot.
         Returns a new snapshot that includes the modifications from that command.
@@ -534,10 +547,11 @@ class Snapshot(BaseModel):
             command=command,
             background=False,
             get_pty=True,
+            verbose=verbose,
         )
-
-    async def asetup(self, command: str) -> Snapshot:
-        return await asyncio.to_thread(self.setup, command)
+    
+    async def asetup(self, command: str, verbose: bool = False) -> Snapshot:
+        return await asyncio.to_thread(self.setup, command, verbose)
 
     def _apply_single_command(self, command: str) -> Snapshot:
         """
