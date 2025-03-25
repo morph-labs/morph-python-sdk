@@ -95,6 +95,7 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
+        verbose: bool = False,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
@@ -104,6 +105,7 @@ class MorphCloudClient:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
             )
+        self.verbose = verbose
 
         self._http_client = ApiClient(
             base_url=self.base_url,
@@ -138,6 +140,7 @@ class MorphCloudClient:
 class BaseAPI:
     def __init__(self, client: MorphCloudClient):
         self._client = client
+        self.verbose = client.verbose
 
 
 class ImageAPI(BaseAPI):
@@ -342,9 +345,11 @@ class Snapshot(BaseModel):
     )
 
     _api: SnapshotAPI = PrivateAttr()
+    _verbose: bool = PrivateAttr(default=False)
 
     def _set_api(self, api: SnapshotAPI) -> Snapshot:
         self._api = api
+        self._verbose = api.verbose
         return self
 
     def delete(self) -> None:
@@ -536,21 +541,27 @@ class Snapshot(BaseModel):
         )
         return new_snapshot
 
-    def setup(self, command: str, verbose: bool = False) -> Snapshot:
+    def setup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
         """
         Run a command (with get_pty=True, in the foreground) on top of this snapshot.
         Returns a new snapshot that includes the modifications from that command.
         Uses _cache_effect(...) to avoid re-building if an identical effect was applied before.
+        
+        Parameters:
+            command: The command to run on the instance.
+            verbose: If True, show detailed output. If None, use the client's verbose setting.
         """
+        # Use self._verbose (from client) if verbose is None, otherwise use the provided value
+        use_verbose = self._verbose if verbose is None else verbose
         return self._cache_effect(
             fn=self._run_command_effect,
             command=command,
             background=False,
             get_pty=True,
-            verbose=verbose,
+            verbose=use_verbose,
         )
     
-    async def asetup(self, command: str, verbose: bool = False) -> Snapshot:
+    async def asetup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
         return await asyncio.to_thread(self.setup, command, verbose)
 
     def _apply_single_command(self, command: str) -> Snapshot:
@@ -564,6 +575,7 @@ class Snapshot(BaseModel):
             command=command,
             background=False,
             get_pty=True,
+            verbose=False,
         )
 
 
