@@ -95,6 +95,7 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
+        verbose: bool = False,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
@@ -104,6 +105,7 @@ class MorphCloudClient:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
             )
+        self.verbose = verbose
 
         self._http_client = ApiClient(
             base_url=self.base_url,
@@ -138,6 +140,7 @@ class MorphCloudClient:
 class BaseAPI:
     def __init__(self, client: MorphCloudClient):
         self._client = client
+        self.verbose = client.verbose
 
 
 class ImageAPI(BaseAPI):
@@ -342,9 +345,11 @@ class Snapshot(BaseModel):
     )
 
     _api: SnapshotAPI = PrivateAttr()
+    _verbose: bool = PrivateAttr(default=False)
 
     def _set_api(self, api: SnapshotAPI) -> Snapshot:
         self._api = api
+        self._verbose = api.verbose
         return self
 
     def delete(self) -> None:
@@ -396,7 +401,7 @@ class Snapshot(BaseModel):
         return hasher.hexdigest()
 
     def _run_command_effect(
-        self, instance: Instance, command: str, background: bool, get_pty: bool
+        self, instance: Instance, command: str, background: bool, get_pty: bool, verbose: bool = False
     ) -> None:
         """
         Executes a shell command on the given instance, streaming output via Rich.
@@ -410,27 +415,30 @@ class Snapshot(BaseModel):
             channel.exec_command(command)
 
             if background:
-                console.print(
-                    f"[blue]Command is running in the background:[/blue] {command}"
-                )
+                if verbose:
+                    console.print(f"[blue]Command is running in the background:[/blue] {command}")
                 channel.close()
                 return
 
-            console.print(
-                f"[bold blue]🔧 Running command (foreground):[/bold blue] [yellow]{command}[/yellow]"
-            )
+            if verbose:
+                console.print(f"[bold blue]🔧 Running command (foreground):[/bold blue] [yellow]{command}[/yellow]")
+            
             output_buffer = ""
-            panel = Panel(
-                output_buffer or "[dim]No output yet...[/dim]",
-                title="📄 Command Output",
-                border_style="cyan",
-            )
-            with Live(panel, console=console, refresh_per_second=4) as live:
-                while not channel.exit_status_ready():
-                    if channel.recv_ready():
-                        data = channel.recv(1024).decode("utf-8", errors="replace")
-                        if data:
-                            output_buffer += data
+            if verbose:
+                panel = Panel(
+                    output_buffer or "[dim]No output yet...[/dim]",
+                    title="📄 Command Output",
+                    border_style="cyan",
+                )
+                live = Live(panel, console=console, refresh_per_second=4)
+                live.start()
+
+            while not channel.exit_status_ready():
+                if channel.recv_ready():
+                    data = channel.recv(1024).decode("utf-8", errors="replace")
+                    if data:
+                        output_buffer += data
+                        if verbose:
                             live.update(
                                 Panel(
                                     output_buffer,
@@ -438,11 +446,12 @@ class Snapshot(BaseModel):
                                     border_style="cyan",
                                 )
                             )
-                    time.sleep(0.2)
-                while channel.recv_ready():
-                    data = channel.recv(1024).decode("utf-8", errors="replace")
-                    if data:
-                        output_buffer += data
+                time.sleep(0.2)
+            while channel.recv_ready():
+                data = channel.recv(1024).decode("utf-8", errors="replace")
+                if data:
+                    output_buffer += data
+                    if verbose:
                         live.update(
                             Panel(
                                 output_buffer,
@@ -450,14 +459,23 @@ class Snapshot(BaseModel):
                                 border_style="cyan",
                             )
                         )
-                exit_code = channel.recv_exit_status()
-                if exit_code != 0:
+            
+            if verbose:
+                live.stop()
+
+            exit_code = channel.recv_exit_status()
+            if exit_code != 0:
+                if verbose:
                     console.print(
                         f"[bold red]⚠️ Warning:[/bold red] Command exited with code [red]{exit_code}[/red]"
                     )
+                else:
+                    console.print(f"Command failed with exit code {exit_code}")
+            
             channel.close()
         finally:
             ssh_client.close()
+
 
     def _cache_effect(
         self,
@@ -523,21 +541,28 @@ class Snapshot(BaseModel):
         )
         return new_snapshot
 
-    def setup(self, command: str) -> Snapshot:
+    def setup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
         """
         Run a command (with get_pty=True, in the foreground) on top of this snapshot.
         Returns a new snapshot that includes the modifications from that command.
         Uses _cache_effect(...) to avoid re-building if an identical effect was applied before.
+        
+        Parameters:
+            command: The command to run on the instance.
+            verbose: If True, show detailed output. If None, use the client's verbose setting.
         """
+        # Use self._verbose (from client) if verbose is None, otherwise use the provided value
+        use_verbose = self._verbose if verbose is None else verbose
         return self._cache_effect(
             fn=self._run_command_effect,
             command=command,
             background=False,
             get_pty=True,
+            verbose=use_verbose,
         )
-
-    async def asetup(self, command: str) -> Snapshot:
-        return await asyncio.to_thread(self.setup, command)
+    
+    async def asetup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
+        return await asyncio.to_thread(self.setup, command, verbose)
 
     def _apply_single_command(self, command: str) -> Snapshot:
         """
@@ -550,6 +575,7 @@ class Snapshot(BaseModel):
             command=command,
             background=False,
             get_pty=True,
+            verbose=False,
         )
 
 
