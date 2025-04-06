@@ -7,9 +7,10 @@ import base64
 import typing
 import asyncio
 import importlib.util
-
+import requests
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
+import websocket
 
 from morphcloud.api import Instance, InstanceAPI, Snapshot, MorphCloudClient
 
@@ -49,6 +50,7 @@ CUA_KEY_TO_PLAYWRIGHT_KEY = {
     "win": "Meta",
 }
 
+
 class Browser:
     """
     Browser automation interface for Computer using Chrome DevTools Protocol.
@@ -84,13 +86,8 @@ class Browser:
                 "The playwright package is required for browser automation. "
                 "Install it with: pip install playwright"
             )
-        if not _aiohttp_available:
-            raise ImportError(
-                "The aiohttp package is required for browser automation. "
-                "Install it with: pip install aiohttp"
-            )
 
-    async def _get_browser_ws_endpoint(
+    def _get_browser_ws_endpoint(
         self, cdp_url: str, timeout_seconds: int = 15
     ) -> str:
         """
@@ -106,7 +103,7 @@ class Browser:
         Raises:
             TimeoutError: If unable to get WebSocket URL within timeout period
         """
-        import aiohttp
+        import requests
 
         # Remove any trailing slashes
         cdp_url = cdp_url.rstrip("/")
@@ -125,40 +122,37 @@ class Browser:
             )  # Cap at 2 seconds per retry
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    # Get the /json/version endpoint
-                    async with session.get(json_version_url, timeout=5) as response:
-                        if response.status != 200:
-                            await asyncio.sleep(current_delay)
-                            continue
+                # Get the /json/version endpoint
+                response = requests.get(json_version_url, timeout=5)
+                if response.status_code != 200:
+                    time.sleep(current_delay)
+                    continue
 
-                        try:
-                            data = await response.json()
+                try:
+                    data = response.json()
 
-                            # Use the exact WebSocketDebuggerUrl from the response
-                            websocket_url = data.get("webSocketDebuggerUrl")
-                            if not websocket_url:
-                                await asyncio.sleep(current_delay)
-                                continue
+                    # Use the exact WebSocketDebuggerUrl from the response
+                    websocket_url = data.get("webSocketDebuggerUrl")
+                    if not websocket_url:
+                        time.sleep(current_delay)
+                        continue
 
-                            # Success!
-                            return websocket_url
-                        except json.JSONDecodeError:
-                            errors.append(
-                                f"Invalid JSON response on attempt {retry_count}"
-                            )
-                            await asyncio.sleep(current_delay)
-                            continue
+                    # Success!
+                    return websocket_url
+                except json.JSONDecodeError:
+                    errors.append(
+                        f"Invalid JSON response on attempt {retry_count}"
+                    )
+                    time.sleep(current_delay)
+                    continue
 
-            except aiohttp.ClientError as e:
+            except requests.RequestException as e:
                 errors.append(f"HTTP client error on attempt {retry_count}: {str(e)}")
-            except asyncio.TimeoutError:
-                errors.append(f"Timeout error on attempt {retry_count}")
             except Exception as e:
                 errors.append(f"Unexpected error on attempt {retry_count}: {str(e)}")
 
             # Sleep before retry
-            await asyncio.sleep(current_delay)
+            time.sleep(current_delay)
 
             # Check if we're about to exceed the timeout
             time_remaining = timeout_seconds - (time.time() - start_time)
@@ -173,7 +167,7 @@ class Browser:
             f"Failed to get WebSocket URL after {retry_count} attempts. Errors: {error_summary}"
         )
 
-    async def _ensure_connected(self) -> None:
+    def _ensure_connected(self) -> None:
         """
         Ensure browser is connected before performing operations.
 
@@ -183,9 +177,9 @@ class Browser:
             Exception: If connection fails
         """
         if not self._connected:
-            await self.connect()
+            self.connect()
 
-    async def connect(self, timeout_seconds: int = 30) -> Browser:
+    def connect(self, timeout_seconds: int = 30) -> 'Browser':
         """
         Connect to a CDP endpoint and create a browser client.
 
@@ -204,7 +198,7 @@ class Browser:
             return self
 
         self._check_dependencies()
-        from playwright.async_api import async_playwright
+        from playwright.sync_api import sync_playwright
 
         # Get CDP URL
         cdp_url = self._computer.cdp_url
@@ -212,28 +206,28 @@ class Browser:
 
         try:
             # Get the WebSocket URL directly from the /json/version endpoint
-            browser_ws_endpoint = await self._get_browser_ws_endpoint(
+            browser_ws_endpoint = self._get_browser_ws_endpoint(
                 cdp_url, timeout_seconds
             )
 
             # Launch playwright
-            self._playwright = await async_playwright().start()
+            self._playwright = sync_playwright().start()
 
             # Connect to the browser using CDP
-            self._browser = await self._playwright.chromium.connect_over_cdp(
+            self._browser = self._playwright.chromium.connect_over_cdp(
                 browser_ws_endpoint
             )
 
             # Create a new context and page
-            self._context = await self._browser.new_context()
-            self._page = await self._context.new_page()
+            self._context = self._browser.new_context()
+            self._page = self._context.new_page()
             self._connected = True
 
             return self
         except Exception as e:
             raise Exception(f"Failed to connect to browser: {str(e)}") from e
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """
         Close the browser and clean up resources.
 
@@ -243,11 +237,11 @@ class Browser:
             return
 
         if self._context:
-            await self._context.close()
+            self._context.close()
         if self._browser:
-            await self._browser.close()
+            self._browser.close()
         if self._playwright:
-            await self._playwright.stop()
+            self._playwright.stop()
 
         self._connected = False
         self._browser = None
@@ -255,25 +249,25 @@ class Browser:
         self._page = None
         self._playwright = None
 
-    async def __aenter__(self) -> Browser:
+    def __enter__(self) -> 'Browser':
         """
-        Enter the asynchronous context manager.
+        Enter the context manager.
 
         Returns:
             The Browser instance
         """
-        return await self.connect()
+        return self.connect()
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """
-        Exit the asynchronous context manager.
+        Exit the context manager.
 
         Closes the browser and cleans up resources.
         """
         _ = exc_type, exc_val, exc_tb  # Unused
-        await self.close()
+        self.close()
 
-    async def get_current_url(self) -> str:
+    def get_current_url(self) -> str:
         """
         Get the current page URL.
 
@@ -283,11 +277,11 @@ class Browser:
         Raises:
             Exception: If not connected
         """
-        await self._ensure_connected()
+        self._ensure_connected()
         assert self._page, "Page is not initialized"
         return self._page.url
 
-    async def screenshot(self) -> str:
+    def screenshot(self) -> str:
         """
         Take a screenshot of the current page and return the raw image data.
 
@@ -297,65 +291,65 @@ class Browser:
         Raises:
             Exception: If screenshot fails
         """
-        await self._ensure_connected()
+        self._ensure_connected()
         assert self._page, "Page is not initialized"
-        png_bytes = await self._page.screenshot(full_page=False)
+        png_bytes = self._page.screenshot(full_page=False)
         return base64.b64encode(png_bytes).decode("utf-8")
 
-    async def click(self, x: int, y: int, button: str = "left") -> None:
-        await self._ensure_connected()
+    def click(self, x: int, y: int, button: str = "left") -> None:
+        self._ensure_connected()
         assert self._page, "Page is not initialized"
         if button == "back":
-            await self.back()
+            self.back()
         elif button == "forward":
-            await self.forward()
+            self.forward()
         elif button == "wheel":
-            await self._page.mouse.wheel(x, y)
+            self._page.mouse.wheel(x, y)
         else:
             button_mapping = {"left": "left", "right": "right"}
             button_type = button_mapping.get(button, "left")
-            await self._page.mouse.click(x, y, button=button_type)
+            self._page.mouse.click(x, y, button=button_type)
 
-    async def double_click(self, x: int, y: int) -> None:
+    def double_click(self, x: int, y: int) -> None:
         assert self._page, "Page is not initialized"
-        await self._page.mouse.dblclick(x, y)
+        self._page.mouse.dblclick(x, y)
 
-    async def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
-        await self._ensure_connected()
+    def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
+        self._ensure_connected()
         assert self._page, "Page is not initialized"
-        await self._page.mouse.move(x, y)
-        await self._page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
+        self._page.mouse.move(x, y)
+        self._page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
 
-    async def type(self, text: str) -> None:
+    def type(self, text: str) -> None:
         assert self._page, "Page is not initialized"
-        await self._page.keyboard.type(text)
+        self._page.keyboard.type(text)
 
-    async def wait(self, ms: int = 1000) -> None:
-        await asyncio.sleep(ms / 1000)
+    def wait(self, ms: int = 1000) -> None:
+        time.sleep(ms / 1000)
 
-    async def move(self, x: int, y: int) -> None:
+    def move(self, x: int, y: int) -> None:
         assert self._page, "Page is not initialized"
-        await self._page.mouse.move(x, y)
+        self._page.mouse.move(x, y)
 
-    async def keypress(self, keys: List[str]) -> None:
+    def keypress(self, keys: List[str]) -> None:
         assert self._page, "Page is not initialized"
         mapped_keys = [CUA_KEY_TO_PLAYWRIGHT_KEY.get(key.lower(), key) for key in keys]
         for key in mapped_keys:
-            await self._page.keyboard.down(key)
+            self._page.keyboard.down(key)
         for key in reversed(mapped_keys):
-            await self._page.keyboard.up(key)
+            self._page.keyboard.up(key)
 
-    async def drag(self, path: List[Dict[str, int]]) -> None:
+    def drag(self, path: List[Dict[str, int]]) -> None:
         assert self._page, "Page is not initialized"
         if not path:
             return
-        await self._page.mouse.move(path[0]["x"], path[0]["y"])
-        await self._page.mouse.down()
+        self._page.mouse.move(path[0]["x"], path[0]["y"])
+        self._page.mouse.down()
         for point in path[1:]:
-            await self._page.mouse.move(point["x"], point["y"])
-        await self._page.mouse.up()
+            self._page.mouse.move(point["x"], point["y"])
+        self._page.mouse.up()
 
-    async def goto(
+    def goto(
         self, url: str, timeout: int = 15000, wait_until: str = "domcontentloaded"
     ) -> None:
         """
@@ -371,17 +365,17 @@ class Browser:
             Exception: If an error occurs during navigation
         """
         try:
-            await self._ensure_connected()
+            self._ensure_connected()
             # Use a shorter timeout and wait until 'domcontentloaded' instead of 'load'
             assert self._page, "Page is not initialized"
-            await self._page.goto(url, timeout=timeout, wait_until=wait_until)
+            self._page.goto(url, timeout=timeout, wait_until=wait_until)
 
             # Add a small delay to ensure the page is stable
-            await asyncio.sleep(1)
+            time.sleep(1)
         except Exception as e:
             raise Exception(f"Failed to navigate to {url}: {str(e)}") from e
 
-    async def back(
+    def back(
         self, timeout: int = 10000, wait_until: str = "domcontentloaded"
     ) -> None:
         """
@@ -395,24 +389,22 @@ class Browser:
             Exception: If an error occurs during navigation
         """
         try:
-            await self._ensure_connected()
+            self._ensure_connected()
 
             try:
                 # Try with a shorter timeout and 'domcontentloaded' event
                 assert self._page, "Page is not initialized"
-                await self._page.go_back(timeout=timeout, wait_until=wait_until)
+                self._page.go_back(timeout=timeout, wait_until=wait_until)
             except Exception as nav_error:
                 # If timeout occurs, the page might still be navigating
                 print(f"Navigation error when going back: {str(nav_error)}")
                 # Wait a bit to give the page a chance to settle
-                await asyncio.sleep(3)
+                time.sleep(3)
 
-            # Get the current URL to verify navigation happened
-            # current_url = self._page.url
         except Exception as e:
             raise Exception(f"Failed to go back in browser history: {str(e)}") from e
 
-    async def forward(
+    def forward(
         self, timeout: int = 10000, wait_until: str = "domcontentloaded"
     ) -> None:
         """
@@ -426,24 +418,22 @@ class Browser:
             Exception: If an error occurs during navigation
         """
         try:
-            await self._ensure_connected()
+            self._ensure_connected()
 
             try:
                 # Try with a shorter timeout and 'domcontentloaded' event
                 assert self._page, "Page is not initialized"
-                await self._page.go_forward(timeout=timeout, wait_until=wait_until)
+                self._page.go_forward(timeout=timeout, wait_until=wait_until)
             except Exception as nav_error:
                 # If timeout occurs, the page might still be navigating
                 print(f"Navigation error when going forward: {str(nav_error)}")
                 # Wait a bit to give the page a chance to settle
-                await asyncio.sleep(3)
+                time.sleep(3)
 
-            # Get the current URL to verify navigation happened
-            # current_url = self._page.url
         except Exception as e:
             raise Exception(f"Failed to go forward in browser history: {str(e)}") from e
 
-    async def get_title(self) -> str:
+    def get_title(self) -> str:
         """
         Get the current page title.
 
@@ -453,10 +443,9 @@ class Browser:
         Raises:
             Exception: If not connected or fails to get title
         """
-        await self._ensure_connected()
+        self._ensure_connected()
         assert self._page, "Page is not initialized"
-        return await self._page.title()
-
+        return self._page.title()
 
 class Sandbox:
     """
@@ -486,10 +475,6 @@ class Sandbox:
         missing = []
         if not _jupyter_client_available:
             missing.append("jupyter_client")
-        if not _websockets_available:
-            missing.append("websockets")
-        if not _httpx_available:
-            missing.append("httpx")
 
         if missing:
             raise ImportError(
@@ -497,7 +482,7 @@ class Sandbox:
                 f"Install them with: pip install {' '.join(missing)}"
             )
 
-    async def _ensure_kernel_connection(self) -> None:
+    def _ensure_kernel_connection(self) -> None:
         """
         Ensure we have an active kernel connection.
 
@@ -507,7 +492,7 @@ class Sandbox:
             Various exceptions from connect() method
         """
         if not self._ws_connected:
-            await self.connect()
+            self.connect()
 
     @property
     def jupyter_url(self) -> str:
@@ -539,7 +524,7 @@ class Sandbox:
 
         return self._jupyter_url
 
-    async def wait_for_service(self, timeout: int = 30) -> bool:
+    def wait_for_service(self, timeout: int = 30) -> bool:
         """
         Wait for Jupyter service to be ready.
 
@@ -554,32 +539,31 @@ class Sandbox:
             ImportError: If required dependencies are not installed
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
         start_time = time.time()
         errors = []
 
-        async with httpx.AsyncClient() as client:
-            while time.time() - start_time < timeout:
-                try:
-                    response = await client.get(
-                        f"{self.jupyter_url}/api/status", timeout=5.0
-                    )
-                    if response.status_code == 200:
-                        return True
-                except Exception as e:
-                    # Store error but continue trying
-                    errors.append(f"Error connecting to Jupyter service: {str(e)}")
-                await asyncio.sleep(2)
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(
+                    f"{self.jupyter_url}/api/status", timeout=5.0
+                )
+                if response.status_code == 200:
+                    return True
+            except Exception as e:
+                # Store error but continue trying
+                errors.append(f"Error connecting to Jupyter service: {str(e)}")
+            time.sleep(2)
 
-            error_detail = (
-                "; ".join(errors[-3:]) if errors else "No specific errors recorded"
-            )
-            raise TimeoutError(
-                f"Jupyter service failed to start within {timeout} seconds. Errors: {error_detail}"
-            )
+        error_detail = (
+            "; ".join(errors[-3:]) if errors else "No specific errors recorded"
+        )
+        raise TimeoutError(
+            f"Jupyter service failed to start within {timeout} seconds. Errors: {error_detail}"
+        )
 
-    async def list_kernels(self) -> List[Dict[str, Any]]:
+    def list_kernels(self) -> List[Dict[str, Any]]:
         """
         List available kernels.
 
@@ -588,17 +572,16 @@ class Sandbox:
 
         Raises:
             ImportError: If required dependencies are not installed
-            httpx.HTTPError: If API request fails
+            requests.RequestException: If API request fails
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.jupyter_url}/api/kernels")
-            response.raise_for_status()
-            return response.json()
+        response = requests.get(f"{self.jupyter_url}/api/kernels")
+        response.raise_for_status()
+        return response.json()
 
-    async def start_kernel(self, kernel_name: str = "python3") -> Dict[str, Any]:
+    def start_kernel(self, kernel_name: str = "python3") -> Dict[str, Any]:
         """
         Start a new kernel with the given name.
 
@@ -610,21 +593,20 @@ class Sandbox:
 
         Raises:
             ImportError: If required dependencies are not installed
-            httpx.HTTPError: If API request fails
+            requests.RequestException: If API request fails
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.jupyter_url}/api/kernels", json={"name": kernel_name}
-            )
-            response.raise_for_status()
-            kernel_info = response.json()
-            self._kernel_id = kernel_info["id"]
-            return kernel_info
+        response = requests.post(
+            f"{self.jupyter_url}/api/kernels", json={"name": kernel_name}
+        )
+        response.raise_for_status()
+        kernel_info = response.json()
+        self._kernel_id = kernel_info["id"]
+        return kernel_info
 
-    async def connect(
+    def connect(
         self, timeout_seconds: int = 30, kernel_id: Optional[str] = None
     ) -> "Sandbox":
         """
@@ -640,19 +622,18 @@ class Sandbox:
         Raises:
             ImportError: If required dependencies are not installed
             TimeoutError: If Jupyter service doesn't start within timeout
-            websockets.WebSocketException: If WebSocket connection fails
+            websocket.WebSocketException: If WebSocket connection fails
         """
         self._check_dependencies()
-        import websockets
 
         # Wait for Jupyter service to be ready
-        await self.wait_for_service(timeout_seconds)
+        self.wait_for_service(timeout_seconds)
 
         # Use existing kernel_id if provided, otherwise start a new kernel
         if kernel_id:
             self._kernel_id = kernel_id
         elif not self._kernel_id:
-            await self.start_kernel()
+            self.start_kernel()
 
         # Connect to the WebSocket
         ws_url = self.jupyter_url.replace("https://", "wss://").replace(
@@ -663,7 +644,7 @@ class Sandbox:
         # Close existing connection if any
         if self._ws:
             try:
-                await self._ws.close()
+                self._ws.close()
             except Exception as e:
                 print(f"Error closing WebSocket connection: {str(e)}")
             finally:
@@ -671,12 +652,12 @@ class Sandbox:
                 self._ws_connected = False
 
         # Connect to kernel WebSocket
-        self._ws = await websockets.connect(ws_endpoint)
+        self._ws = websocket.create_connection(ws_endpoint)
         self._ws_connected = True
 
         return self
 
-    async def execute_code(self, code: str, timeout: int = 30) -> Dict[str, Any]:
+    def execute_code(self, code: str, timeout: int = 30) -> Dict[str, Any]:
         """
         Execute Python code in a Jupyter kernel and return the result.
 
@@ -692,7 +673,7 @@ class Sandbox:
             - execution_count: Cell execution number
             - kernel_id: ID of the kernel used for execution
         """
-        await self._ensure_kernel_connection()
+        self._ensure_kernel_connection()
         assert self._ws, "WebSocket connection is not established"
 
         # Prepare message
@@ -726,7 +707,7 @@ class Sandbox:
                     return o.isoformat()
                 return json.JSONEncoder.default(self, o)
 
-        await self._ws.send(json.dumps(msg, cls=DateTimeEncoder))
+        self._ws.send(json.dumps(msg, cls=DateTimeEncoder))
 
         # Process messages
         outputs = []
@@ -740,89 +721,98 @@ class Sandbox:
         got_status_idle = False
 
         start_time = time.time()
+        
+        # Setting timeout for WebSocket operations
+        original_timeout = self._ws.gettimeout()
+        self._ws.settimeout(5.0)  # 5 second timeout for recv operations
 
-        while time.time() - start_time < timeout:
-            try:
-                response = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
-
+        try:
+            while time.time() - start_time < timeout:
                 try:
-                    response_data = json.loads(response)
-                except json.JSONDecodeError as json_err:
-                    print(f"Failed to parse WebSocket message: {str(json_err)}")
+                    response = self._ws.recv()
+
+                    try:
+                        response_data = json.loads(response)
+                    except json.JSONDecodeError as json_err:
+                        print(f"Failed to parse WebSocket message: {str(json_err)}")
+                        continue
+
+                    parent_msg_id = response_data.get("parent_header", {}).get("msg_id")
+                    msg_type = response_data.get("header", {}).get("msg_type")
+
+                    # Only process messages related to our request
+                    if parent_msg_id != msg_id:
+                        continue
+
+                    if msg_type == "execute_input":
+                        got_execute_input = True
+                        execution_count = response_data.get("content", {}).get(
+                            "execution_count"
+                        )
+
+                    elif msg_type == "stream":
+                        got_output = True
+                        text = response_data.get("content", {}).get("text", "")
+                        outputs.append(text)
+
+                    elif msg_type == "execute_result":
+                        got_output = True
+                        data = response_data.get("content", {}).get("data", {})
+                        text = data.get("text/plain", "")
+                        outputs.append(text)
+
+                        # Check for image data
+                        for mime_type in ["image/png", "image/jpeg", "image/svg+xml"]:
+                            if mime_type in data:
+                                images.append(
+                                    {"mime_type": mime_type, "data": data[mime_type]}
+                                )
+
+                    elif msg_type == "display_data":
+                        got_output = True
+                        data = response_data.get("content", {}).get("data", {})
+                        text = data.get("text/plain", "")
+                        outputs.append(text)
+
+                        # Check for image data
+                        for mime_type in ["image/png", "image/jpeg", "image/svg+xml"]:
+                            if mime_type in data:
+                                images.append(
+                                    {"mime_type": mime_type, "data": data[mime_type]}
+                                )
+
+                    elif msg_type == "error":
+                        got_output = True
+                        status = "error"
+                        traceback = response_data.get("content", {}).get("traceback", [])
+                        outputs.extend(traceback)
+
+                    elif msg_type == "status":
+                        if (
+                            response_data.get("content", {}).get("execution_state")
+                            == "idle"
+                        ):
+                            got_status_idle = True
+
+                    # Break if we have both the idle status and either input or output
+                    if got_status_idle and (got_output or got_execute_input):
+                        # Add a small delay to ensure we've gotten all messages
+                        time.sleep(0.1)
+                        break
+
+                except websocket.WebSocketTimeoutException:
+                    # If we've seen idle but no output, we might be done (empty execution)
+                    if got_status_idle and got_execute_input:
+                        break
                     continue
-
-                parent_msg_id = response_data.get("parent_header", {}).get("msg_id")
-                msg_type = response_data.get("header", {}).get("msg_type")
-
-                # Only process messages related to our request
-                if parent_msg_id != msg_id:
-                    continue
-
-                if msg_type == "execute_input":
-                    got_execute_input = True
-                    execution_count = response_data.get("content", {}).get(
-                        "execution_count"
-                    )
-
-                elif msg_type == "stream":
-                    got_output = True
-                    text = response_data.get("content", {}).get("text", "")
-                    outputs.append(text)
-
-                elif msg_type == "execute_result":
-                    got_output = True
-                    data = response_data.get("content", {}).get("data", {})
-                    text = data.get("text/plain", "")
-                    outputs.append(text)
-
-                    # Check for image data
-                    for mime_type in ["image/png", "image/jpeg", "image/svg+xml"]:
-                        if mime_type in data:
-                            images.append(
-                                {"mime_type": mime_type, "data": data[mime_type]}
-                            )
-
-                elif msg_type == "display_data":
-                    got_output = True
-                    data = response_data.get("content", {}).get("data", {})
-                    text = data.get("text/plain", "")
-                    outputs.append(text)
-
-                    # Check for image data
-                    for mime_type in ["image/png", "image/jpeg", "image/svg+xml"]:
-                        if mime_type in data:
-                            images.append(
-                                {"mime_type": mime_type, "data": data[mime_type]}
-                            )
-
-                elif msg_type == "error":
-                    got_output = True
+                except Exception as e:
+                    outputs.append(f"Error processing message: {str(e)}")
                     status = "error"
-                    traceback = response_data.get("content", {}).get("traceback", [])
-                    outputs.extend(traceback)
-
-                elif msg_type == "status":
-                    if (
-                        response_data.get("content", {}).get("execution_state")
-                        == "idle"
-                    ):
-                        got_status_idle = True
-
-                # Break if we have both the idle status and either input or output
-                if got_status_idle and (got_output or got_execute_input):
-                    # Add a small delay to ensure we've gotten all messages
-                    await asyncio.sleep(0.1)
                     break
-
-            except asyncio.TimeoutError:
-                # If we've seen idle but no output, we might be done (empty execution)
-                if got_status_idle and got_execute_input:
-                    break
-                continue
-            except Exception as e:
-                outputs.append(f"Error processing message: {str(e)}")
-                status = "error"
-                break
+        finally:
+            # Restore original timeout
+            if original_timeout is not None:
+                self._ws.settimeout(original_timeout)
 
         # Create result
         result = {
@@ -837,7 +827,7 @@ class Sandbox:
 
         return result
 
-    async def create_notebook(self, name: str) -> Dict[str, Any]:
+    def create_notebook(self, name: str) -> Dict[str, Any]:
         """
         Create a new notebook.
 
@@ -849,10 +839,10 @@ class Sandbox:
 
         Raises:
             ImportError: If required dependencies are not installed
-            httpx.HTTPError: If API request fails
+            requests.RequestException: If API request fails
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
         # Ensure notebook name has .ipynb extension
         if not name.endswith(".ipynb"):
@@ -872,15 +862,14 @@ class Sandbox:
             "cells": [],
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                f"{self.jupyter_url}/api/contents/{name}",
-                json={"type": "notebook", "content": notebook},
-            )
-            response.raise_for_status()
-            return response.json()
+        response = requests.put(
+            f"{self.jupyter_url}/api/contents/{name}",
+            json={"type": "notebook", "content": notebook},
+        )
+        response.raise_for_status()
+        return response.json()
 
-    async def add_cell(
+    def add_cell(
         self, notebook_path: str, content: str, cell_type: str = "code"
     ) -> Dict[str, Any]:
         """
@@ -896,46 +885,45 @@ class Sandbox:
 
         Raises:
             ImportError: If required dependencies are not installed
-            httpx.HTTPError: If API request fails
+            requests.RequestException: If API request fails
             ValueError: If cell_type is invalid
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
         # Ensure notebook path has .ipynb extension
         if not notebook_path.endswith(".ipynb"):
             notebook_path = f"{notebook_path}.ipynb"
 
         # Get current notebook
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.jupyter_url}/api/contents/{notebook_path}",
-            )
-            response.raise_for_status()
-            notebook_data = response.json()
-            notebook = notebook_data["content"]
+        response = requests.get(
+            f"{self.jupyter_url}/api/contents/{notebook_path}",
+        )
+        response.raise_for_status()
+        notebook_data = response.json()
+        notebook = notebook_data["content"]
 
-            # Create new cell
-            new_cell = {"cell_type": cell_type, "metadata": {}, "source": content}
+        # Create new cell
+        new_cell = {"cell_type": cell_type, "metadata": {}, "source": content}
 
-            if cell_type == "code":
-                new_cell["execution_count"] = None
-                new_cell["outputs"] = []
+        if cell_type == "code":
+            new_cell["execution_count"] = None
+            new_cell["outputs"] = []
 
-            # Append cell
-            notebook["cells"].append(new_cell)
-            cell_index = len(notebook["cells"]) - 1
+        # Append cell
+        notebook["cells"].append(new_cell)
+        cell_index = len(notebook["cells"]) - 1
 
-            # Save notebook
-            response = await client.put(
-                f"{self.jupyter_url}/api/contents/{notebook_path}",
-                json={"type": "notebook", "content": notebook},
-            )
-            response.raise_for_status()
+        # Save notebook
+        response = requests.put(
+            f"{self.jupyter_url}/api/contents/{notebook_path}",
+            json={"type": "notebook", "content": notebook},
+        )
+        response.raise_for_status()
 
-            return {"index": cell_index, "cell": new_cell}
+        return {"index": cell_index, "cell": new_cell}
 
-    async def execute_cell(self, notebook_path: str, cell_index: int) -> Dict[str, Any]:
+    def execute_cell(self, notebook_path: str, cell_index: int) -> Dict[str, Any]:
         """
         Execute a specific cell in a notebook.
 
@@ -948,33 +936,32 @@ class Sandbox:
 
         Raises:
             ImportError: If required dependencies are not installed
-            httpx.HTTPError: If API request fails
+            requests.RequestException: If API request fails
             ValueError: If cell_index is out of range or cell is not a code cell
         """
         self._check_dependencies()
-        import httpx
+        import requests
 
         # Get the notebook
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.jupyter_url}/api/contents/{notebook_path}",
-            )
-            response.raise_for_status()
-            notebook_data = response.json()
-            cells = notebook_data["content"]["cells"]
+        response = requests.get(
+            f"{self.jupyter_url}/api/contents/{notebook_path}",
+        )
+        response.raise_for_status()
+        notebook_data = response.json()
+        cells = notebook_data["content"]["cells"]
 
-            if cell_index >= len(cells):
-                raise ValueError(f"Cell index {cell_index} out of range")
+        if cell_index >= len(cells):
+            raise ValueError(f"Cell index {cell_index} out of range")
 
-            cell = cells[cell_index]
-            if cell["cell_type"] != "code":
-                raise ValueError(f"Cell {cell_index} is not a code cell")
+        cell = cells[cell_index]
+        if cell["cell_type"] != "code":
+            raise ValueError(f"Cell {cell_index} is not a code cell")
 
-            # Execute the cell's code
-            code = cell["source"]
-            return await self.execute_code(code)
+        # Execute the cell's code
+        code = cell["source"]
+        return self.execute_code(code)
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """
         Close the kernel WebSocket connection.
 
@@ -983,7 +970,7 @@ class Sandbox:
         """
         if self._ws:
             try:
-                await self._ws.close()
+                self._ws.close()
             except Exception as e:
                 # Log the error but continue with cleanup
                 print(f"Error closing WebSocket connection: {str(e)}")
@@ -991,161 +978,20 @@ class Sandbox:
                 self._ws = None
                 self._ws_connected = False
 
-    # Synchronous interface
-
-    def _run_async(self, coro: typing.Coroutine) -> Any:
+    def __enter__(self) -> 'Sandbox':
         """
-        Run an async coroutine in a new event loop.
-
-        Args:
-            coro: The coroutine to run
-
+        Enter context manager.
+        
         Returns:
-            The result of the coroutine
-
-        Raises:
-            Exception: Any exception raised by the coroutine
+            The Sandbox instance
         """
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    def wait_for_service_sync(self, timeout: int = 30) -> bool:
+        return self.connect()
+        
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """
-        Synchronous version of wait_for_service.
-
-        Args:
-            timeout: Maximum time to wait in seconds
-
-        Returns:
-            True if service is ready
-
-        Raises:
-            Same exceptions as the async version
+        Exit context manager and close connections.
         """
-        return self._run_async(self.wait_for_service(timeout))
-
-    def connect_sync(
-        self, timeout_seconds: int = 30, kernel_id: Optional[str] = None
-    ) -> "Sandbox":
-        """
-        Synchronous version of connect.
-
-        Args:
-            timeout_seconds: Maximum time to wait for service in seconds
-            kernel_id: Optional ID of existing kernel to connect to
-
-        Returns:
-            The Sandbox instance for method chaining
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.connect(timeout_seconds, kernel_id))
-
-    def list_kernels_sync(self) -> List[Dict[str, Any]]:
-        """
-        Synchronous version of list_kernels.
-
-        Returns:
-            List of kernel dictionaries with metadata
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.list_kernels())
-
-    def start_kernel_sync(self, kernel_name: str = "python3") -> Dict[str, Any]:
-        """
-        Synchronous version of start_kernel.
-
-        Args:
-            kernel_name: The name of the kernel to start (default: python3)
-
-        Returns:
-            Dictionary with kernel information including ID
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.start_kernel(kernel_name))
-
-    def execute_code_sync(self, code: str, timeout: int = 30) -> Dict[str, Any]:
-        """
-        Synchronous version of execute_code.
-
-        Args:
-            code: Python code to execute
-            timeout: Maximum time to wait for execution in seconds
-
-        Returns:
-            Dictionary containing execution results
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.execute_code(code, timeout))
-
-    def create_notebook_sync(self, name: str) -> Dict[str, Any]:
-        """
-        Synchronous version of create_notebook.
-
-        Args:
-            name: Name of the notebook (with or without .ipynb extension)
-
-        Returns:
-            Notebook metadata dictionary
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.create_notebook(name))
-
-    def add_cell_sync(
-        self, notebook_path: str, content: str, cell_type: str = "code"
-    ) -> Dict[str, Any]:
-        """
-        Synchronous version of add_cell.
-
-        Args:
-            notebook_path: Path to the notebook
-            content: Cell content
-            cell_type: Cell type ("code", "markdown", or "raw")
-
-        Returns:
-            Dictionary with cell index and cell data
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.add_cell(notebook_path, content, cell_type))
-
-    def execute_cell_sync(self, notebook_path: str, cell_index: int) -> Dict[str, Any]:
-        """
-        Synchronous version of execute_cell.
-
-        Args:
-            notebook_path: Path to the notebook
-            cell_index: Index of the cell to execute
-
-        Returns:
-            Dictionary containing execution results
-
-        Raises:
-            Same exceptions as the async version
-        """
-        return self._run_async(self.execute_cell(notebook_path, cell_index))
-
-    def close_sync(self) -> None:
-        """
-        Synchronous version of close.
-
-        Closes the kernel WebSocket connection.
-        """
-        return self._run_async(self.close())
-
+        self.close()
 
 class Computer:
     """
@@ -1163,7 +1009,8 @@ class Computer:
         # Initialize computer-specific components
         self._browser = Browser(self)
         self._sandbox = Sandbox(self)
-        self._display = ":1"  # Default display
+        # Set default display - the _display attribute is managed through the display property
+        self._display = ":1"
         return self
 
     @property
@@ -1741,25 +1588,42 @@ class Computer:
     @property
     def display(self) -> str:
         """
-        Get the X display identifier being used.
+        Get the X display identifier being used by this Computer.
 
         This property returns the X11 display identifier (e.g., ":1") that is used
         for X11-based GUI operations like taking screenshots and simulating user input.
-
+        
+        In Linux systems, the X display is where graphical applications render their output.
+        The default display ":1" is typically used for the primary screen in virtual environments.
+        
+        This display value is used in all VNC interaction methods such as:
+        - screenshot()
+        - click()
+        - type_text()
+        - key_press()
+        
         Returns:
-            String identifier of the X display
+            String identifier of the X display (e.g., ":1")
+            
+        See Also:
+            set_display: Method to change the display identifier
         """
         return getattr(self, "_display", ":1")
-
-    @display.setter
-    def _display(self, value: str) -> None:
+    
+    def set_display(self, display_id: str) -> None:
         """
-        Set the X display to use.
+        Set the X display identifier to use for this Computer.
 
+        Use this method if you need to change which X display is targeted for GUI operations.
+        In most cases, the default display ":1" is appropriate.
+
+        Example:
+            computer.set_display(":2")  # Set to use the secondary display
+        
         Args:
-            value: The X11 display identifier to use (e.g., ":1")
+            display_id: The X11 display identifier to use (e.g., ":1", ":2")
         """
-        self._display = value
+        self._display = display_id
 
     # VNC interaction methods
     def click(self, x: int, y: int, button: str = "left") -> None:
@@ -1983,183 +1847,6 @@ class Computer:
         result = self._instance.exec(f"cat {temp_path} | base64 -w 0")
         return result.stdout
 
-    # Async versions of the VNC interaction methods
-    async def aclick(self, x: int, y: int, button: str = "left") -> None:
-        """Async version of click."""
-        button_map = {"left": 1, "middle": 2, "right": 3}
-        b = button_map.get(button, 1)
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click {b}'"
-        )
-
-    async def adouble_click(self, x: int, y: int) -> None:
-        """Async version of double_click."""
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click --repeat 2 1'"
-        )
-
-    async def amove_mouse(self, x: int, y: int) -> None:
-        """Async version of move_mouse."""
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
-        )
-
-    async def ascroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
-        """Async version of scroll."""
-        # First move mouse to position
-        await self.amove_mouse(x, y)
-
-        # Then perform scrolling
-        if scroll_y != 0:
-            # Positive scroll_y scrolls down, negative scrolls up
-            button = 5 if scroll_y > 0 else 4  # 5 = down, 4 = up
-            count = abs(scroll_y)
-            await self._instance.aexec(
-                f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
-            )
-
-        if scroll_x != 0:
-            # Horizontal scrolling (button 6 = left, 7 = right)
-            button = 7 if scroll_x > 0 else 6  # 7 = right, 6 = left
-            count = abs(scroll_x)
-            await self._instance.aexec(
-                f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
-            )
-
-    async def a_wait(self, ms: int = 1000) -> None:
-        """
-        Async version of wait.
-
-        Args:
-            ms: Number of milliseconds to wait
-        """
-        seconds = ms / 1000.0
-        await asyncio.sleep(seconds)
-
-    async def atype_text(self, text: str) -> None:
-        """
-        Async version of type_text.
-
-        Args:
-            text: Text to type
-
-        Raises:
-            Exception: If typing fails
-        """
-        # Escape single quotes for bash
-        safe_text = text.replace("'", "'\\''")
-        # Use consistent quoting structure
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool type -- \"{safe_text}\"'"
-        )
-
-    async def akey_press(self, key_combo: str) -> None:
-        """
-        Async version of key_press.
-
-        Args:
-            key_combo: Key or key combination to press (e.g., 'Return', 'ctrl+a')
-
-        Raises:
-            Exception: If key press fails
-        """
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {key_combo}'"
-        )
-
-    async def akey_press_special(self, keys: List[str]) -> None:
-        """
-        Async version of key_press_special.
-
-        Args:
-            keys: List of keys to press together (e.g., ["CTRL", "A"])
-
-        Raises:
-            Exception: If key press fails
-        """
-        mapping = {
-            "ARROWLEFT": "Left",
-            "ARROWRIGHT": "Right",
-            "ARROWUP": "Up",
-            "ARROWDOWN": "Down",
-            "ENTER": "Return",
-            "LEFT": "Left",
-            "RIGHT": "Right",
-            "UP": "Up",
-            "DOWN": "Down",
-            "ESC": "Escape",
-            "SPACE": "space",
-            "BACKSPACE": "BackSpace",
-            "TAB": "Tab",
-            "CTRL": "ctrl",
-            "ALT": "alt",
-            "SHIFT": "shift",
-        }
-        mapped_keys = [mapping.get(key.upper(), key) for key in keys]
-        combo = "+".join(mapped_keys)
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {combo}'"
-        )
-
-    async def adrag(self, path: List[Dict[str, int]]) -> None:
-        """Async version of drag."""
-        if not path:
-            return
-
-        start_x = path[0]["x"]
-        start_y = path[0]["y"]
-
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {start_x} {start_y} mousedown 1'"
-        )
-
-        for point in path[1:]:
-            # Use separate variables for x and y to avoid escaping issues
-            x = point["x"]
-            y = point["y"]
-            await self._instance.aexec(
-                f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
-            )
-
-        await self._instance.aexec(
-            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mouseup 1'"
-        )
-
-    async def screenshot_base64(self) -> str:
-        """
-        Take a screenshot and return base64-encoded PNG data.
-
-        Returns:
-            Base64-encoded PNG data as a string
-        """
-        cmd = f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root png:- | base64 -w 0'"
-        result = await self._instance.aexec(cmd)
-        return result.stdout.strip()
-
-    def screenshot_base64_sync(self) -> str:
-        """
-        Synchronous version of screenshot_base64.
-
-        Returns:
-            Base64-encoded PNG data as a string
-        """
-        cmd = f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root png:- | base64 -w 0'"
-        result = self._instance.exec(cmd)
-        return result.stdout.strip()
-
-    async def ascreenshot(self) -> bytes:
-        """
-        Async version of screenshot.
-
-        Returns:
-            Raw image data as bytes
-        """
-        # Get base64 screenshot data
-        base64_data = await self.screenshot_base64()
-
-        # Convert to binary data and return
-        return base64.b64decode(base64_data)
-
     # Override _refresh to properly handle Computer-specific attributes
     def _refresh(self) -> None:
         # Store computer-specific attributes to restore after refresh
@@ -2175,22 +1862,7 @@ class Computer:
             self._browser = browser
         if sandbox:
             self._sandbox = sandbox
-        self._display = display
-
-    async def _refresh_async(self) -> None:
-        # Store computer-specific attributes to restore after refresh
-        browser = getattr(self, "_browser", None)
-        sandbox = getattr(self, "_sandbox", None)
-        display = getattr(self, "_display", ":1")
-
-        # Refresh using parent method
-        await self._instance._refresh_async()
-
-        # Restore computer-specific attributes
-        if browser:
-            self._browser = browser
-        if sandbox:
-            self._sandbox = sandbox
+        # Restore the display value
         self._display = display
 
     def mcp(self):
@@ -2201,8 +1873,6 @@ class Computer:
         mcp_server.add_tool(self.screenshot, "screenshot", "Take a screenshot of the page and return as base64-encoded PNG data")
 
         return mcp_server
-
-
 
 class ComputerAPI:
     """API for managing Computers, which are enhanced Instances with additional capabilities."""
