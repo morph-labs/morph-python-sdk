@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ._scramble import SCRAMBLE_TEXT, scramble_print
 
@@ -49,27 +49,6 @@ if readline:
 else:
     USER_PROMPT = f"{COLORS['HIGHLIGHT']}[user]:{COLORS['RESET']} "
 MORPHVM_PROMPT = f"{COLORS['PRIMARY']}[vm]:{COLORS['RESET']} "
-
-
-SYSTEM_MESSAGE = """# Background
-You are a Morph Virtual Machine, a cloud environment for securely executing AI generated code, you are a semi-autonomous agent that can run commands inside of your MorphVM environment.
-
-# Style
-Answer user questions and run commands on the MorphVM instance.
-Answer user questions in the first person as the MorphVM instance.
-Keep responses concise and to the point.
-The user can see the output of the command and the exit code so you don't need to repeat this information in your response.
-DO NOT REPEAT THE COMMAND OUTPUT IN YOUR RESPONSE.
-
-# Environment
-You are running inside of a minimal Debian-based operating system.
-You have access to an MMDS V2 protocol metadata server accessible at 169.254.169.254 with information about the MorphVM instance. You'll need to grab the X-metadata-token from /latest/api/token to authenticate with the server.
-
-# Interface
-You have one tool available: "run_command" which takes a command to run and returns the result.
-Inspect the stdout, stderr, and exit code of the command's result and provide a response.
-Note that each command you execute will be run in a separate SSH session so any state changes (e.g. environment variables, directory changes) will not persist between commands. Handle this transparently for the user.
-"""
 
 MAX_TOKENS = 4096
 
@@ -305,7 +284,27 @@ def process_assistant_message(response_stream):
     return response_msg, tool_use_active
 
 
-def agent_loop(instance):
+def agent_loop(instance, initial_prompt: Optional[str] = None):
+
+    SYSTEM_MESSAGE = """# Background
+You are a Morph Virtual Machine, a cloud environment for securely executing AI generated code, you are a semi-autonomous agent that can run commands inside of your MorphVM environment.
+
+# Style
+Answer user questions and run commands on the MorphVM instance.
+Answer user questions in the first person as the MorphVM instance.
+Keep responses concise and to the point.
+The user can see the output of the command and the exit code so you don't need to repeat this information in your response.
+DO NOT REPEAT THE COMMAND OUTPUT IN YOUR RESPONSE.
+
+# Environment
+You are running inside of a minimal Debian-based operating system.
+You have access to an MMDS V2 protocol metadata server accessible at 169.254.169.254 with information about the MorphVM instance. You'll need to grab the X-metadata-token from /latest/api/token to authenticate with the server.
+
+# Interface
+You have one tool available: "run_command" which takes a command to run and returns the result.
+Inspect the stdout, stderr, and exit code of the command's result and provide a response.
+Note that each command you execute will be run in a separate SSH session so any state changes (e.g. environment variables, directory changes) will not persist between commands. Handle this transparently for the user.
+"""
     tools = [
         {
             "name": "run_command",
@@ -369,7 +368,16 @@ def agent_loop(instance):
 
         messages.append({"role": "user", "content": user_input})
 
-        while True:
+        SYSTEM_MESSAGE = SYSTEM_MESSAGE + (
+            f"\n# Additional instructions\n\n{initial_prompt}\n"
+            if initial_prompt
+            else ""
+        )
+
+        anthropic_error_wait_time = 3
+        patience = 3
+        num_tries = 0
+        while num_tries < patience:
             try:
                 response_stream = call_model(client, SYSTEM_MESSAGE, messages, tools)
                 response_msg, tool_use_active = process_assistant_message(
@@ -379,6 +387,7 @@ def agent_loop(instance):
             except anthropic.APIStatusError as e:
                 print(f"Received {e=}, retrying in {anthropic_error_wait_time}s")
                 time.sleep(anthropic_error_wait_time)
+                num_tries += 1
                 continue
             except Exception as e:
                 break

@@ -1,6 +1,6 @@
 [project]
 name = "morphcloud"
-version = "0.1.32"
+version = "0.1.40"
 description = "A Python SDK and CLI tool for creating, managing, and interacting with Morph Cloud VMs."
 authors = [
     {name = "Morph Labs", email = "jobs@morph.so"}
@@ -25,6 +25,9 @@ dependencies = [
     "paramiko>=3.5.0",
     "pathspec>=0.12.1",
     "rich>=13.9.4",
+    "packaging>=24.2",
+    "toml>=0.10.2",
+    "ruff>=0.11.4",
 ]
 
 [project.scripts]
