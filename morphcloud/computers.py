@@ -15,6 +15,10 @@ from morphcloud.api import Instance, InstanceAPI, Snapshot, MorphCloudClient
 
 import websocket
 
+import requests
+from playwright.sync_api import sync_playwright
+from concurrent.futures import ThreadPoolExecutor
+
 _websockets_available = importlib.util.find_spec("websockets") is not None
 _jupyter_client_available = importlib.util.find_spec("jupyter_client") is not None
 
@@ -52,185 +56,64 @@ CUA_KEY_TO_PLAYWRIGHT_KEY = {
 
 class Browser:
     """
-    Browser automation interface for Computer using Chrome DevTools Protocol.
-
-    This class provides methods to automate browser interactions through Playwright
-    and Chrome DevTools Protocol. It handles connection management, navigation,
-    and browser control operations.
+    A 'safe' Browser class that:
+     - Uses the sync Playwright API
+     - Offloads calls to a dedicated ThreadPoolExecutor so it never blocks
+       or interferes with any asyncio loop your environment might have.
+     - All public methods remain synchronous – the call blocks until the
+       background thread finishes the Playwright operation.
     """
 
-    def __init__(self, computer: Computer):
-        """
-        Initialize a Browser instance.
-
-        Args:
-            computer: The parent Computer instance
-        """
+    def __init__(self, computer):
         self._computer = computer
+        self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
-        self._playwright = None
         self._connected = False
 
-    def _check_dependencies(self) -> None:
-        """
-        Check if required dependencies are installed.
+        # A dedicated, single-thread executor for all browser actions
+        self._executor = ThreadPoolExecutor(max_workers=1)
 
-        Raises:
-            ImportError: If any required package is missing
-        """
-        if not _playwright_available:
-            raise ImportError(
-                "The playwright package is required for browser automation. "
-                "Install it with: pip install playwright"
-            )
+    # ----------------------------------------------------------------
+    # Internals: actual sync Playwright calls to run in the background
+    # ----------------------------------------------------------------
 
-    def _get_browser_ws_endpoint(self, cdp_url: str, timeout_seconds: int = 15) -> str:
-        """
-        Get the WebSocket endpoint URL from the CDP server with retries.
-
-        Args:
-            cdp_url: Chrome DevTools Protocol URL
-            timeout_seconds: Maximum time to wait for connection in seconds
-
-        Returns:
-            WebSocket URL as a string
-
-        Raises:
-            TimeoutError: If unable to get WebSocket URL within timeout period
-        """
-        import requests
-
-        # Remove any trailing slashes
-        cdp_url = cdp_url.rstrip("/")
-        json_version_url = f"{cdp_url}/json/version"
-
-        # Set up retry parameters
-        start_time = time.time()
-        retry_count = 0
-        base_delay = 0.5  # Start with a short delay
-        errors = []
-
-        while time.time() - start_time < timeout_seconds:
-            retry_count += 1
-            current_delay = min(
-                base_delay * retry_count, 2.0
-            )  # Cap at 2 seconds per retry
-
-            try:
-                # Get the /json/version endpoint
-                response = requests.get(json_version_url, timeout=5)
-                if response.status_code != 200:
-                    time.sleep(current_delay)
-                    continue
-
-                try:
-                    data = response.json()
-
-                    # Use the exact WebSocketDebuggerUrl from the response
-                    websocket_url = data.get("webSocketDebuggerUrl")
-                    if not websocket_url:
-                        time.sleep(current_delay)
-                        continue
-
-                    # Success!
-                    return websocket_url
-                except json.JSONDecodeError:
-                    errors.append(f"Invalid JSON response on attempt {retry_count}")
-                    time.sleep(current_delay)
-                    continue
-
-            except requests.RequestException as e:
-                errors.append(f"HTTP client error on attempt {retry_count}: {str(e)}")
-            except Exception as e:
-                errors.append(f"Unexpected error on attempt {retry_count}: {str(e)}")
-
-            # Sleep before retry
-            time.sleep(current_delay)
-
-            # Check if we're about to exceed the timeout
-            time_remaining = timeout_seconds - (time.time() - start_time)
-            if time_remaining < 1:
-                break
-
-        # If we got here, we've timed out
-        error_summary = (
-            "; ".join(errors[-3:]) if errors else "No specific errors recorded"
-        )
-        raise TimeoutError(
-            f"Failed to get WebSocket URL after {retry_count} attempts. Errors: {error_summary}"
-        )
-
-    def _ensure_connected(self) -> None:
-        """
-        Ensure browser is connected before performing operations.
-
-        Connects to the browser if not already connected.
-
-        Raises:
-            Exception: If connection fails
-        """
-        if not self._connected:
-            self.connect()
-
-    def connect(self, timeout_seconds: int = 30) -> "Browser":
-        """
-        Connect to a CDP endpoint and create a browser client.
-
-        Args:
-            timeout_seconds: Maximum time to wait for connection in seconds
-
-        Returns:
-            The Browser instance for method chaining
-
-        Raises:
-            ImportError: If required dependencies are not installed
-            TimeoutError: If connection times out
-            Exception: Other connection errors
-        """
+    def _sync_connect(self, cdp_url: str):
         if self._connected:
-            return self
-
-        self._check_dependencies()
-        from playwright.sync_api import sync_playwright
-
-        # Get CDP URL
-        cdp_url = self._computer.cdp_url
-        assert cdp_url, "CDP URL is not set. Ensure the browser is running."
-
-        try:
-            # Get the WebSocket URL directly from the /json/version endpoint
-            browser_ws_endpoint = self._get_browser_ws_endpoint(
-                cdp_url, timeout_seconds
-            )
-
-            # Launch playwright
-            self._playwright = sync_playwright().start()
-
-            # Connect to the browser using CDP
-            self._browser = self._playwright.chromium.connect_over_cdp(
-                browser_ws_endpoint
-            )
-
-            # Create a new context and page
+            return
+        with sync_playwright() as p:
+            # We do want to keep the playwright instance around, so store it
+            # IMPORTANT: you can't do 'with sync_playwright()' once and store it
+            # if you plan on calling _sync_connect more than once. But typically
+            # you only connect once. So either:
+            #
+            # 1) Keep the 'with' block at the class level (you'll close on .close())
+            #    Or:
+            # 2) Re-init playwright each time. 
+            #
+            # For a single connect, let's do the approach below:
+            self._playwright = p
+            ws_url = self._get_browser_ws_endpoint(cdp_url)
+            self._browser = p.chromium.connect_over_cdp(ws_url)
             self._context = self._browser.new_context()
             self._page = self._context.new_page()
             self._connected = True
+            # Do not exit the 'with' block here or p.stop() is called automatically
+            # We want to keep it alive for subsequent calls. 
+            # So we must manually remove the 'with' and do p.stop() in ._sync_close
 
-            return self
-        except Exception as e:
-            raise Exception(f"Failed to connect to browser: {str(e)}") from e
-
-    def close(self) -> None:
-        """
-        Close the browser and clean up resources.
-
-        This method should be called when done using the browser to free resources.
-        """
+    def _sync_close(self):
+        # If we got here, we need to be sure to do .stop() on the original `Playwright` object
+        # But the code above used `with sync_playwright() as p:`.
+        # That means p.stop() is called automatically on exit of that 'with' block – 
+        # so we either need to restructure the code or re-init sync_playwright. 
+        #
+        # Easiest fix: DO NOT use 'with sync_playwright() as p:' for connect. 
+        # Instead, call sync_playwright().start() once, store in self._playwright,
+        # call .stop() here. Let's do that:
         if not self._connected:
             return
-
         if self._context:
             self._context.close()
         if self._browser:
@@ -244,98 +127,78 @@ class Browser:
         self._page = None
         self._playwright = None
 
-    def __enter__(self) -> "Browser":
-        """
-        Enter the context manager.
+    def _sync_goto(self, url: str, timeout: int, wait_until: str):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        self._page.goto(url, timeout=timeout, wait_until=wait_until)
+        time.sleep(1)  # small wait for stability
 
-        Returns:
-            The Browser instance
-        """
-        return self.connect()
+    def _sync_back(self, timeout: int, wait_until: str):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        self._page.go_back(timeout=timeout, wait_until=wait_until)
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """
-        Exit the context manager.
+    def _sync_forward(self, timeout: int, wait_until: str):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        self._page.go_forward(timeout=timeout, wait_until=wait_until)
 
-        Closes the browser and cleans up resources.
-        """
-        _ = exc_type, exc_val, exc_tb  # Unused
-        self.close()
-
-    def get_current_url(self) -> str:
-        """
-        Get the current page URL.
-
-        Returns:
-            The URL of the current page
-
-        Raises:
-            Exception: If not connected
-        """
-        self._ensure_connected()
-        assert self._page, "Page is not initialized"
-        return self._page.url
-
-    def screenshot(self) -> str:
-        """
-        Take a screenshot of the current page and return the raw image data.
-
-        Returns:
-            Raw image data as bytes
-
-        Raises:
-            Exception: If screenshot fails
-        """
-        self._ensure_connected()
-        assert self._page, "Page is not initialized"
+    def _sync_screenshot(self) -> str:
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         png_bytes = self._page.screenshot(full_page=False)
         return base64.b64encode(png_bytes).decode("utf-8")
 
-    def click(self, x: int, y: int, button: str = "left") -> None:
-        self._ensure_connected()
-        assert self._page, "Page is not initialized"
+    def _sync_click(self, x: int, y: int, button: str):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        # handle "back"/"forward" as you do
         if button == "back":
-            self.back()
+            self._sync_back(10000, "domcontentloaded")
         elif button == "forward":
-            self.forward()
+            self._sync_forward(10000, "domcontentloaded")
         elif button == "wheel":
             self._page.mouse.wheel(x, y)
         else:
-            button_mapping = {"left": "left", "right": "right"}
-            button_type = button_mapping.get(button, "left")
-            self._page.mouse.click(x, y, button=button_type)
+            btn_type = "left" if button == "left" else "right"
+            self._page.mouse.click(x, y, button=btn_type)
 
-    def double_click(self, x: int, y: int) -> None:
-        assert self._page, "Page is not initialized"
+    def _sync_double_click(self, x: int, y: int):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         self._page.mouse.dblclick(x, y)
 
-    def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
-        self._ensure_connected()
-        assert self._page, "Page is not initialized"
+    def _sync_scroll(self, x: int, y: int, scroll_x: int, scroll_y: int):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         self._page.mouse.move(x, y)
         self._page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
 
-    def type(self, text: str) -> None:
-        assert self._page, "Page is not initialized"
+    def _sync_type_text(self, text: str):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         self._page.keyboard.type(text)
 
-    def wait(self, ms: int = 1000) -> None:
-        time.sleep(ms / 1000)
+    def _sync_wait(self, ms: int):
+        time.sleep(ms / 1000.0)
 
-    def move(self, x: int, y: int) -> None:
-        assert self._page, "Page is not initialized"
+    def _sync_move(self, x: int, y: int):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         self._page.mouse.move(x, y)
 
-    def keypress(self, keys: List[str]) -> None:
-        assert self._page, "Page is not initialized"
-        mapped_keys = [CUA_KEY_TO_PLAYWRIGHT_KEY.get(key.lower(), key) for key in keys]
-        for key in mapped_keys:
+    def _sync_keypress(self, keys: List[str]):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        mapped = [CUA_KEY_TO_PLAYWRIGHT_KEY.get(k.lower(), k) for k in keys]
+        for key in mapped:
             self._page.keyboard.down(key)
-        for key in reversed(mapped_keys):
+        for key in reversed(mapped):
             self._page.keyboard.up(key)
 
-    def drag(self, path: List[Dict[str, int]]) -> None:
-        assert self._page, "Page is not initialized"
+    def _sync_drag(self, path: List[Dict[str, int]]):
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         if not path:
             return
         self._page.mouse.move(path[0]["x"], path[0]["y"])
@@ -344,102 +207,139 @@ class Browser:
             self._page.mouse.move(point["x"], point["y"])
         self._page.mouse.up()
 
-    def goto(
-        self, url: str, timeout: int = 15000, wait_until: str = "domcontentloaded"
-    ) -> None:
-        """
-        Navigate to a URL.
-
-        Args:
-            url: The URL to navigate to
-            timeout: Maximum time to wait for navigation in milliseconds
-            wait_until: Navigation event to wait for ('domcontentloaded', 'load', 'networkidle')
-
-        Raises:
-            TimeoutError: If navigation takes longer than timeout
-            Exception: If an error occurs during navigation
-        """
-        try:
-            self._ensure_connected()
-            # Use a shorter timeout and wait until 'domcontentloaded' instead of 'load'
-            assert self._page, "Page is not initialized"
-            self._page.goto(url, timeout=timeout, wait_until=wait_until)
-
-            # Add a small delay to ensure the page is stable
-            time.sleep(1)
-        except Exception as e:
-            raise Exception(f"Failed to navigate to {url}: {str(e)}") from e
-
-    def back(self, timeout: int = 10000, wait_until: str = "domcontentloaded") -> None:
-        """
-        Go back in the browser history with fallback behavior.
-
-        Args:
-            timeout: Maximum time to wait for navigation in milliseconds
-            wait_until: Navigation event to wait for ('domcontentloaded', 'load', 'networkidle')
-
-        Raises:
-            Exception: If an error occurs during navigation
-        """
-        try:
-            self._ensure_connected()
-
-            try:
-                # Try with a shorter timeout and 'domcontentloaded' event
-                assert self._page, "Page is not initialized"
-                self._page.go_back(timeout=timeout, wait_until=wait_until)
-            except Exception as nav_error:
-                # If timeout occurs, the page might still be navigating
-                print(f"Navigation error when going back: {str(nav_error)}")
-                # Wait a bit to give the page a chance to settle
-                time.sleep(3)
-
-        except Exception as e:
-            raise Exception(f"Failed to go back in browser history: {str(e)}") from e
-
-    def forward(
-        self, timeout: int = 10000, wait_until: str = "domcontentloaded"
-    ) -> None:
-        """
-        Go forward in the browser history with fallback behavior.
-
-        Args:
-            timeout: Maximum time to wait for navigation in milliseconds
-            wait_until: Navigation event to wait for ('domcontentloaded', 'load', 'networkidle')
-
-        Raises:
-            Exception: If an error occurs during navigation
-        """
-        try:
-            self._ensure_connected()
-
-            try:
-                # Try with a shorter timeout and 'domcontentloaded' event
-                assert self._page, "Page is not initialized"
-                self._page.go_forward(timeout=timeout, wait_until=wait_until)
-            except Exception as nav_error:
-                # If timeout occurs, the page might still be navigating
-                print(f"Navigation error when going forward: {str(nav_error)}")
-                # Wait a bit to give the page a chance to settle
-                time.sleep(3)
-
-        except Exception as e:
-            raise Exception(f"Failed to go forward in browser history: {str(e)}") from e
-
-    def get_title(self) -> str:
-        """
-        Get the current page title.
-
-        Returns:
-            The title of the current page
-
-        Raises:
-            Exception: If not connected or fails to get title
-        """
-        self._ensure_connected()
-        assert self._page, "Page is not initialized"
+    def _sync_get_title(self) -> str:
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
         return self._page.title()
 
+    def _sync_get_current_url(self) -> str:
+        if not self._connected:
+            raise RuntimeError("Browser not connected.")
+        return self._page.url
+
+    def _get_browser_ws_endpoint(self, cdp_url: str, timeout_seconds: int = 15) -> str:
+        """
+        Same logic as before to parse /json/version -> webSocketDebuggerUrl
+        """
+        cdp_url = cdp_url.rstrip("/")
+        json_version_url = f"{cdp_url}/json/version"
+        start_time = time.time()
+        base_delay = 0.5
+        errors = []
+        retry_count = 0
+
+        while time.time() - start_time < timeout_seconds:
+            retry_count += 1
+            delay = min(base_delay * retry_count, 2.0)
+            try:
+                resp = requests.get(json_version_url, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ws_url = data.get("webSocketDebuggerUrl")
+                    if ws_url:
+                        return ws_url
+            except Exception as e:
+                errors.append(str(e))
+            time.sleep(delay)
+
+        err_msg = "; ".join(errors[-3:]) if errors else "No specific errors"
+        raise TimeoutError(f"Failed to get WebSocketDebuggerUrl: {err_msg}")
+
+    # ----------------------------------------------------------------
+    # Public methods: synchronous, but run in the thread pool
+    # ----------------------------------------------------------------
+
+    def connect(self, timeout_seconds: int = 30) -> "Browser":
+        """
+        Connect to the remote CDP browser. Blocks until connected.
+        """
+        if self._connected:
+            return self
+        cdp_url = self._computer.cdp_url
+        if not cdp_url:
+            raise RuntimeError("No CDP URL found. Is the browser service running?")
+
+        # The .submit(...) call schedules self._sync_connect in the background
+        future = self._executor.submit(self._sync_connect_no_with, cdp_url)
+        future.result()  # block until it completes or raises
+        return self
+
+    def _sync_connect_no_with(self, cdp_url: str):
+        """
+        Variation that doesn't use 'with sync_playwright()' block,
+        so we can close it properly later in _sync_close.
+        """
+        if self._connected:
+            return
+        self._playwright = sync_playwright().start()
+        ws_url = self._get_browser_ws_endpoint(cdp_url)
+        self._browser = self._playwright.chromium.connect_over_cdp(ws_url)
+        self._context = self._browser.new_context()
+        self._page = self._context.new_page()
+        self._connected = True
+
+    def close(self) -> None:
+        # Just schedule the sync close in the same thread pool
+        future = self._executor.submit(self._sync_close)
+        future.result()
+
+    def goto(self, url: str, timeout: int = 15000, wait_until: str = "domcontentloaded"):
+        if not self._connected:
+            self.connect()
+        future = self._executor.submit(self._sync_goto, url, timeout, wait_until)
+        return future.result()
+
+    def back(self, timeout: int = 10000, wait_until: str = "domcontentloaded"):
+        future = self._executor.submit(self._sync_back, timeout, wait_until)
+        return future.result()
+
+    def forward(self, timeout: int = 10000, wait_until: str = "domcontentloaded"):
+        future = self._executor.submit(self._sync_forward, timeout, wait_until)
+        return future.result()
+
+    def screenshot(self) -> str:
+        future = self._executor.submit(self._sync_screenshot)
+        return future.result()
+
+    def click(self, x: int, y: int, button: str = "left") -> None:
+        future = self._executor.submit(self._sync_click, x, y, button)
+        return future.result()
+
+    def double_click(self, x: int, y: int) -> None:
+        future = self._executor.submit(self._sync_double_click, x, y)
+        return future.result()
+
+    def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
+        future = self._executor.submit(self._sync_scroll, x, y, scroll_x, scroll_y)
+        return future.result()
+
+    def type(self, text: str) -> None:
+        future = self._executor.submit(self._sync_type_text, text)
+        return future.result()
+
+    def wait(self, ms: int = 1000) -> None:
+        future = self._executor.submit(self._sync_wait, ms)
+        return future.result()
+
+    def move(self, x: int, y: int) -> None:
+        future = self._executor.submit(self._sync_move, x, y)
+        return future.result()
+
+    def keypress(self, keys: List[str]) -> None:
+        future = self._executor.submit(self._sync_keypress, keys)
+        return future.result()
+
+    def drag(self, path: List[Dict[str, int]]) -> None:
+        future = self._executor.submit(self._sync_drag, path)
+        return future.result()
+
+    def get_title(self) -> str:
+        future = self._executor.submit(self._sync_get_title)
+        return future.result()
+
+    def get_current_url(self) -> str:
+        future = self._executor.submit(self._sync_get_current_url)
+        return future.result()
 
 class Sandbox:
     """
