@@ -2193,6 +2193,16 @@ class Computer:
             self._sandbox = sandbox
         self._display = display
 
+    def mcp(self):
+        from mcp.server.fastmcp import FastMCP
+
+        mcp_server = FastMCP("computer")
+
+        mcp_server.add_tool(self.screenshot, "screenshot", "Take a screenshot of the page and return as base64-encoded PNG data")
+
+        return mcp_server
+
+
 
 class ComputerAPI:
     """API for managing Computers, which are enhanced Instances with additional capabilities."""
