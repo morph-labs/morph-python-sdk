@@ -11,7 +11,7 @@ import importlib.util
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from morphcloud.api import Instance, InstanceAPI, Snapshot
+from morphcloud.api import Instance, InstanceAPI, Snapshot, MorphCloudClient
 
 _websockets_available = importlib.util.find_spec("websockets") is not None
 _httpx_available = importlib.util.find_spec("httpx") is not None
@@ -82,10 +82,10 @@ class Browser:
 
         self._check_dependencies()
         from playwright.async_api import async_playwright
-        import aiohttp
 
         # Get CDP URL
         cdp_url = self._computer.cdp_url
+        assert cdp_url, "CDP URL is not set. Ensure the browser is running."
 
         try:
             # Get the WebSocket URL directly from the /json/version endpoint
@@ -223,6 +223,7 @@ class Browser:
         try:
             await self._ensure_connected()
             # Use a shorter timeout and wait until 'domcontentloaded' instead of 'load'
+            assert self._page, "Page is not initialized"
             await self._page.goto(url, timeout=timeout, wait_until=wait_until)
 
             # Add a small delay to ensure the page is stable
@@ -248,6 +249,7 @@ class Browser:
 
             try:
                 # Try with a shorter timeout and 'domcontentloaded' event
+                assert self._page, "Page is not initialized"
                 await self._page.go_back(timeout=timeout, wait_until=wait_until)
             except Exception as nav_error:
                 # If timeout occurs, the page might still be navigating
@@ -256,7 +258,7 @@ class Browser:
                 await asyncio.sleep(3)
 
             # Get the current URL to verify navigation happened
-            current_url = self._page.url
+            # current_url = self._page.url
         except Exception as e:
             raise Exception(f"Failed to go back in browser history: {str(e)}") from e
 
@@ -278,6 +280,7 @@ class Browser:
 
             try:
                 # Try with a shorter timeout and 'domcontentloaded' event
+                assert self._page, "Page is not initialized"
                 await self._page.go_forward(timeout=timeout, wait_until=wait_until)
             except Exception as nav_error:
                 # If timeout occurs, the page might still be navigating
@@ -286,7 +289,7 @@ class Browser:
                 await asyncio.sleep(3)
 
             # Get the current URL to verify navigation happened
-            current_url = self._page.url
+            # current_url = self._page.url
         except Exception as e:
             raise Exception(f"Failed to go forward in browser history: {str(e)}") from e
 
@@ -301,6 +304,7 @@ class Browser:
             Exception: If not connected or fails to get title
         """
         await self._ensure_connected()
+        assert self._page, "Page is not initialized"
         return await self._page.title()
 
     async def get_url(self) -> str:
@@ -314,6 +318,7 @@ class Browser:
             Exception: If not connected
         """
         await self._ensure_connected()
+        assert self._page, "Page is not initialized"
         return self._page.url
 
     async def screenshot(self) -> bytes:
@@ -327,6 +332,7 @@ class Browser:
             Exception: If screenshot fails
         """
         await self._ensure_connected()
+        assert self._page, "Page is not initialized"
         screenshot_bytes = await self._page.screenshot()
         return screenshot_bytes
 
@@ -538,7 +544,6 @@ class Sandbox:
             websockets.WebSocketException: If WebSocket connection fails
         """
         self._check_dependencies()
-        import httpx
         import websockets
 
         # Wait for Jupyter service to be ready
@@ -589,6 +594,7 @@ class Sandbox:
             - kernel_id: ID of the kernel used for execution
         """
         await self._ensure_kernel_connection()
+        assert self._ws, "WebSocket connection is not established"
 
         # Prepare message
         msg_id = str(uuid.uuid4())
@@ -616,10 +622,10 @@ class Sandbox:
 
         # Convert datetime to string for JSON serialization
         class DateTimeEncoder(json.JSONEncoder):
-            def default(self, obj):
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-                return json.JSONEncoder.default(self, obj)
+            def default(self, o):
+                if isinstance(o, datetime):
+                    return o.isoformat()
+                return json.JSONEncoder.default(self, o)
 
         await self._ws.send(json.dumps(msg, cls=DateTimeEncoder))
 
@@ -2078,8 +2084,17 @@ class Computer(Instance):
         self._display = display
 
 
-class ComputerAPI(InstanceAPI):
+class ComputerAPI:
     """API for managing Computers, which are enhanced Instances with additional capabilities."""
+
+    def __init__(self, client: MorphCloudClient) -> None:
+        """
+        Initialize the ComputerAPI.
+
+        Args:
+            client: The MorphClient instance
+        """
+        self._client = client
 
     def list(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
         """List all computers available to the user."""
@@ -2088,7 +2103,7 @@ class ComputerAPI(InstanceAPI):
             params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
         )
         return [
-            Computer.model_validate(instance)._set_api(self)
+            Computer.model_validate(instance)._set_api(self._client.instances)
             for instance in response.json()["data"]
         ]
 
@@ -2099,7 +2114,7 @@ class ComputerAPI(InstanceAPI):
             params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
         )
         return [
-            Computer.model_validate(instance)._set_api(self)
+            Computer.model_validate(instance)._set_api(self._client.instances)
             for instance in response.json()["data"]
         ]
 
@@ -2177,7 +2192,7 @@ class ComputerAPI(InstanceAPI):
                 "ttl_action": ttl_action,
             },
         )
-        return Computer.model_validate(response.json())._set_api(self)
+        return Computer.model_validate(response.json())._set_api(self._client.instances)
 
     async def astart(
         self,
@@ -2214,14 +2229,14 @@ class ComputerAPI(InstanceAPI):
                 "ttl_action": ttl_action,
             },
         )
-        return Computer.model_validate(response.json())._set_api(self)
+        return Computer.model_validate(response.json())._set_api(self._client.instances)
 
     def get(self, computer_id: str) -> Computer:
         """Get a Computer by ID."""
         response = self._client._http_client.get(f"/instance/{computer_id}")
-        return Computer.model_validate(response.json())._set_api(self)
+        return Computer.model_validate(response.json())._set_api(self._client.instances)
 
     async def aget(self, computer_id: str) -> Computer:
         """Get a Computer by ID asynchronously."""
         response = await self._client._async_http_client.get(f"/instance/{computer_id}")
-        return Computer.model_validate(response.json())._set_api(self)
+        return Computer.model_validate(response.json())._set_api(self._client.instances)

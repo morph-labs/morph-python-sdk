@@ -138,7 +138,7 @@ class MorphCloudClient:
 
     # Add this property to the MorphCloudClient class
     @property
-    def computers(self) -> 'ComputerAPI':
+    def computers(self):
         """Access the API for enhanced instance capabilities."""
         from morphcloud.computers import ComputerAPI
         return ComputerAPI(self)
