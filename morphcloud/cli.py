@@ -1207,5 +1207,39 @@ def chat(instance_id, instructions):
         handle_api_error(e)
 
 
+@instance.command("computer-mcp")
+@click.argument("instance_id")
+def computer(instance_id):
+    """Start an interactive MCP computer session with an instance."""
+    client = get_client()
+    try:
+        from morphcloud.computers import Computer
+
+        instance = client.instances.get(instance_id)
+
+        computer = Computer(instance)
+
+        computer.mcp().run()
+    except ImportError:
+        click.echo(
+            "Error: MCP requires additional dependencies (e.g., 'anthropic').",
+            err=True,
+        )
+        sys.exit(1)
+    except TimeoutError:
+        click.echo(
+            f"Error: Timed out waiting for instance '{instance_id}' to be ready.",
+            err=True,
+        )
+        sys.exit(1)
+    except api.ApiError as e:
+        if e.status_code == 404:
+            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
+            sys.exit(1)
+        else:
+            handle_api_error(e)
+    except Exception as e:
+        handle_api_error(e)
+
 if __name__ == "__main__":
     cli()

@@ -72,6 +72,9 @@ class Browser:
         self._page = None
         self._connected = False
 
+        self._timeout = 30
+        self.wait_until = None
+
         # A dedicated, single-thread executor for all browser actions
         self._executor = ThreadPoolExecutor(max_workers=1)
 
@@ -127,36 +130,36 @@ class Browser:
         self._page = None
         self._playwright = None
 
-    def _sync_goto(self, url: str, timeout: int, wait_until: str):
-        if not self._connected:
+    def _sync_goto(self, url: str):
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
-        self._page.goto(url, timeout=timeout, wait_until=wait_until)
+        self._page.goto(url)
         time.sleep(1)  # small wait for stability
 
-    def _sync_back(self, timeout: int, wait_until: str):
-        if not self._connected:
+    def _sync_back(self):
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
-        self._page.go_back(timeout=timeout, wait_until=wait_until)
+        self._page.go_back()
 
-    def _sync_forward(self, timeout: int, wait_until: str):
-        if not self._connected:
+    def _sync_forward(self):
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
-        self._page.go_forward(timeout=timeout, wait_until=wait_until)
+        self._page.go_forward()
 
     def _sync_screenshot(self) -> str:
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         png_bytes = self._page.screenshot(full_page=False)
         return base64.b64encode(png_bytes).decode("utf-8")
 
     def _sync_click(self, x: int, y: int, button: str):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         # handle "back"/"forward" as you do
         if button == "back":
-            self._sync_back(10000, "domcontentloaded")
+            self._sync_back()
         elif button == "forward":
-            self._sync_forward(10000, "domcontentloaded")
+            self._sync_forward()
         elif button == "wheel":
             self._page.mouse.wheel(x, y)
         else:
@@ -164,18 +167,18 @@ class Browser:
             self._page.mouse.click(x, y, button=btn_type)
 
     def _sync_double_click(self, x: int, y: int):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         self._page.mouse.dblclick(x, y)
 
     def _sync_scroll(self, x: int, y: int, scroll_x: int, scroll_y: int):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         self._page.mouse.move(x, y)
         self._page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
 
     def _sync_type_text(self, text: str):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         self._page.keyboard.type(text)
 
@@ -183,12 +186,12 @@ class Browser:
         time.sleep(ms / 1000.0)
 
     def _sync_move(self, x: int, y: int):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         self._page.mouse.move(x, y)
 
     def _sync_keypress(self, keys: List[str]):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         mapped = [CUA_KEY_TO_PLAYWRIGHT_KEY.get(k.lower(), k) for k in keys]
         for key in mapped:
@@ -197,7 +200,7 @@ class Browser:
             self._page.keyboard.up(key)
 
     def _sync_drag(self, path: List[Dict[str, int]]):
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         if not path:
             return
@@ -208,12 +211,12 @@ class Browser:
         self._page.mouse.up()
 
     def _sync_get_title(self) -> str:
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         return self._page.title()
 
     def _sync_get_current_url(self) -> str:
-        if not self._connected:
+        if not self._connected or not self._page:
             raise RuntimeError("Browser not connected.")
         return self._page.url
 
@@ -249,7 +252,7 @@ class Browser:
     # Public methods: synchronous, but run in the thread pool
     # ----------------------------------------------------------------
 
-    def connect(self, timeout_seconds: int = 30) -> "Browser":
+    def connect(self) -> "Browser":
         """
         Connect to the remote CDP browser. Blocks until connected.
         """
@@ -283,18 +286,18 @@ class Browser:
         future = self._executor.submit(self._sync_close)
         future.result()
 
-    def goto(self, url: str, timeout: int = 15000, wait_until: str = "domcontentloaded"):
+    def goto(self, url: str):
         if not self._connected:
             self.connect()
-        future = self._executor.submit(self._sync_goto, url, timeout, wait_until)
+        future = self._executor.submit(self._sync_goto, url)
         return future.result()
 
-    def back(self, timeout: int = 10000, wait_until: str = "domcontentloaded"):
-        future = self._executor.submit(self._sync_back, timeout, wait_until)
+    def back(self):
+        future = self._executor.submit(self._sync_back)
         return future.result()
 
-    def forward(self, timeout: int = 10000, wait_until: str = "domcontentloaded"):
-        future = self._executor.submit(self._sync_forward, timeout, wait_until)
+    def forward(self):
+        future = self._executor.submit(self._sync_forward)
         return future.result()
 
     def screenshot(self) -> str:
@@ -340,6 +343,7 @@ class Browser:
     def get_current_url(self) -> str:
         future = self._executor.submit(self._sync_get_current_url)
         return future.result()
+
 
 class Sandbox:
     """
@@ -1285,66 +1289,87 @@ class Computer:
             "Take a screenshot of the desktop and return as base64-encoded PNG data",
         )
         mcp_server.add_tool(
-            self.click, "click", "Click at specified coordinates on the screen"
+            lambda x, y, button="left": self.click(x, y, button) or f"{button} click performed at coordinates ({x}, {y})",
+            "click", 
+            "Click at specified coordinates on the screen"
         )
         mcp_server.add_tool(
-            self.double_click,
+            lambda x, y: self.double_click(x, y) or f"Double-click performed at coordinates ({x}, {y})",
             "double_click",
             "Double-click at specified coordinates on the screen",
         )
         mcp_server.add_tool(
-            self.move_mouse,
+            lambda x, y: self.move_mouse(x, y) or f"Mouse moved to coordinates ({x}, {y})",
             "move_mouse",
             "Move the mouse to specified coordinates without clicking",
         )
-        mcp_server.add_tool(self.scroll, "scroll", "Scroll at specified coordinates")
-        mcp_server.add_tool(self.wait, "wait", "Wait for specified milliseconds")
-        mcp_server.add_tool(self.type_text, "type_text", "Type the specified text")
         mcp_server.add_tool(
-            self.key_press, "key_press", "Press the specified key or key combination"
+            lambda x, y, scroll_x, scroll_y: self.scroll(x, y, scroll_x, scroll_y) or 
+            f"Scroll performed at ({x}, {y}) with horizontal movement of {scroll_x} and vertical movement of {scroll_y}",
+            "scroll", 
+            "Scroll at specified coordinates"
         )
         mcp_server.add_tool(
-            self.key_press_special,
+            lambda ms=1000: self.wait(ms) or f"Waited for {ms} milliseconds",
+            "wait", 
+            "Wait for specified milliseconds"
+        )
+        mcp_server.add_tool(
+            lambda text: self.type_text(text) or f"Typed text: '{text}'",
+            "type_text", 
+            "Type the specified text"
+        )
+        mcp_server.add_tool(
+            lambda key_combo: self.key_press(key_combo) or f"Pressed key combination: {key_combo}",
+            "key_press", 
+            "Press the specified key or key combination"
+        )
+        mcp_server.add_tool(
+            lambda keys: self.key_press_special(keys) or f"Pressed special keys: {', '.join(keys)}",
             "key_press_special",
             "Press special keys using a more user-friendly interface",
         )
-        mcp_server.add_tool(self.drag, "drag", "Drag from point to point along a path")
+        mcp_server.add_tool(
+            lambda path: self.drag(path) or f"Performed drag operation from ({path[0]['x']}, {path[0]['y']}) to ({path[-1]['x']}, {path[-1]['y']})",
+            "drag", 
+            "Drag from point to point along a path"
+        )
         mcp_server.add_tool(
             lambda: self.dimensions,
             "get_dimensions",
             "Get the screen dimensions (width, height)",
         )
         mcp_server.add_tool(
-            self.set_display, "set_display", "Set the X display identifier to use"
+            lambda display_id: self.set_display(display_id) or f"Display set to {display_id}",
+            "set_display", 
+            "Set the X display identifier to use"
         )
 
         # Browser tools
         mcp_server.add_tool(
-            lambda url, timeout=15000, wait_until="domcontentloaded": self.browser.goto(
-                url, timeout, wait_until
-            ),
+            lambda url: self.browser.goto(url) or f"Navigated to URL: {url}",
             "browser_goto",
             "Navigate to a URL in the browser",
         )
         mcp_server.add_tool(
-            lambda timeout=10000, wait_until="domcontentloaded": self.browser.back(
-                timeout, wait_until
-            ),
+            lambda: self.browser.back() or "Navigated back in browser history",
             "browser_back",
             "Go back in browser history",
         )
         mcp_server.add_tool(
-            lambda timeout=10000, wait_until="domcontentloaded": self.browser.forward(
-                timeout, wait_until
-            ),
+            lambda: self.browser.forward() or "Navigated forward in browser history",
             "browser_forward",
             "Go forward in browser history",
         )
         mcp_server.add_tool(
-            self.browser.get_title, "browser_get_title", "Get the current page title"
+            self.browser.get_title, 
+            "browser_get_title", 
+            "Get the current page title"
         )
         mcp_server.add_tool(
-            self.browser.get_current_url, "browser_get_url", "Get the current page URL"
+            self.browser.get_current_url, 
+            "browser_get_url", 
+            "Get the current page URL"
         )
         mcp_server.add_tool(
             self.browser.screenshot,
@@ -1352,40 +1377,44 @@ class Computer:
             "Take a screenshot of the current page and return as base64-encoded PNG data",
         )
         mcp_server.add_tool(
-            self.browser.click,
+            lambda x, y, button="left": self.browser.click(x, y, button) or f"{button} click performed in browser at coordinates ({x}, {y})",
             "browser_click",
             "Click at specified coordinates in the browser",
         )
         mcp_server.add_tool(
-            self.browser.double_click,
+            lambda x, y: self.browser.double_click(x, y) or f"Double-click performed in browser at coordinates ({x}, {y})",
             "browser_double_click",
             "Double-click at specified coordinates in the browser",
         )
         mcp_server.add_tool(
-            self.browser.scroll,
+            lambda x, y, scroll_x, scroll_y: self.browser.scroll(x, y, scroll_x, scroll_y) or 
+            f"Scroll performed in browser at ({x}, {y}) with horizontal movement of {scroll_x} and vertical movement of {scroll_y}",
             "browser_scroll",
             "Scroll at specified coordinates in the browser",
         )
         mcp_server.add_tool(
-            self.browser.type, "browser_type", "Type the specified text in the browser"
+            lambda text: self.browser.type(text) or f"Typed text in browser: '{text}'",
+            "browser_type", 
+            "Type the specified text in the browser"
         )
         mcp_server.add_tool(
-            self.browser.keypress,
+            lambda keys: self.browser.keypress(keys) or f"Pressed keys in browser: {', '.join(keys)}",
             "browser_keypress",
             "Press the specified keys in the browser",
         )
         mcp_server.add_tool(
-            self.browser.move,
+            lambda x, y: self.browser.move(x, y) or f"Moved mouse in browser to coordinates ({x}, {y})",
             "browser_move",
             "Move mouse to specified coordinates in the browser",
         )
         mcp_server.add_tool(
-            self.browser.drag,
+            lambda path: self.browser.drag(path) or 
+            f"Performed drag operation in browser from ({path[0]['x']}, {path[0]['y']}) to ({path[-1]['x']}, {path[-1]['y']})",
             "browser_drag",
             "Drag from point to point along a path in the browser",
         )
         mcp_server.add_tool(
-            self.browser.wait,
+            lambda ms=1000: self.browser.wait(ms) or f"Waited for {ms} milliseconds in browser",
             "browser_wait",
             "Wait for specified milliseconds in the browser",
         )
@@ -1402,7 +1431,9 @@ class Computer:
             "Create a new Jupyter notebook",
         )
         mcp_server.add_tool(
-            self.sandbox.add_cell, "add_cell", "Add a cell to a Jupyter notebook"
+            self.sandbox.add_cell, 
+            "add_cell", 
+            "Add a cell to a Jupyter notebook"
         )
         mcp_server.add_tool(
             self.sandbox.execute_cell,
@@ -1410,7 +1441,9 @@ class Computer:
             "Execute a specific cell in a Jupyter notebook",
         )
         mcp_server.add_tool(
-            self.sandbox.list_kernels, "list_kernels", "List available Jupyter kernels"
+            self.sandbox.list_kernels, 
+            "list_kernels", 
+            "List available Jupyter kernels"
         )
         mcp_server.add_tool(
             lambda: self.sandbox.jupyter_url,
@@ -1418,7 +1451,7 @@ class Computer:
             "Get the Jupyter server URL",
         )
         mcp_server.add_tool(
-            self.sandbox.wait_for_service,
+            lambda timeout=30: self.sandbox.wait_for_service(timeout) or f"Jupyter service ready after waiting up to {timeout} seconds",
             "wait_for_jupyter",
             "Wait for Jupyter service to be ready",
         )
