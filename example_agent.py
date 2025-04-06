@@ -37,72 +37,6 @@ class Tool:
         """Execute the tool with the given input."""
         raise NotImplementedError("Subclasses must implement run()")
 
-class PythonTool(Tool):
-    """Tool for executing Python code."""
-    def __init__(self):
-        super().__init__(
-            name="python_executor",
-            description="Executes Python code and returns the output."
-        )
-    
-    def run(self, code: str) -> str:
-        """Execute Python code in a controlled environment."""
-        # Create string buffer to capture output
-        old_stdout = sys.stdout
-        sys.stdout = output_buffer = StringIO()
-        
-        result = ""
-        try:
-            # Execute the code
-            exec_globals = {}
-            exec(code, exec_globals)
-            result = output_buffer.getvalue()
-            if not result:
-                result = "Code executed successfully with no output."
-        except Exception as e:
-            result = f"Error executing Python code: {str(e)}"
-        finally:
-            # Restore stdout
-            sys.stdout = old_stdout
-            
-        return result
-
-class BashTool(Tool):
-    """Tool for executing Bash commands."""
-    def __init__(self):
-        super().__init__(
-            name="bash_executor",
-            description="Executes Bash commands and returns the output."
-        )
-    
-    def run(self, command: str) -> str:
-        """Execute a Bash command and return the output."""
-        try:
-            # Use subprocess to run the bash command
-            process = subprocess.run(
-                command,
-                shell=True,
-                check=False,  # Don't raise exception on non-zero exit
-                text=True,
-                capture_output=True,
-                timeout=30  # Prevent hanging on long-running commands
-            )
-            
-            output = []
-            if process.stdout:
-                output.append(process.stdout)
-            if process.stderr:
-                output.append(f"STDERR: {process.stderr}")
-                
-            if output:
-                return "\n".join(output)
-            else:
-                return f"Command executed with exit code: {process.returncode}"
-                
-        except subprocess.TimeoutExpired:
-            return "Command timed out after 30 seconds."
-        except Exception as e:
-            return f"Error: {str(e)}"
 
 class BrowserTool(Tool):
     """Tool for browser automation."""
@@ -186,24 +120,28 @@ class BrowserTool(Tool):
             url = await browser.get_url()
             return f"Current URL: {url}"
             
-        # Screenshot functionality has been removed from browser_tool
-        # Use desktop_tool for screenshots instead
+        elif action == "screenshot":
+            # Get screenshot as binary data
+            screenshot_bytes = await browser.screenshot()
+            # Get image dimensions
+            image = Image.open(BytesIO(screenshot_bytes))
+            dimensions = f"{image.width}x{image.height}"
             
-        elif action == "click":
-            selector = command_data.get("selector")
-            await browser.click(selector)
-            return f"Clicked on element with selector: {selector}"
+            # Show image locally if enabled
+            if hasattr(self, 'show_images') and self.show_images:
+                show_image(base64.b64encode(screenshot_bytes).decode('utf-8'))
+                
+            # For direct viewing, create a smaller preview to prevent prompt overflow
+            max_size = (400, 300)  # Adjust size as needed
+            image_thumb = image.copy()
+            image_thumb.thumbnail(max_size, Image.LANCZOS)
             
-        elif action == "type":
-            selector = command_data.get("selector")
-            text = command_data.get("text")
-            await browser.type(selector, text)
-            return f"Typed '{text}' into element with selector: {selector}"
+            # Save the thumbnail to a buffer and convert to base64
+            buffer = BytesIO()
+            image_thumb.save(buffer, format="PNG")
+            preview_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
             
-        elif action == "evaluate":
-            script = command_data.get("script")
-            result = await browser.evaluate(script)
-            return f"Evaluation result: {result}"
+            return f"Browser screenshot captured (dimensions: {dimensions})\nResized preview ({image_thumb.width}x{image_thumb.height}): {preview_base64}"
             
         elif action == "back":
             await browser.back()
@@ -437,14 +375,14 @@ class DesktopTool(Tool):
             
         elif action == "screenshot":
             # Get screenshot directly as base64 from the computer
-            screenshot_base64 = await self.computer.screenshot_base64()
+            # Get screenshot directly as binary data
+            image_data = await self.computer.ascreenshot()
             
             # Show image locally if enabled
             if self.show_images:
-                show_image(screenshot_base64)
+                show_image(base64.b64encode(image_data).decode('utf-8'))
             
-            # Get image dimensions (needed for both paths)
-            image_data = base64.b64decode(screenshot_base64)
+            # Get image dimensions
             image = Image.open(BytesIO(image_data))
             dimensions = f"{image.width}x{image.height}"
             
@@ -516,110 +454,19 @@ class MorphCloudAgent:
         self.computer = None
         
         # Set up tools
-        self.python_tool = PythonTool()
-        self.bash_tool = BashTool()
         self.browser_tool = BrowserTool()
         self.sandbox_tool = SandboxTool()
         self.desktop_tool = DesktopTool(show_images=show_images)
         
         # Store tools in a dictionary
         self.tools = {
-            self.python_tool.name: self.python_tool,
-            self.bash_tool.name: self.bash_tool,
             self.browser_tool.name: self.browser_tool,
             self.sandbox_tool.name: self.sandbox_tool,
             self.desktop_tool.name: self.desktop_tool
         }
         
-        # Define tools for Claude API
-        self.tool_specs = [
-            {
-                "name": "python_executor",
-                "description": "Executes Python code and returns the output.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "code": {"type": "string", "description": "The Python code to execute"}
-                    },
-                    "required": ["code"]
-                }
-            },
-            {
-                "name": "bash_executor",
-                "description": "Executes Bash commands and returns the output.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "The Bash command to execute"}
-                    },
-                    "required": ["command"]
-                }
-            },
-            {
-                "name": "browser_tool",
-                "description": "Automates browser interactions through MorphCloud.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string", 
-                            "description": "The browser action to perform",
-                            "enum": ["goto", "get_title", "get_url", "click", "type", 
-                                     "evaluate", "back", "forward", "reload", "close"]
-                        },
-                        "url": {"type": "string", "description": "The URL to navigate to"},
-                        "selector": {"type": "string", "description": "CSS selector for an element"},
-                        "text": {"type": "string", "description": "Text to type into an element"},
-                        "script": {"type": "string", "description": "JavaScript to execute"},
-                        "filename": {"type": "string", "description": "Optional filename to save the screenshot (if omitted, screenshot is only returned as base64)"}
-                    },
-                    "required": ["action"]
-                }
-            },
-            {
-                "name": "sandbox_tool",
-                "description": "Executes code in a Jupyter sandbox through MorphCloud.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string", 
-                            "description": "The sandbox action to perform",
-                            "enum": ["execute_code", "create_notebook", "add_cell", "execute_cell", 
-                                     "list_kernels", "close"]
-                        },
-                        "code": {"type": "string", "description": "Python code to execute"},
-                        "name": {"type": "string", "description": "Name for a new notebook"},
-                        "notebook_path": {"type": "string", "description": "Path to a notebook"},
-                        "content": {"type": "string", "description": "Content for a notebook cell"},
-                        "cell_type": {"type": "string", "description": "Type of cell (code or markdown)"},
-                        "cell_index": {"type": "integer", "description": "Index of a cell to execute"}
-                    },
-                    "required": ["action"]
-                }
-            },
-            {
-                "name": "desktop_tool",
-                "description": "Interacts with a virtual desktop through MorphCloud.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string", 
-                            "description": "The desktop action to perform",
-                            "enum": ["move_mouse", "click", "type_text", "key_press", "screenshot"]
-                        },
-                        "x": {"type": "integer", "description": "X coordinate for mouse action (required for move_mouse and click)"},
-                        "y": {"type": "integer", "description": "Y coordinate for mouse action (required for move_mouse and click)"},
-                        "button": {"type": "string", "description": "Mouse button (left, right, middle)"},
-                        "text": {"type": "string", "description": "Text to type (required for type_text)"},
-                        "keys": {"type": "array", "description": "Special keys to press (required for key_press)", "items": {"type": "string"}},
-                        "filename": {"type": "string", "description": "Optional filename to save the screenshot (if omitted, screenshot is only returned as base64)"}
-                    },
-                    "required": ["action"]
-                }
-            }
-        ]
+        # Initialize empty tool specs - we'll populate from the computer later
+        self.tool_specs = []
         
         # Initialize conversation history
         self.messages = []
@@ -627,11 +474,33 @@ class MorphCloudAgent:
         # System prompt with tool descriptions
         self.system_prompt = """You are a helpful AI assistant with access to the following tools:
 
-- python_executor: Executes Python code and returns the output.
-- bash_executor: Executes Bash commands and returns the output.
 - browser_tool: Automates browser interactions through MorphCloud with actions like goto, screenshot.
 - sandbox_tool: Executes code in a secure Jupyter sandbox through MorphCloud with plotting capabilities.
 - desktop_tool: Interacts with a virtual desktop through MorphCloud with mouse/keyboard control.
+
+In addition, you have direct access to individual computer tools:
+
+Browser tools:
+- browser_goto: Navigate to a URL directly
+- browser_back: Go back in browser history
+- browser_forward: Go forward in browser history
+- browser_get_title: Get the current page title
+- browser_get_url: Get the current page URL
+- browser_screenshot: Take a screenshot of the current page and return the image data
+
+Desktop interaction tools:
+- click: Click at specified coordinates on the screen
+- double_click: Double-click at specified coordinates
+- move_mouse: Move the mouse without clicking
+- type_text: Type the specified text
+- key_press: Press the specified key or key combination
+- screenshot: Take a screenshot of the desktop and return the image data
+
+Sandbox code execution tools:
+- execute_code: Execute Python code in a sandbox environment
+- create_notebook: Create a new Jupyter notebook
+- add_cell: Add a cell to a Jupyter notebook
+- execute_cell: Execute a specific cell in a Jupyter notebook
 
 When you need to use a tool, use the proper tool call format. Each tool call will be processed before you continue.
 If you need to use multiple tools to solve a problem, make one tool call at a time.
@@ -640,8 +509,6 @@ Only use tools when necessary. Respond directly to questions that don't require 
 For browser_tool, use actions like:
 - goto: Navigate to a URL
 - get_title: Get the page title
-- click: Click on elements using CSS selectors
-- type: Type text into input fields
 - back/forward: Navigate back or forward
 
 For sandbox_tool, use actions like:
@@ -657,13 +524,13 @@ For desktop_tool, use actions like:
 - key_press: Press special keys like ENTER, TAB, etc. (REQUIRES keys parameter)
 - screenshot: Take a screenshot of the desktop
 
-IMPORTANT: When taking screenshots with desktop_tool:
+IMPORTANT: When taking screenshots with desktop_tool or the screenshot tool:
 1. Screenshots always return a Base64 encoded version of the image that you can directly see and analyze
 2. Saving to a file is optional - only happens if you provide a filename parameter
 3. If you specify a filename with a directory (e.g., "screenshots/google_page.png"), the directory will be created if needed
 4. If you don't provide a filename, the screenshot is only available as base64 and not saved to disk
 
-IMPORTANT: Take screenshots frequently using the desktop_tool to understand the current state of the desktop. 
+IMPORTANT: Take screenshots frequently using the desktop_tool's screenshot action or the direct screenshot tool to understand the current state of the desktop. 
 You should take a screenshot:
 1. At the beginning of a task to understand the initial state
 2. Before performing key actions like clicks or typing to confirm the correct position
@@ -671,7 +538,10 @@ You should take a screenshot:
 4. Whenever you're unsure about the current state of the desktop
 
 Screenshots are essential for you to accurately navigate the desktop environment, understand what you're seeing, 
-and make precise mouse movements and clicks. Use the desktop_tool's screenshot action to help guide your actions.
+and make precise mouse movements and clicks.
+
+Note: You can use either the combined tools (browser_tool, sandbox_tool, desktop_tool) or the individual tools.
+The individual tools come directly from the computer instance and provide more direct access to functionality.
 
 Always use the appropriate tool for the task at hand.
 """
@@ -698,6 +568,13 @@ Always use the appropriate tool for the task at hand.
             self.sandbox_tool.set_computer(self.computer)
             self.desktop_tool.set_computer(self.computer)
             print(f"[MorphCloudAgent] All tools connected to computer: {self.computer.id}")
+            
+            # Update tool specs with computer's available tools
+            print(f"[MorphCloudAgent] Getting wrapped tools from computer...")
+            # Get the computer's tools in Anthropic format
+            self.tool_specs = self.computer.as_anthropic_tools()
+            
+            print(f"[MorphCloudAgent] Computer tools ready. Total available tools: {len(self.tool_specs)}")
             
             return self.computer
         except Exception as e:
@@ -765,11 +642,7 @@ Always use the appropriate tool for the task at hand.
                 tool_name = tool_call.name
                 
                 # Extract the appropriate input parameter based on tool type
-                if tool_name == "python_executor":
-                    tool_input = tool_call.input.get("code", "")
-                elif tool_name == "bash_executor":
-                    tool_input = tool_call.input.get("command", "")
-                elif tool_name in ["browser_tool", "sandbox_tool", "desktop_tool"]:
+                if tool_name in ["browser_tool", "sandbox_tool", "desktop_tool"]:
                     # For complex tools, convert the input to JSON
                     tool_input = json.dumps(dict(tool_call.input), indent=2)
                 else:
@@ -786,7 +659,73 @@ Always use the appropriate tool for the task at hand.
                 
                 # Execute the tool
                 start_time = time.time()
-                result = self.tools[tool_name].run(tool_input)
+                
+                # Check if this is one of our wrapped tools or a direct computer tool
+                if tool_name in self.tools:
+                    # Use our wrapper tools
+                    result = self.tools[tool_name].run(tool_input)
+                else:
+                    # This might be a direct computer tool from as_anthropic_tools
+                    # We need to check if it's one of the computer tools
+                    print(f"{COLORS['SECONDARY']}Using direct computer tool: {tool_name}{COLORS['RESET']}")
+                    # Most computer tool names follow patterns that we can map
+                    # Browser tools: browser_goto, browser_click, etc.
+                    if tool_name.startswith("browser_"):
+                        browser_method = tool_name.replace("browser_", "")
+                        try:
+                            # Get the method from the browser object
+                            method = getattr(self.computer.browser, browser_method)
+                            # Create a coroutine to run it
+                            coro = method(**dict(tool_call.input))
+                            # Run it in the event loop
+                            result = asyncio.get_event_loop().run_until_complete(coro)
+                            # Convert to string if needed
+                            result = str(result) if result is not None else "Action completed successfully"
+                        except Exception as e:
+                            result = f"Error executing browser method {browser_method}: {str(e)}"
+                    # Sandbox tools: execute_code, create_notebook, etc.
+                    elif tool_name in ["execute_code", "create_notebook", "add_cell", "execute_cell"]:
+                        sandbox_method = tool_name
+                        try:
+                            # Get the method from the sandbox object
+                            method = getattr(self.computer.sandbox, sandbox_method)
+                            # Create a coroutine to run it
+                            coro = method(**dict(tool_call.input))
+                            # Run it in the event loop
+                            result = asyncio.get_event_loop().run_until_complete(coro)
+                            # Convert to string for result display
+                            result = json.dumps(result, indent=2) if result is not None else "Action completed successfully"
+                        except Exception as e:
+                            result = f"Error executing sandbox method {sandbox_method}: {str(e)}"
+                    # Desktop tools: click, move_mouse, type_text, etc.
+                    elif tool_name in ["click", "move_mouse", "type_text", "key_press", "double_click", "screenshot"]:
+                        # Most can be called directly on the computer instance
+                        try:
+                            # Convert to async version of method
+                            desktop_method = "a" + tool_name if hasattr(self.computer, "a" + tool_name) else tool_name
+                            # Get the method
+                            method = getattr(self.computer, desktop_method)
+                            # Create a coroutine to run it
+                            coro = method(**dict(tool_call.input))
+                            # Run it in the event loop
+                            result = asyncio.get_event_loop().run_until_complete(coro)
+                            # For screenshot, we need to handle base64 or file saving
+                            if tool_name == "screenshot" and isinstance(result, bytes):
+                                # Convert to base64
+                                import base64
+                                b64data = base64.b64encode(result).decode('utf-8')
+                                result = f"Screenshot captured (size: {len(result)} bytes)"
+                                # Include the data for viewing
+                                if self.show_images:
+                                    result += f"\nBase64 data: {b64data[:100]}..."
+                            else:
+                                result = "Action completed successfully" if result is None else str(result)
+                        except Exception as e:
+                            result = f"Error executing desktop method {tool_name}: {str(e)}"
+                    else:
+                        # For unknown tools, provide an error
+                        result = f"Unknown tool: {tool_name}. This tool is not implemented."
+                
                 execution_time = time.time() - start_time
                 
                 # Display tool result

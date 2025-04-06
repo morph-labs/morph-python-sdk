@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import typing
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import importlib
 from morphcloud.api import Instance, InstanceAPI, Snapshot
 import base64
@@ -218,21 +218,13 @@ class Browser:
         await self._ensure_connected()
         return self._page.url
     
-    async def screenshot(self, path: str) -> None:
-        """Take a screenshot of the current page."""
+    async def screenshot(self) -> bytes:
+        """Take a screenshot of the current page and return the raw image data."""
         await self._ensure_connected()
-        await self._page.screenshot(path=path)
-        print(f"Screenshot saved to {path}")
+        screenshot_bytes = await self._page.screenshot()
+        print(f"Screenshot captured (size: {len(screenshot_bytes)} bytes)")
+        return screenshot_bytes
     
-    async def click(self, selector: str) -> None:
-        """Click on an element matching the selector."""
-        await self._ensure_connected()
-        await self._page.click(selector)
-    
-    async def fill(self, selector: str, value: str) -> None:
-        """Fill a form field."""
-        await self._ensure_connected()
-        await self._page.fill(selector, value)
     
     async def close(self) -> None:
         """Close the browser."""
@@ -739,6 +731,377 @@ class Computer(Instance):
         self._sandbox = Sandbox(self)
         self._display = ":1"  # Default display
         return self
+        
+    def as_anthropic_tools(self) -> List[Dict]:
+        """
+        Convert Computer's tools into Anthropic's function calling format.
+        
+        Returns:
+            List of dictionaries representing Computer's tools in Anthropic's format
+            with high-level wrapper tools and granular direct tools.
+        """
+        tools = []
+        
+        # Add high-level browser tool wrapper
+        tools.append({
+            "name": "browser_tool",
+            "description": "Automates browser interactions through MorphCloud.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", 
+                        "description": "The browser action to perform",
+                        "enum": ["goto", "get_title", "get_url", 
+                                "back", "forward", "reload", "close"]
+                    },
+                    "url": {"type": "string", "description": "The URL to navigate to"},
+                    "timeout": {"type": "integer", "description": "Timeout in milliseconds (for navigation actions)"},
+                    "wait_until": {"type": "string", "description": "Wait until event (for navigation actions)"}
+                },
+                "required": ["action"]
+            }
+        })
+        
+        # Add high-level sandbox tool wrapper
+        tools.append({
+            "name": "sandbox_tool",
+            "description": "Executes code in a Jupyter sandbox through MorphCloud.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", 
+                        "description": "The sandbox action to perform",
+                        "enum": ["execute_code", "create_notebook", "add_cell", "execute_cell", 
+                                "list_kernels", "close"]
+                    },
+                    "code": {"type": "string", "description": "Python code to execute"},
+                    "name": {"type": "string", "description": "Name for a new notebook"},
+                    "notebook_path": {"type": "string", "description": "Path to a notebook"},
+                    "content": {"type": "string", "description": "Content for a notebook cell"},
+                    "cell_type": {"type": "string", "description": "Type of cell (code or markdown)"},
+                    "cell_index": {"type": "integer", "description": "Index of a cell to execute"}
+                },
+                "required": ["action"]
+            }
+        })
+        
+        # Add high-level desktop tool wrapper
+        tools.append({
+            "name": "desktop_tool",
+            "description": "Interacts with a virtual desktop through MorphCloud.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", 
+                        "description": "The desktop action to perform",
+                        "enum": ["move_mouse", "click", "type_text", "key_press", "screenshot"]
+                    },
+                    "x": {"type": "integer", "description": "X coordinate for mouse action (required for move_mouse and click)"},
+                    "y": {"type": "integer", "description": "Y coordinate for mouse action (required for move_mouse and click)"},
+                    "button": {"type": "string", "description": "Mouse button (left, right, middle)"},
+                    "text": {"type": "string", "description": "Text to type (required for type_text)"},
+                    "keys": {"type": "array", "description": "Special keys to press (required for key_press)", "items": {"type": "string"}},
+                    "filename": {"type": "string", "description": "Optional filename to save the screenshot (if omitted, screenshot is only returned as base64)"}
+                },
+                "required": ["action"]
+            }
+        })
+        
+        # Add individual browser tools
+        tools.extend([
+            # Browser tools
+            {
+                "name": "browser_goto",
+                "description": "Navigate to a URL in the browser",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL to navigate to"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in milliseconds",
+                            "default": 15000
+                        },
+                        "wait_until": {
+                            "type": "string",
+                            "description": "Wait until event (domcontentloaded, load, networkidle)",
+                            "default": "domcontentloaded"
+                        }
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
+                "name": "browser_back",
+                "description": "Go back in browser history",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in milliseconds",
+                            "default": 10000
+                        },
+                        "wait_until": {
+                            "type": "string",
+                            "description": "Wait until event (domcontentloaded, load, networkidle)",
+                            "default": "domcontentloaded"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "browser_forward",
+                "description": "Go forward in browser history",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in milliseconds",
+                            "default": 10000
+                        },
+                        "wait_until": {
+                            "type": "string",
+                            "description": "Wait until event (domcontentloaded, load, networkidle)",
+                            "default": "domcontentloaded"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "browser_get_title",
+                "description": "Get the current page title",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "browser_get_url",
+                "description": "Get the current page URL",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "browser_screenshot",
+                "description": "Take a screenshot of the current page and return as raw bytes",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ])
+        
+        # Add VNC interaction tools
+        tools.extend([
+            {
+                "name": "click",
+                "description": "Click at specified coordinates on the screen",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {
+                            "type": "integer",
+                            "description": "X coordinate"
+                        },
+                        "y": {
+                            "type": "integer",
+                            "description": "Y coordinate"
+                        },
+                        "button": {
+                            "type": "string",
+                            "description": "Mouse button (left, middle, right)",
+                            "default": "left"
+                        }
+                    },
+                    "required": ["x", "y"]
+                }
+            },
+            {
+                "name": "double_click",
+                "description": "Double-click at specified coordinates on the screen",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {
+                            "type": "integer",
+                            "description": "X coordinate"
+                        },
+                        "y": {
+                            "type": "integer",
+                            "description": "Y coordinate"
+                        }
+                    },
+                    "required": ["x", "y"]
+                }
+            },
+            {
+                "name": "move_mouse",
+                "description": "Move the mouse to specified coordinates without clicking",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {
+                            "type": "integer",
+                            "description": "X coordinate"
+                        },
+                        "y": {
+                            "type": "integer",
+                            "description": "Y coordinate"
+                        }
+                    },
+                    "required": ["x", "y"]
+                }
+            },
+            {
+                "name": "type_text",
+                "description": "Type the specified text",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Text to type"
+                        }
+                    },
+                    "required": ["text"]
+                }
+            },
+            {
+                "name": "key_press",
+                "description": "Press the specified key or key combination",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "key_combo": {
+                            "type": "string",
+                            "description": "Key or key combination to press (e.g., 'Return', 'ctrl+a')"
+                        }
+                    },
+                    "required": ["key_combo"]
+                }
+            },
+            {
+                "name": "screenshot",
+                "description": "Take a screenshot of the desktop and return as raw bytes",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ])
+        
+        # Add sandbox tools
+        tools.extend([
+            {
+                "name": "execute_code",
+                "description": "Execute Python code in a sandbox environment",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Python code to execute"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in seconds",
+                            "default": 30
+                        }
+                    },
+                    "required": ["code"]
+                }
+            },
+            {
+                "name": "create_notebook",
+                "description": "Create a new Jupyter notebook",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the notebook (with or without .ipynb extension)"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
+                "name": "add_cell",
+                "description": "Add a cell to a Jupyter notebook",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "notebook_path": {
+                            "type": "string",
+                            "description": "Path to the notebook"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Cell content"
+                        },
+                        "cell_type": {
+                            "type": "string",
+                            "description": "Cell type (code, markdown, or raw)",
+                            "default": "code"
+                        }
+                    },
+                    "required": ["notebook_path", "content"]
+                }
+            },
+            {
+                "name": "execute_cell",
+                "description": "Execute a specific cell in a Jupyter notebook",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "notebook_path": {
+                            "type": "string",
+                            "description": "Path to the notebook"
+                        },
+                        "cell_index": {
+                            "type": "integer",
+                            "description": "Index of the cell to execute"
+                        }
+                    },
+                    "required": ["notebook_path", "cell_index"]
+                }
+            }
+        ])
+        
+        return tools
+    
+    def as_openai_tools(self) -> List[Dict]:
+        """
+        Convert Computer's tools into OpenAI's function calling format.
+        
+        Returns:
+            List of dictionaries representing Computer's tools in OpenAI's format.
+        """
+        tools = []
+        
+        # Convert Anthropic tools to OpenAI format
+        for tool in self.as_anthropic_tools():
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"]
+                }
+            }
+            tools.append(openai_tool)
+            
+        return tools
     
     @property
     def browser(self) -> Browser:
@@ -872,15 +1235,12 @@ class Computer(Instance):
         
         self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mouseup 1'")
     
-    def screenshot(self, path: Optional[str] = None) -> Optional[bytes]:
+    def screenshot(self) -> bytes:
         """
-        Take a screenshot of the desktop.
+        Take a screenshot of the desktop and return the raw image data.
         
-        Args:
-            path: Optional path to save the screenshot to
-            
         Returns:
-            Raw image data if path is None, otherwise None
+            Raw image data as bytes
         """
         # Ensure temp dir exists
         self.exec("mkdir -p /tmp/screenshots && chmod 777 /tmp/screenshots")
@@ -889,16 +1249,9 @@ class Computer(Instance):
         temp_path = "/tmp/screenshots/screenshot.png"
         self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root {temp_path}'")
         
-        if path:
-            # Save to the specified path
-            with open(path, "wb") as f:
-                result = self.exec(f"cat {temp_path} | base64 -w 0")
-                f.write(base64.b64decode(result.stdout))
-            return None
-        else:
-            # Return the raw image data
-            result = self.exec(f"cat {temp_path} | base64 -w 0")
-            return base64.b64decode(result.stdout)
+        # Return the raw image data
+        result = self.exec(f"cat {temp_path} | base64 -w 0")
+        return base64.b64decode(result.stdout)
     
     # Async versions of the VNC interaction methods
     async def aclick(self, x: int, y: int, button: str = "left") -> None:
@@ -990,31 +1343,18 @@ class Computer(Instance):
         result = self.exec(cmd)
         return result.stdout.strip()
     
-    async def ascreenshot(self, path: Optional[str] = None) -> Optional[bytes]:
+    async def ascreenshot(self) -> bytes:
         """
         Async version of screenshot.
         
-        Args:
-            path: Optional path to save the screenshot to
-            
         Returns:
-            If path is None, returns the raw image data as bytes.
-            If path is provided, saves to the path and returns None.
+            Raw image data as bytes
         """
         # Get base64 screenshot data
         base64_data = await self.screenshot_base64()
         
-        # Convert to binary data
-        binary_data = base64.b64decode(base64_data)
-        
-        if path:
-            # Save to the specified path
-            with open(path, "wb") as f:
-                f.write(binary_data)
-            return None
-        else:
-            # Return the raw image data
-            return binary_data
+        # Convert to binary data and return
+        return base64.b64decode(base64_data)
     
     # Override _refresh to properly handle Computer-specific attributes
     def _refresh(self) -> None:
@@ -1080,6 +1420,45 @@ class ComputerAPI(InstanceAPI):
             for instance in response.json()["data"]
         ]
     
+    def _verify_snapshot_is_computer(self, snapshot_id: str) -> Snapshot:
+        """
+        Verify that a snapshot is meant to be used as a Computer.
+        
+        Args:
+            snapshot_id: ID of the snapshot to verify
+            
+        Returns:
+            The verified Snapshot object
+            
+        Raises:
+            ValueError: If the snapshot is not a valid Computer snapshot
+        """
+        # Fetch the snapshot details
+        snapshot = self._client.snapshots.get(snapshot_id)
+        
+        # Check if the snapshot has the required metadata tag
+        if snapshot.metadata.get('type') != 'computer-dev':
+            raise ValueError(
+                f"Snapshot {snapshot_id} is not a valid Computer snapshot. "
+                f"Only snapshots with metadata 'type=computer-dev' can be used with Computer API."
+            )
+        
+        return snapshot
+
+    async def _averify_snapshot_is_computer(self, snapshot_id: str) -> Snapshot:
+        """Async version of _verify_snapshot_is_computer."""
+        # Fetch the snapshot details asynchronously
+        snapshot = await self._client.snapshots.aget(snapshot_id)
+        
+        # Check if the snapshot has the required metadata tag
+        if snapshot.metadata.get('type') != 'computer-dev':
+            raise ValueError(
+                f"Snapshot {snapshot_id} is not a valid Computer snapshot. "
+                f"Only snapshots with metadata 'type=computer-dev' can be used with Computer API."
+            )
+        
+        return snapshot
+
     def start(
         self,
         snapshot_id: str,
@@ -1087,7 +1466,25 @@ class ComputerAPI(InstanceAPI):
         ttl_seconds: Optional[int] = None,
         ttl_action: Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Computer:
-        """Start a new Computer from a snapshot."""
+        """
+        Start a new Computer from a snapshot.
+        
+        Args:
+            snapshot_id: ID of the snapshot to start
+            metadata: Optional metadata to attach to the computer
+            ttl_seconds: Optional time-to-live in seconds
+            ttl_action: Optional action to take when TTL expires ("stop" or "pause")
+            
+        Returns:
+            A new Computer instance
+            
+        Raises:
+            ValueError: If the snapshot is not a valid Computer snapshot
+        """
+        # Verify the snapshot is meant for Computer use
+        self._verify_snapshot_is_computer(snapshot_id)
+        
+        # Start the instance
         response = self._client._http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
@@ -1098,7 +1495,7 @@ class ComputerAPI(InstanceAPI):
             },
         )
         return Computer.model_validate(response.json())._set_api(self)
-    
+
     async def astart(
         self,
         snapshot_id: str,
@@ -1106,7 +1503,25 @@ class ComputerAPI(InstanceAPI):
         ttl_seconds: Optional[int] = None,
         ttl_action: Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Computer:
-        """Start a new Computer from a snapshot asynchronously."""
+        """
+        Start a new Computer from a snapshot asynchronously.
+        
+        Args:
+            snapshot_id: ID of the snapshot to start
+            metadata: Optional metadata to attach to the computer
+            ttl_seconds: Optional time-to-live in seconds
+            ttl_action: Optional action to take when TTL expires ("stop" or "pause")
+            
+        Returns:
+            A new Computer instance
+            
+        Raises:
+            ValueError: If the snapshot is not a valid Computer snapshot
+        """
+        # Verify the snapshot is meant for Computer use
+        await self._averify_snapshot_is_computer(snapshot_id)
+        
+        # Start the instance
         response = await self._client._async_http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
@@ -1117,7 +1532,7 @@ class ComputerAPI(InstanceAPI):
             },
         )
         return Computer.model_validate(response.json())._set_api(self)
-    
+
     def get(self, computer_id: str) -> Computer:
         """Get a Computer by ID."""
         response = self._client._http_client.get(f"/instance/{computer_id}")
