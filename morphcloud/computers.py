@@ -1603,6 +1603,25 @@ class Computer:
 
         return openai_tools
 
+    @classmethod
+    def new(cls, client: Optional[MorphCloudClient] = None) -> Computer:
+        client = client or MorphCloudClient()
+
+        snapshot = client.snapshots.list(metadata={"type": "computer-dev"})
+
+        if not snapshot:
+            raise ValueError(
+                "No snapshots available for Computer."
+            )
+
+        # Start a new computer instance
+        computer = ComputerAPI(client).start(
+            snapshot_id=snapshot[0].id,
+            metadata={"type": "computer-dev"},
+        )
+
+        return computer
+
 
 class ComputerAPI:
     """API for managing Computers, which are enhanced Instances with additional capabilities."""
