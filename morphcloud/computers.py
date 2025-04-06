@@ -1038,497 +1038,87 @@ class Computer:
             return (width, height)
         # Return a default if unable to detect
         return (1024, 768)
-
+    
     def as_anthropic_tools(self) -> List[Dict[str, Any]]:
         """
-        Convert Computer's tools into Anthropic's function calling format.
-
-        This method generates tool definitions for use with Anthropic's function calling API.
-        It includes both high-level wrapper tools for browser, sandbox, and desktop interaction,
-        as well as granular direct tools for specific operations.
-
-        The tools are formatted according to Anthropic's schema requirements:
-        - name: The tool name (e.g., "browser_tool", "browser_goto")
-        - description: Human-readable description of what the tool does
-        - input_schema: JSON schema describing the required and optional parameters
-
+        Convert Computer's MCP tools into Anthropic's function calling format.
+        
+        Fetches the available tools from the MCP server and formats them 
+        according to Anthropic's function calling API requirements.
+        
         Returns:
             List of dictionaries representing Computer's tools in Anthropic's format
-            with high-level wrapper tools and granular direct tools.
         """
-        tools = []
-
-        # Add high-level browser tool wrapper
-        tools.append(
-            {
-                "name": "browser_tool",
-                "description": "Automates browser interactions through MorphCloud.",
+        # Initialize MCP server and get tools
+        mcp_server = self.mcp()
+        tools = asyncio.run(mcp_server.list_tools())
+        
+        anthropic_tools = []
+        
+        for tool in tools:
+            # Create the basic tool structure
+            anthropic_tool = {
+                "name": tool.name,
+                "description": tool.description,
                 "input_schema": {
                     "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "The browser action to perform",
-                            "enum": [
-                                "goto",
-                                "get_title",
-                                "get_current_url",
-                                "back",
-                                "forward",
-                                "reload",
-                                "close",
-                            ],
-                        },
-                        "url": {
-                            "type": "string",
-                            "description": "The URL to navigate to",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Timeout in milliseconds (for navigation actions)",
-                        },
-                        "wait_until": {
-                            "type": "string",
-                            "description": "Wait until event (for navigation actions)",
-                        },
-                    },
-                    "required": ["action"],
-                },
+                    "properties": {},
+                    "required": []
+                }
             }
-        )
-
-        # Add high-level sandbox tool wrapper
-        tools.append(
-            {
-                "name": "sandbox_tool",
-                "description": "Executes code in a Jupyter sandbox through MorphCloud.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "The sandbox action to perform",
-                            "enum": [
-                                "execute_code",
-                                "create_notebook",
-                                "add_cell",
-                                "execute_cell",
-                                "list_kernels",
-                                "close",
-                            ],
-                        },
-                        "code": {
-                            "type": "string",
-                            "description": "Python code to execute",
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Name for a new notebook",
-                        },
-                        "notebook_path": {
-                            "type": "string",
-                            "description": "Path to a notebook",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Content for a notebook cell",
-                        },
-                        "cell_type": {
-                            "type": "string",
-                            "description": "Type of cell (code or markdown)",
-                        },
-                        "cell_index": {
-                            "type": "integer",
-                            "description": "Index of a cell to execute",
-                        },
-                    },
-                    "required": ["action"],
-                },
-            }
-        )
-
-        # Add high-level desktop tool wrapper
-        tools.append(
-            {
-                "name": "desktop_tool",
-                "description": "Interacts with a virtual desktop through MorphCloud.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "The desktop action to perform",
-                            "enum": [
-                                "move_mouse",
-                                "click",
-                                "type_text",
-                                "key_press",
-                                "screenshot",
-                                "scroll",
-                                "wait",
-                            ],
-                        },
-                        "x": {
-                            "type": "integer",
-                            "description": "X coordinate for mouse action (required for move_mouse, click, and scroll)",
-                        },
-                        "y": {
-                            "type": "integer",
-                            "description": "Y coordinate for mouse action (required for move_mouse, click, and scroll)",
-                        },
-                        "scroll_x": {
-                            "type": "integer",
-                            "description": "Horizontal scroll amount (for scroll action)",
-                        },
-                        "scroll_y": {
-                            "type": "integer",
-                            "description": "Vertical scroll amount (for scroll action)",
-                        },
-                        "ms": {
-                            "type": "integer",
-                            "description": "Milliseconds to wait (for wait action)",
-                        },
-                        "button": {
-                            "type": "string",
-                            "description": "Mouse button (left, right, middle)",
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "Text to type (required for type_text)",
-                        },
-                        "keys": {
-                            "type": "array",
-                            "description": "Special keys to press (required for key_press)",
-                            "items": {"type": "string"},
-                        },
-                        "filename": {
-                            "type": "string",
-                            "description": "Optional filename to save the screenshot (if omitted, screenshot is only returned as base64)",
-                        },
-                    },
-                    "required": ["action"],
-                },
-            }
-        )
-
-        # Add individual browser tools
-        tools.extend(
-            [
-                # Browser tools
-                {
-                    "name": "browser_goto",
-                    "description": "Navigate to a URL in the browser",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "The URL to navigate to",
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "Timeout in milliseconds",
-                                "default": 15000,
-                            },
-                            "wait_until": {
-                                "type": "string",
-                                "description": "Wait until event (domcontentloaded, load, networkidle)",
-                                "default": "domcontentloaded",
-                            },
-                        },
-                        "required": ["url"],
-                    },
-                },
-                {
-                    "name": "browser_back",
-                    "description": "Go back in browser history",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "timeout": {
-                                "type": "integer",
-                                "description": "Timeout in milliseconds",
-                                "default": 10000,
-                            },
-                            "wait_until": {
-                                "type": "string",
-                                "description": "Wait until event (domcontentloaded, load, networkidle)",
-                                "default": "domcontentloaded",
-                            },
-                        },
-                    },
-                },
-                {
-                    "name": "browser_forward",
-                    "description": "Go forward in browser history",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "timeout": {
-                                "type": "integer",
-                                "description": "Timeout in milliseconds",
-                                "default": 10000,
-                            },
-                            "wait_until": {
-                                "type": "string",
-                                "description": "Wait until event (domcontentloaded, load, networkidle)",
-                                "default": "domcontentloaded",
-                            },
-                        },
-                    },
-                },
-                {
-                    "name": "browser_get_title",
-                    "description": "Get the current page title",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-                {
-                    "name": "browser_get_url",
-                    "description": "Get the current page URL",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-                {
-                    "name": "browser_screenshot",
-                    "description": "Take a screenshot of the current page and return as raw bytes",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-            ]
-        )
-
-        # Add VNC interaction tools
-        tools.extend(
-            [
-                {
-                    "name": "scroll",
-                    "description": "Scroll at specified coordinates on the screen",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "x": {
-                                "type": "integer",
-                                "description": "X coordinate for mouse position",
-                            },
-                            "y": {
-                                "type": "integer",
-                                "description": "Y coordinate for mouse position",
-                            },
-                            "scroll_x": {
-                                "type": "integer",
-                                "description": "Horizontal scroll amount (negative = left, positive = right)",
-                                "default": 0,
-                            },
-                            "scroll_y": {
-                                "type": "integer",
-                                "description": "Vertical scroll amount (negative = up, positive = down)",
-                                "default": 0,
-                            },
-                        },
-                        "required": ["x", "y"],
-                    },
-                },
-                {
-                    "name": "wait",
-                    "description": "Wait for specified milliseconds",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "ms": {
-                                "type": "integer",
-                                "description": "Milliseconds to wait",
-                                "default": 1000,
-                            }
-                        },
-                    },
-                },
-                {
-                    "name": "click",
-                    "description": "Click at specified coordinates on the screen",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "integer", "description": "X coordinate"},
-                            "y": {"type": "integer", "description": "Y coordinate"},
-                            "button": {
-                                "type": "string",
-                                "description": "Mouse button (left, middle, right)",
-                                "default": "left",
-                            },
-                        },
-                        "required": ["x", "y"],
-                    },
-                },
-                {
-                    "name": "double_click",
-                    "description": "Double-click at specified coordinates on the screen",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "integer", "description": "X coordinate"},
-                            "y": {"type": "integer", "description": "Y coordinate"},
-                        },
-                        "required": ["x", "y"],
-                    },
-                },
-                {
-                    "name": "move_mouse",
-                    "description": "Move the mouse to specified coordinates without clicking",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "integer", "description": "X coordinate"},
-                            "y": {"type": "integer", "description": "Y coordinate"},
-                        },
-                        "required": ["x", "y"],
-                    },
-                },
-                {
-                    "name": "type_text",
-                    "description": "Type the specified text",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "text": {"type": "string", "description": "Text to type"}
-                        },
-                        "required": ["text"],
-                    },
-                },
-                {
-                    "name": "key_press",
-                    "description": "Press the specified key or key combination",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "key_combo": {
-                                "type": "string",
-                                "description": "Key or key combination to press (e.g., 'Return', 'ctrl+a')",
-                            }
-                        },
-                        "required": ["key_combo"],
-                    },
-                },
-                {
-                    "name": "screenshot",
-                    "description": "Take a screenshot of the desktop and return as raw bytes",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-            ]
-        )
-
-        # Add sandbox tools
-        tools.extend(
-            [
-                {
-                    "name": "execute_code",
-                    "description": "Execute Python code in a sandbox environment",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "Python code to execute",
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "Timeout in seconds",
-                                "default": 30,
-                            },
-                        },
-                        "required": ["code"],
-                    },
-                },
-                {
-                    "name": "create_notebook",
-                    "description": "Create a new Jupyter notebook",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Name of the notebook (with or without .ipynb extension)",
-                            }
-                        },
-                        "required": ["name"],
-                    },
-                },
-                {
-                    "name": "add_cell",
-                    "description": "Add a cell to a Jupyter notebook",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "notebook_path": {
-                                "type": "string",
-                                "description": "Path to the notebook",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Cell content",
-                            },
-                            "cell_type": {
-                                "type": "string",
-                                "description": "Cell type (code, markdown, or raw)",
-                                "default": "code",
-                            },
-                        },
-                        "required": ["notebook_path", "content"],
-                    },
-                },
-                {
-                    "name": "execute_cell",
-                    "description": "Execute a specific cell in a Jupyter notebook",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "notebook_path": {
-                                "type": "string",
-                                "description": "Path to the notebook",
-                            },
-                            "cell_index": {
-                                "type": "integer",
-                                "description": "Index of the cell to execute",
-                            },
-                        },
-                        "required": ["notebook_path", "cell_index"],
-                    },
-                },
-            ]
-        )
-
-        return tools
+            
+            # Extract properties from inputSchema if available
+            if hasattr(tool, 'inputSchema') and isinstance(tool.inputSchema, dict):
+                anthropic_tool["input_schema"]["properties"] = tool.inputSchema.get("properties", {})
+                # Only include required field if it exists
+                if "required" in tool.inputSchema:
+                    anthropic_tool["input_schema"]["required"] = tool.inputSchema.get("required", [])
+            
+            anthropic_tools.append(anthropic_tool)
+        
+        return anthropic_tools
 
     def as_openai_tools(self) -> List[Dict[str, Any]]:
         """
-        Convert Computer's tools into OpenAI's function calling format.
-
-        This method transforms the Computer's capabilities into OpenAI's function calling format
-        by converting the Anthropic tool definitions. The conversion process:
-
-        1. Gets the Anthropic tool definitions from as_anthropic_tools()
-        2. Restructures each tool to match OpenAI's schema:
-           - "type": "function"
-           - "function": Contains name, description, and parameters
-
-        OpenAI tools follow a different structure from Anthropic tools but maintain
-        the same functionality and parameter requirements.
-
+        Convert Computer's MCP tools into OpenAI's function calling format.
+        
+        Fetches the available tools from the MCP server and formats them 
+        according to OpenAI's function calling API requirements.
+        
         Returns:
-            List of dictionaries representing Computer's tools in OpenAI's format.
+            List of dictionaries representing Computer's tools in OpenAI's format
         """
-        tools = []
-
-        # Convert Anthropic tools to OpenAI format
-        for tool in self.as_anthropic_tools():
+        # Initialize MCP server and get tools
+        mcp_server = self.mcp()
+        tools = asyncio.run(mcp_server.list_tools())
+        
+        openai_tools = []
+        
+        for tool in tools:
+            # Create the OpenAI tool structure
             openai_tool = {
                 "type": "function",
                 "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["input_schema"],
-                },
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
             }
-            tools.append(openai_tool)
-
-        return tools
+            
+            # Extract properties from inputSchema if available
+            if hasattr(tool, 'inputSchema') and isinstance(tool.inputSchema, dict):
+                openai_tool["function"]["parameters"]["properties"] = tool.inputSchema.get("properties", {})
+                # Only include required field if it exists
+                if "required" in tool.inputSchema:
+                    openai_tool["function"]["parameters"]["required"] = tool.inputSchema.get("required", [])
+            
+            openai_tools.append(openai_tool)
+        
+        return openai_tools
 
     # def list_tools(): TODO: Implement
 
@@ -1870,7 +1460,48 @@ class Computer:
 
         mcp_server = FastMCP("computer")
 
-        mcp_server.add_tool(self.screenshot, "screenshot", "Take a screenshot of the page and return as base64-encoded PNG data")
+        # Desktop/VNC interaction tools
+        mcp_server.add_tool(self.screenshot, "screenshot", "Take a screenshot of the desktop and return as base64-encoded PNG data")
+        mcp_server.add_tool(self.click, "click", "Click at specified coordinates on the screen")
+        mcp_server.add_tool(self.double_click, "double_click", "Double-click at specified coordinates on the screen")
+        mcp_server.add_tool(self.move_mouse, "move_mouse", "Move the mouse to specified coordinates without clicking")
+        mcp_server.add_tool(self.scroll, "scroll", "Scroll at specified coordinates")
+        mcp_server.add_tool(self.wait, "wait", "Wait for specified milliseconds")
+        mcp_server.add_tool(self.type_text, "type_text", "Type the specified text")
+        mcp_server.add_tool(self.key_press, "key_press", "Press the specified key or key combination")
+        mcp_server.add_tool(self.key_press_special, "key_press_special", "Press special keys using a more user-friendly interface")
+        mcp_server.add_tool(self.drag, "drag", "Drag from point to point along a path")
+        mcp_server.add_tool(lambda: self.dimensions, "get_dimensions", "Get the screen dimensions (width, height)")
+        mcp_server.add_tool(self.set_display, "set_display", "Set the X display identifier to use")
+        
+        # Browser tools
+        mcp_server.add_tool(lambda url, timeout=15000, wait_until="domcontentloaded": self.browser.goto(url, timeout, wait_until), 
+                           "browser_goto", "Navigate to a URL in the browser")
+        mcp_server.add_tool(lambda timeout=10000, wait_until="domcontentloaded": self.browser.back(timeout, wait_until), 
+                           "browser_back", "Go back in browser history")
+        mcp_server.add_tool(lambda timeout=10000, wait_until="domcontentloaded": self.browser.forward(timeout, wait_until), 
+                           "browser_forward", "Go forward in browser history")
+        mcp_server.add_tool(self.browser.get_title, "browser_get_title", "Get the current page title")
+        mcp_server.add_tool(self.browser.get_current_url, "browser_get_url", "Get the current page URL")
+        mcp_server.add_tool(self.browser.screenshot, "browser_screenshot", "Take a screenshot of the current page and return as base64-encoded PNG data")
+        mcp_server.add_tool(self.browser.click, "browser_click", "Click at specified coordinates in the browser")
+        mcp_server.add_tool(self.browser.double_click, "browser_double_click", "Double-click at specified coordinates in the browser")
+        mcp_server.add_tool(self.browser.scroll, "browser_scroll", "Scroll at specified coordinates in the browser")
+        mcp_server.add_tool(self.browser.type, "browser_type", "Type the specified text in the browser")
+        mcp_server.add_tool(self.browser.keypress, "browser_keypress", "Press the specified keys in the browser")
+        mcp_server.add_tool(self.browser.move, "browser_move", "Move mouse to specified coordinates in the browser")
+        mcp_server.add_tool(self.browser.drag, "browser_drag", "Drag from point to point along a path in the browser")
+        mcp_server.add_tool(self.browser.wait, "browser_wait", "Wait for specified milliseconds in the browser")
+        
+        # Sandbox tools
+        mcp_server.add_tool(self.sandbox.execute_code, "execute_code", "Execute Python code in a Jupyter kernel and return the result")
+        mcp_server.add_tool(self.sandbox.create_notebook, "create_notebook", "Create a new Jupyter notebook")
+        mcp_server.add_tool(self.sandbox.add_cell, "add_cell", "Add a cell to a Jupyter notebook")
+        mcp_server.add_tool(self.sandbox.execute_cell, "execute_cell", "Execute a specific cell in a Jupyter notebook")
+        mcp_server.add_tool(self.sandbox.list_kernels, "list_kernels", "List available Jupyter kernels")
+        mcp_server.add_tool(lambda: self.sandbox.jupyter_url, "get_jupyter_url", "Get the Jupyter server URL")
+        mcp_server.add_tool(self.sandbox.wait_for_service, "wait_for_jupyter", "Wait for Jupyter service to be ready")
+        mcp_server.add_tool(self.sandbox.start_kernel, "start_kernel", "Start a new kernel with the given name")
 
         return mcp_server
 
