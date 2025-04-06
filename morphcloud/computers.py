@@ -7,12 +7,13 @@ import base64
 import typing
 import asyncio
 import importlib.util
-import requests
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
-import websocket
 
 from morphcloud.api import Instance, InstanceAPI, Snapshot, MorphCloudClient
+
+import websocket
 
 _websockets_available = importlib.util.find_spec("websockets") is not None
 _httpx_available = importlib.util.find_spec("httpx") is not None
@@ -87,9 +88,7 @@ class Browser:
                 "Install it with: pip install playwright"
             )
 
-    def _get_browser_ws_endpoint(
-        self, cdp_url: str, timeout_seconds: int = 15
-    ) -> str:
+    def _get_browser_ws_endpoint(self, cdp_url: str, timeout_seconds: int = 15) -> str:
         """
         Get the WebSocket endpoint URL from the CDP server with retries.
 
@@ -140,9 +139,7 @@ class Browser:
                     # Success!
                     return websocket_url
                 except json.JSONDecodeError:
-                    errors.append(
-                        f"Invalid JSON response on attempt {retry_count}"
-                    )
+                    errors.append(f"Invalid JSON response on attempt {retry_count}")
                     time.sleep(current_delay)
                     continue
 
@@ -179,7 +176,7 @@ class Browser:
         if not self._connected:
             self.connect()
 
-    def connect(self, timeout_seconds: int = 30) -> 'Browser':
+    def connect(self, timeout_seconds: int = 30) -> "Browser":
         """
         Connect to a CDP endpoint and create a browser client.
 
@@ -249,7 +246,7 @@ class Browser:
         self._page = None
         self._playwright = None
 
-    def __enter__(self) -> 'Browser':
+    def __enter__(self) -> "Browser":
         """
         Enter the context manager.
 
@@ -375,9 +372,7 @@ class Browser:
         except Exception as e:
             raise Exception(f"Failed to navigate to {url}: {str(e)}") from e
 
-    def back(
-        self, timeout: int = 10000, wait_until: str = "domcontentloaded"
-    ) -> None:
+    def back(self, timeout: int = 10000, wait_until: str = "domcontentloaded") -> None:
         """
         Go back in the browser history with fallback behavior.
 
@@ -447,6 +442,7 @@ class Browser:
         assert self._page, "Page is not initialized"
         return self._page.title()
 
+
 class Sandbox:
     """
     Code execution sandbox interface for Computer using Jupyter kernels.
@@ -493,6 +489,90 @@ class Sandbox:
         """
         if not self._ws_connected:
             self.connect()
+
+    def connect(
+        self, timeout_seconds: int = 30, kernel_id: Optional[str] = None
+    ) -> "Sandbox":
+        """
+        Connect to a Jupyter kernel.
+
+        Args:
+            timeout_seconds: Maximum time to wait for service in seconds
+            kernel_id: Optional ID of existing kernel to connect to. If not provided, a new kernel will be started
+
+        Returns:
+            The Sandbox instance for method chaining
+
+        Raises:
+            ImportError: If required dependencies are not installed
+            TimeoutError: If Jupyter service doesn't start within timeout
+            websocket.WebSocketException: If WebSocket connection fails
+        """
+        self._check_dependencies()
+
+        # Wait for Jupyter service to be ready
+        self.wait_for_service(timeout_seconds)
+
+        # Use existing kernel_id if provided, otherwise start a new kernel
+        if kernel_id:
+            self._kernel_id = kernel_id
+        elif not self._kernel_id:
+            self.start_kernel()
+
+        # Connect to the WebSocket
+        ws_url = self.jupyter_url.replace("https://", "wss://").replace(
+            "http://", "ws://"
+        )
+        ws_endpoint = f"{ws_url}/api/kernels/{self._kernel_id}/channels"
+
+        # Close existing connection if any
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception as e:
+                print(f"Error closing WebSocket connection: {str(e)}")
+            finally:
+                self._ws = None
+                self._ws_connected = False
+
+        # Connect to kernel WebSocket
+        self._ws = websocket.create_connection(ws_endpoint)
+        self._ws_connected = True
+
+        return self
+
+    def close(self) -> None:
+        """
+        Close the kernel WebSocket connection.
+
+        This method should be called when done using the sandbox to free resources.
+        Any errors during closing are logged but don't prevent cleanup.
+        """
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception as e:
+                # Log the error but continue with cleanup
+                print(f"Error closing WebSocket connection: {str(e)}")
+            finally:
+                self._ws = None
+                self._ws_connected = False
+
+    def __enter__(self) -> "Sandbox":
+        """
+        Enter context manager.
+
+        Returns:
+            The Sandbox instance
+        """
+        return self.connect()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """
+        Exit context manager and close connections.
+        """
+        _ = exc_type, exc_val, exc_tb  # Unused
+        self.close()
 
     @property
     def jupyter_url(self) -> str:
@@ -546,9 +626,7 @@ class Sandbox:
 
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(
-                    f"{self.jupyter_url}/api/status", timeout=5.0
-                )
+                response = requests.get(f"{self.jupyter_url}/api/status", timeout=5.0)
                 if response.status_code == 200:
                     return True
             except Exception as e:
@@ -605,57 +683,6 @@ class Sandbox:
         kernel_info = response.json()
         self._kernel_id = kernel_info["id"]
         return kernel_info
-
-    def connect(
-        self, timeout_seconds: int = 30, kernel_id: Optional[str] = None
-    ) -> "Sandbox":
-        """
-        Connect to a Jupyter kernel.
-
-        Args:
-            timeout_seconds: Maximum time to wait for service in seconds
-            kernel_id: Optional ID of existing kernel to connect to. If not provided, a new kernel will be started
-
-        Returns:
-            The Sandbox instance for method chaining
-
-        Raises:
-            ImportError: If required dependencies are not installed
-            TimeoutError: If Jupyter service doesn't start within timeout
-            websocket.WebSocketException: If WebSocket connection fails
-        """
-        self._check_dependencies()
-
-        # Wait for Jupyter service to be ready
-        self.wait_for_service(timeout_seconds)
-
-        # Use existing kernel_id if provided, otherwise start a new kernel
-        if kernel_id:
-            self._kernel_id = kernel_id
-        elif not self._kernel_id:
-            self.start_kernel()
-
-        # Connect to the WebSocket
-        ws_url = self.jupyter_url.replace("https://", "wss://").replace(
-            "http://", "ws://"
-        )
-        ws_endpoint = f"{ws_url}/api/kernels/{self._kernel_id}/channels"
-
-        # Close existing connection if any
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception as e:
-                print(f"Error closing WebSocket connection: {str(e)}")
-            finally:
-                self._ws = None
-                self._ws_connected = False
-
-        # Connect to kernel WebSocket
-        self._ws = websocket.create_connection(ws_endpoint)
-        self._ws_connected = True
-
-        return self
 
     def execute_code(self, code: str, timeout: int = 30) -> Dict[str, Any]:
         """
@@ -721,7 +748,7 @@ class Sandbox:
         got_status_idle = False
 
         start_time = time.time()
-        
+
         # Setting timeout for WebSocket operations
         original_timeout = self._ws.gettimeout()
         self._ws.settimeout(5.0)  # 5 second timeout for recv operations
@@ -784,7 +811,9 @@ class Sandbox:
                     elif msg_type == "error":
                         got_output = True
                         status = "error"
-                        traceback = response_data.get("content", {}).get("traceback", [])
+                        traceback = response_data.get("content", {}).get(
+                            "traceback", []
+                        )
                         outputs.extend(traceback)
 
                     elif msg_type == "status":
@@ -961,37 +990,6 @@ class Sandbox:
         code = cell["source"]
         return self.execute_code(code)
 
-    def close(self) -> None:
-        """
-        Close the kernel WebSocket connection.
-
-        This method should be called when done using the sandbox to free resources.
-        Any errors during closing are logged but don't prevent cleanup.
-        """
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception as e:
-                # Log the error but continue with cleanup
-                print(f"Error closing WebSocket connection: {str(e)}")
-            finally:
-                self._ws = None
-                self._ws_connected = False
-
-    def __enter__(self) -> 'Sandbox':
-        """
-        Enter context manager.
-        
-        Returns:
-            The Sandbox instance
-        """
-        return self.connect()
-        
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """
-        Exit context manager and close connections.
-        """
-        self.close()
 
 class Computer:
     """
@@ -1012,6 +1010,23 @@ class Computer:
         # Set default display - the _display attribute is managed through the display property
         self._display = ":1"
         return self
+
+    def _refresh(self) -> None:
+        # Store computer-specific attributes to restore after refresh
+        browser = getattr(self, "_browser", None)
+        sandbox = getattr(self, "_sandbox", None)
+        display = getattr(self, "_display", ":1")
+
+        # Refresh using parent method
+        self._instance._refresh()
+
+        # Restore computer-specific attributes
+        if browser:
+            self._browser = browser
+        if sandbox:
+            self._sandbox = sandbox
+        # Restore the display value
+        self._display = display
 
     @property
     def environment(self) -> str:
@@ -1038,91 +1053,6 @@ class Computer:
             return (width, height)
         # Return a default if unable to detect
         return (1024, 768)
-    
-    def as_anthropic_tools(self) -> List[Dict[str, Any]]:
-        """
-        Convert Computer's MCP tools into Anthropic's function calling format.
-        
-        Fetches the available tools from the MCP server and formats them 
-        according to Anthropic's function calling API requirements.
-        
-        Returns:
-            List of dictionaries representing Computer's tools in Anthropic's format
-        """
-        # Initialize MCP server and get tools
-        mcp_server = self.mcp()
-        tools = asyncio.run(mcp_server.list_tools())
-        
-        anthropic_tools = []
-        
-        for tool in tools:
-            # Create the basic tool structure
-            anthropic_tool = {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-            
-            # Extract properties from inputSchema if available
-            if hasattr(tool, 'inputSchema') and isinstance(tool.inputSchema, dict):
-                anthropic_tool["input_schema"]["properties"] = tool.inputSchema.get("properties", {})
-                # Only include required field if it exists
-                if "required" in tool.inputSchema:
-                    anthropic_tool["input_schema"]["required"] = tool.inputSchema.get("required", [])
-            
-            anthropic_tools.append(anthropic_tool)
-        
-        return anthropic_tools
-
-    def as_openai_tools(self) -> List[Dict[str, Any]]:
-        """
-        Convert Computer's MCP tools into OpenAI's function calling format.
-        
-        Fetches the available tools from the MCP server and formats them 
-        according to OpenAI's function calling API requirements.
-        
-        Returns:
-            List of dictionaries representing Computer's tools in OpenAI's format
-        """
-        # Initialize MCP server and get tools
-        mcp_server = self.mcp()
-        tools = asyncio.run(mcp_server.list_tools())
-        
-        openai_tools = []
-        
-        for tool in tools:
-            # Create the OpenAI tool structure
-            openai_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            }
-            
-            # Extract properties from inputSchema if available
-            if hasattr(tool, 'inputSchema') and isinstance(tool.inputSchema, dict):
-                openai_tool["function"]["parameters"]["properties"] = tool.inputSchema.get("properties", {})
-                # Only include required field if it exists
-                if "required" in tool.inputSchema:
-                    openai_tool["function"]["parameters"]["required"] = tool.inputSchema.get("required", [])
-            
-            openai_tools.append(openai_tool)
-        
-        return openai_tools
-
-    # def list_tools(): TODO: Implement
-
-    # def call_tool(): TODO: Implement
 
     @property
     def browser(self) -> Browser:
@@ -1182,24 +1112,24 @@ class Computer:
 
         This property returns the X11 display identifier (e.g., ":1") that is used
         for X11-based GUI operations like taking screenshots and simulating user input.
-        
+
         In Linux systems, the X display is where graphical applications render their output.
         The default display ":1" is typically used for the primary screen in virtual environments.
-        
+
         This display value is used in all VNC interaction methods such as:
         - screenshot()
         - click()
         - type_text()
         - key_press()
-        
+
         Returns:
             String identifier of the X display (e.g., ":1")
-            
+
         See Also:
             set_display: Method to change the display identifier
         """
         return getattr(self, "_display", ":1")
-    
+
     def set_display(self, display_id: str) -> None:
         """
         Set the X display identifier to use for this Computer.
@@ -1209,7 +1139,7 @@ class Computer:
 
         Example:
             computer.set_display(":2")  # Set to use the secondary display
-        
+
         Args:
             display_id: The X11 display identifier to use (e.g., ":1", ":2")
         """
@@ -1437,73 +1367,244 @@ class Computer:
         result = self._instance.exec(f"cat {temp_path} | base64 -w 0")
         return result.stdout
 
-    # Override _refresh to properly handle Computer-specific attributes
-    def _refresh(self) -> None:
-        # Store computer-specific attributes to restore after refresh
-        browser = getattr(self, "_browser", None)
-        sandbox = getattr(self, "_sandbox", None)
-        display = getattr(self, "_display", ":1")
-
-        # Refresh using parent method
-        self._instance._refresh()
-
-        # Restore computer-specific attributes
-        if browser:
-            self._browser = browser
-        if sandbox:
-            self._sandbox = sandbox
-        # Restore the display value
-        self._display = display
-
     def mcp(self):
         from mcp.server.fastmcp import FastMCP
 
         mcp_server = FastMCP("computer")
 
         # Desktop/VNC interaction tools
-        mcp_server.add_tool(self.screenshot, "screenshot", "Take a screenshot of the desktop and return as base64-encoded PNG data")
-        mcp_server.add_tool(self.click, "click", "Click at specified coordinates on the screen")
-        mcp_server.add_tool(self.double_click, "double_click", "Double-click at specified coordinates on the screen")
-        mcp_server.add_tool(self.move_mouse, "move_mouse", "Move the mouse to specified coordinates without clicking")
+        mcp_server.add_tool(
+            self.screenshot,
+            "screenshot",
+            "Take a screenshot of the desktop and return as base64-encoded PNG data",
+        )
+        mcp_server.add_tool(
+            self.click, "click", "Click at specified coordinates on the screen"
+        )
+        mcp_server.add_tool(
+            self.double_click,
+            "double_click",
+            "Double-click at specified coordinates on the screen",
+        )
+        mcp_server.add_tool(
+            self.move_mouse,
+            "move_mouse",
+            "Move the mouse to specified coordinates without clicking",
+        )
         mcp_server.add_tool(self.scroll, "scroll", "Scroll at specified coordinates")
         mcp_server.add_tool(self.wait, "wait", "Wait for specified milliseconds")
         mcp_server.add_tool(self.type_text, "type_text", "Type the specified text")
-        mcp_server.add_tool(self.key_press, "key_press", "Press the specified key or key combination")
-        mcp_server.add_tool(self.key_press_special, "key_press_special", "Press special keys using a more user-friendly interface")
+        mcp_server.add_tool(
+            self.key_press, "key_press", "Press the specified key or key combination"
+        )
+        mcp_server.add_tool(
+            self.key_press_special,
+            "key_press_special",
+            "Press special keys using a more user-friendly interface",
+        )
         mcp_server.add_tool(self.drag, "drag", "Drag from point to point along a path")
-        mcp_server.add_tool(lambda: self.dimensions, "get_dimensions", "Get the screen dimensions (width, height)")
-        mcp_server.add_tool(self.set_display, "set_display", "Set the X display identifier to use")
-        
+        mcp_server.add_tool(
+            lambda: self.dimensions,
+            "get_dimensions",
+            "Get the screen dimensions (width, height)",
+        )
+        mcp_server.add_tool(
+            self.set_display, "set_display", "Set the X display identifier to use"
+        )
+
         # Browser tools
-        mcp_server.add_tool(lambda url, timeout=15000, wait_until="domcontentloaded": self.browser.goto(url, timeout, wait_until), 
-                           "browser_goto", "Navigate to a URL in the browser")
-        mcp_server.add_tool(lambda timeout=10000, wait_until="domcontentloaded": self.browser.back(timeout, wait_until), 
-                           "browser_back", "Go back in browser history")
-        mcp_server.add_tool(lambda timeout=10000, wait_until="domcontentloaded": self.browser.forward(timeout, wait_until), 
-                           "browser_forward", "Go forward in browser history")
-        mcp_server.add_tool(self.browser.get_title, "browser_get_title", "Get the current page title")
-        mcp_server.add_tool(self.browser.get_current_url, "browser_get_url", "Get the current page URL")
-        mcp_server.add_tool(self.browser.screenshot, "browser_screenshot", "Take a screenshot of the current page and return as base64-encoded PNG data")
-        mcp_server.add_tool(self.browser.click, "browser_click", "Click at specified coordinates in the browser")
-        mcp_server.add_tool(self.browser.double_click, "browser_double_click", "Double-click at specified coordinates in the browser")
-        mcp_server.add_tool(self.browser.scroll, "browser_scroll", "Scroll at specified coordinates in the browser")
-        mcp_server.add_tool(self.browser.type, "browser_type", "Type the specified text in the browser")
-        mcp_server.add_tool(self.browser.keypress, "browser_keypress", "Press the specified keys in the browser")
-        mcp_server.add_tool(self.browser.move, "browser_move", "Move mouse to specified coordinates in the browser")
-        mcp_server.add_tool(self.browser.drag, "browser_drag", "Drag from point to point along a path in the browser")
-        mcp_server.add_tool(self.browser.wait, "browser_wait", "Wait for specified milliseconds in the browser")
-        
+        mcp_server.add_tool(
+            lambda url, timeout=15000, wait_until="domcontentloaded": self.browser.goto(
+                url, timeout, wait_until
+            ),
+            "browser_goto",
+            "Navigate to a URL in the browser",
+        )
+        mcp_server.add_tool(
+            lambda timeout=10000, wait_until="domcontentloaded": self.browser.back(
+                timeout, wait_until
+            ),
+            "browser_back",
+            "Go back in browser history",
+        )
+        mcp_server.add_tool(
+            lambda timeout=10000, wait_until="domcontentloaded": self.browser.forward(
+                timeout, wait_until
+            ),
+            "browser_forward",
+            "Go forward in browser history",
+        )
+        mcp_server.add_tool(
+            self.browser.get_title, "browser_get_title", "Get the current page title"
+        )
+        mcp_server.add_tool(
+            self.browser.get_current_url, "browser_get_url", "Get the current page URL"
+        )
+        mcp_server.add_tool(
+            self.browser.screenshot,
+            "browser_screenshot",
+            "Take a screenshot of the current page and return as base64-encoded PNG data",
+        )
+        mcp_server.add_tool(
+            self.browser.click,
+            "browser_click",
+            "Click at specified coordinates in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.double_click,
+            "browser_double_click",
+            "Double-click at specified coordinates in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.scroll,
+            "browser_scroll",
+            "Scroll at specified coordinates in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.type, "browser_type", "Type the specified text in the browser"
+        )
+        mcp_server.add_tool(
+            self.browser.keypress,
+            "browser_keypress",
+            "Press the specified keys in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.move,
+            "browser_move",
+            "Move mouse to specified coordinates in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.drag,
+            "browser_drag",
+            "Drag from point to point along a path in the browser",
+        )
+        mcp_server.add_tool(
+            self.browser.wait,
+            "browser_wait",
+            "Wait for specified milliseconds in the browser",
+        )
+
         # Sandbox tools
-        mcp_server.add_tool(self.sandbox.execute_code, "execute_code", "Execute Python code in a Jupyter kernel and return the result")
-        mcp_server.add_tool(self.sandbox.create_notebook, "create_notebook", "Create a new Jupyter notebook")
-        mcp_server.add_tool(self.sandbox.add_cell, "add_cell", "Add a cell to a Jupyter notebook")
-        mcp_server.add_tool(self.sandbox.execute_cell, "execute_cell", "Execute a specific cell in a Jupyter notebook")
-        mcp_server.add_tool(self.sandbox.list_kernels, "list_kernels", "List available Jupyter kernels")
-        mcp_server.add_tool(lambda: self.sandbox.jupyter_url, "get_jupyter_url", "Get the Jupyter server URL")
-        mcp_server.add_tool(self.sandbox.wait_for_service, "wait_for_jupyter", "Wait for Jupyter service to be ready")
-        mcp_server.add_tool(self.sandbox.start_kernel, "start_kernel", "Start a new kernel with the given name")
+        mcp_server.add_tool(
+            self.sandbox.execute_code,
+            "execute_code",
+            "Execute Python code in a Jupyter kernel and return the result",
+        )
+        mcp_server.add_tool(
+            self.sandbox.create_notebook,
+            "create_notebook",
+            "Create a new Jupyter notebook",
+        )
+        mcp_server.add_tool(
+            self.sandbox.add_cell, "add_cell", "Add a cell to a Jupyter notebook"
+        )
+        mcp_server.add_tool(
+            self.sandbox.execute_cell,
+            "execute_cell",
+            "Execute a specific cell in a Jupyter notebook",
+        )
+        mcp_server.add_tool(
+            self.sandbox.list_kernels, "list_kernels", "List available Jupyter kernels"
+        )
+        mcp_server.add_tool(
+            lambda: self.sandbox.jupyter_url,
+            "get_jupyter_url",
+            "Get the Jupyter server URL",
+        )
+        mcp_server.add_tool(
+            self.sandbox.wait_for_service,
+            "wait_for_jupyter",
+            "Wait for Jupyter service to be ready",
+        )
+        mcp_server.add_tool(
+            self.sandbox.start_kernel,
+            "start_kernel",
+            "Start a new kernel with the given name",
+        )
 
         return mcp_server
+
+    def as_anthropic_tools(self) -> List[Dict[str, Any]]:
+        """
+        Convert Computer's MCP tools into Anthropic's function calling format.
+
+        Fetches the available tools from the MCP server and formats them
+        according to Anthropic's function calling API requirements.
+
+        Returns:
+            List of dictionaries representing Computer's tools in Anthropic's format
+        """
+        # Initialize MCP server and get tools
+        mcp_server = self.mcp()
+        tools = asyncio.run(mcp_server.list_tools())
+
+        anthropic_tools = []
+
+        for tool in tools:
+            # Create the basic tool structure
+            anthropic_tool = {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": {"type": "object", "properties": {}, "required": []},
+            }
+
+            # Extract properties from inputSchema if available
+            if hasattr(tool, "inputSchema") and isinstance(tool.inputSchema, dict):
+                anthropic_tool["input_schema"]["properties"] = tool.inputSchema.get(
+                    "properties", {}
+                )
+                # Only include required field if it exists
+                if "required" in tool.inputSchema:
+                    anthropic_tool["input_schema"]["required"] = tool.inputSchema.get(
+                        "required", []
+                    )
+
+            anthropic_tools.append(anthropic_tool)
+
+        return anthropic_tools
+
+    def as_openai_tools(self) -> List[Dict[str, Any]]:
+        """
+        Convert Computer's MCP tools into OpenAI's function calling format.
+
+        Fetches the available tools from the MCP server and formats them
+        according to OpenAI's function calling API requirements.
+
+        Returns:
+            List of dictionaries representing Computer's tools in OpenAI's format
+        """
+        # Initialize MCP server and get tools
+        mcp_server = self.mcp()
+        tools = asyncio.run(mcp_server.list_tools())
+
+        openai_tools = []
+
+        for tool in tools:
+            # Create the OpenAI tool structure
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            }
+
+            # Extract properties from inputSchema if available
+            if hasattr(tool, "inputSchema") and isinstance(tool.inputSchema, dict):
+                openai_tool["function"]["parameters"]["properties"] = (
+                    tool.inputSchema.get("properties", {})
+                )
+                # Only include required field if it exists
+                if "required" in tool.inputSchema:
+                    openai_tool["function"]["parameters"]["required"] = (
+                        tool.inputSchema.get("required", [])
+                    )
+
+            openai_tools.append(openai_tool)
+
+        return openai_tools
+
 
 class ComputerAPI:
     """API for managing Computers, which are enhanced Instances with additional capabilities."""
@@ -1532,20 +1633,6 @@ class ComputerAPI:
         """
         # Fetch the snapshot details
         snapshot = self._client.snapshots.get(snapshot_id)
-
-        # Check if the snapshot has the required metadata tag
-        if snapshot.metadata.get("type") != "computer-dev":
-            raise ValueError(
-                f"Snapshot {snapshot_id} is not a valid Computer snapshot. "
-                f"Only snapshots with metadata 'type=computer-dev' can be used with Computer API."
-            )
-
-        return snapshot
-
-    async def _averify_snapshot_is_computer(self, snapshot_id: str) -> Snapshot:
-        """Async version of _verify_snapshot_is_computer."""
-        # Fetch the snapshot details asynchronously
-        snapshot = await self._client.snapshots.aget(snapshot_id)
 
         # Check if the snapshot has the required metadata tag
         if snapshot.metadata.get("type") != "computer-dev":
@@ -1595,55 +1682,9 @@ class ComputerAPI:
             Instance.model_validate(response.json())._set_api(self._client.instances)
         )
 
-    async def astart(
-        self,
-        snapshot_id: str,
-        metadata: Optional[Dict[str, str]] = None,
-        ttl_seconds: Optional[int] = None,
-        ttl_action: Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> Computer:
-        """
-        Start a new Computer from a snapshot asynchronously.
-
-        Args:
-            snapshot_id: ID of the snapshot to start
-            metadata: Optional metadata to attach to the computer
-            ttl_seconds: Optional time-to-live in seconds
-            ttl_action: Optional action to take when TTL expires ("stop" or "pause")
-
-        Returns:
-            A new Computer instance
-
-        Raises:
-            ValueError: If the snapshot is not a valid Computer snapshot
-        """
-        # Verify the snapshot is meant for Computer use
-        await self._averify_snapshot_is_computer(snapshot_id)
-
-        # Start the instance
-        response = await self._client._async_http_client.post(
-            "/instance",
-            params={"snapshot_id": snapshot_id},
-            json={
-                "metadata": metadata,
-                "ttl_seconds": ttl_seconds,
-                "ttl_action": ttl_action,
-            },
-        )
-        return Computer(
-            Instance.model_validate(response.json())._set_api(self._client.instances)
-        )
-
     def get(self, computer_id: str) -> Computer:
         """Get a Computer by ID."""
         response = self._client._http_client.get(f"/instance/{computer_id}")
-        return Computer(
-            Instance.model_validate(response.json())._set_api(self._client.instances)
-        )
-
-    async def aget(self, computer_id: str) -> Computer:
-        """Get a Computer by ID asynchronously."""
-        response = await self._client._async_http_client.get(f"/instance/{computer_id}")
         return Computer(
             Instance.model_validate(response.json())._set_api(self._client.instances)
         )
@@ -1658,16 +1699,3 @@ class ComputerAPI:
             Computer(Instance.model_validate(instance)._set_api(self._client.instances))
             for instance in response.json()["data"]
         ]
-
-    async def alist(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
-        """List all computers available to the user asynchronously."""
-        response = await self._client._async_http_client.get(
-            "/instance",
-            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
-        )
-        return [
-            Computer(Instance.model_validate(instance)._set_api(self._client.instances))
-            for instance in response.json()["data"]
-        ]
-
-
