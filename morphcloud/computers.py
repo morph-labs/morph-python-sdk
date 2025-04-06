@@ -16,11 +16,9 @@ from morphcloud.api import Instance, InstanceAPI, Snapshot, MorphCloudClient
 import websocket
 
 _websockets_available = importlib.util.find_spec("websockets") is not None
-_httpx_available = importlib.util.find_spec("httpx") is not None
 _jupyter_client_available = importlib.util.find_spec("jupyter_client") is not None
 
 _playwright_available = importlib.util.find_spec("playwright") is not None
-_aiohttp_available = importlib.util.find_spec("aiohttp") is not None
 
 # Optional: key mapping if your model uses "CUA" style keys
 CUA_KEY_TO_PLAYWRIGHT_KEY = {
