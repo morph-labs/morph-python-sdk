@@ -1365,6 +1365,14 @@ class Computer:
         result = self._instance.exec(f"cat {temp_path} | base64 -w 0")
         return result.stdout
 
+    def shutdown(self) -> None:
+        """
+        Shut down the computer.
+
+        This method will shut down the computer instance.
+        """
+        self._instance.stop()
+
     def mcp(self):
         from mcp.server.fastmcp import FastMCP
 
@@ -1604,7 +1612,7 @@ class Computer:
         return openai_tools
 
     @classmethod
-    def new(cls, client: Optional[MorphCloudClient] = None) -> Computer:
+    def new(cls, client: Optional[MorphCloudClient] = None, ttl_seconds: Optional[int] = None) -> Computer:
         client = client or MorphCloudClient()
 
         snapshot = client.snapshots.list(metadata={"type": "computer-dev"})
@@ -1618,6 +1626,7 @@ class Computer:
         computer = ComputerAPI(client).start(
             snapshot_id=snapshot[0].id,
             metadata={"type": "computer-dev"},
+            ttl_seconds=ttl_seconds,
         )
 
         return computer
