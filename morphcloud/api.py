@@ -21,6 +21,7 @@ from rich.panel import Panel
 
 from morphcloud._utils import StrEnum
 
+
 # Global console instance
 console = Console()
 
@@ -95,7 +96,6 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
-        verbose: bool = False,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
@@ -105,7 +105,6 @@ class MorphCloudClient:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
             )
-        self.verbose = verbose
 
         self._http_client = ApiClient(
             base_url=self.base_url,
@@ -137,10 +136,19 @@ class MorphCloudClient:
         return ImageAPI(self)
 
 
+    # Add this property to the MorphCloudClient class
+    @property
+    def computers(self) -> 'ComputerAPI':
+        """Access the API for enhanced instance capabilities."""
+        from morphcloud.computers import ComputerAPI
+        return ComputerAPI(self)
+
+
+
+
 class BaseAPI:
     def __init__(self, client: MorphCloudClient):
         self._client = client
-        self.verbose = client.verbose
 
 
 class ImageAPI(BaseAPI):
@@ -182,6 +190,7 @@ class Image(BaseModel):
     def _set_api(self, api: ImageAPI) -> Image:
         self._api = api
         return self
+
 
 class SnapshotStatus(StrEnum):
     PENDING = "pending"
@@ -345,11 +354,9 @@ class Snapshot(BaseModel):
     )
 
     _api: SnapshotAPI = PrivateAttr()
-    _verbose: bool = PrivateAttr(default=False)
 
     def _set_api(self, api: SnapshotAPI) -> Snapshot:
         self._api = api
-        self._verbose = api.verbose
         return self
 
     def delete(self) -> None:
@@ -401,12 +408,29 @@ class Snapshot(BaseModel):
         return hasher.hexdigest()
 
     def _run_command_effect(
-        self, instance: Instance, command: str, background: bool, get_pty: bool, verbose: bool = False
+        self, instance: Instance, command: str, background: bool, get_pty: bool
     ) -> None:
         """
-        Executes a shell command on the given instance, streaming output via Rich.
+        Executes a shell command on the given instance, handling ANSI escape codes properly.
         If background is True, the command is run without waiting for completion.
+        Thread-safe implementation for use in ThreadPool environments.
         """
+        import threading
+        import re
+        from rich.text import Text
+        from rich.console import Console
+
+        # Create a thread ID for logging
+        thread_id = threading.get_ident()
+        thread_name = f"Thread-{thread_id}"
+
+        # Create console lock to prevent output interleaving
+        if not hasattr(console, '_output_lock'):
+            console._output_lock = threading.Lock()
+
+        # ANSI escape code regex pattern
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
         ssh_client = instance.ssh_connect()
         try:
             channel = ssh_client.get_transport().open_session()
@@ -415,68 +439,89 @@ class Snapshot(BaseModel):
             channel.exec_command(command)
 
             if background:
-                if verbose:
-                    console.print(f"[blue]Command is running in the background:[/blue] {command}")
+                with console._output_lock:
+                    console.print(
+                        f"[blue]Command is running in the background:[/blue] {command}"
+                    )
                 channel.close()
                 return
 
-            if verbose:
-                console.print(f"[bold blue]🔧 Running command (foreground):[/bold blue] [yellow]{command}[/yellow]")
-            
-            output_buffer = ""
-            if verbose:
-                panel = Panel(
-                    output_buffer or "[dim]No output yet...[/dim]",
-                    title="📄 Command Output",
-                    border_style="cyan",
+            with console._output_lock:
+                console.print(
+                    f"[bold blue]🔧 {thread_name}:[/bold blue] [yellow]{command}[/yellow]"
                 )
-                live = Live(panel, console=console, refresh_per_second=4)
-                live.start()
 
+            # Buffer for collecting line-by-line output
+            line_buffer = ""
+            full_output = ""
+
+            # Process the output
             while not channel.exit_status_ready():
                 if channel.recv_ready():
                     data = channel.recv(1024).decode("utf-8", errors="replace")
                     if data:
-                        output_buffer += data
-                        if verbose:
-                            live.update(
-                                Panel(
-                                    output_buffer,
-                                    title="📄 Command Output",
-                                    border_style="cyan",
-                                )
-                            )
-                time.sleep(0.2)
+                        full_output += data
+
+                        # Process data line by line
+                        line_buffer += data
+                        lines = line_buffer.split('\n')
+
+                        # All complete lines can be printed
+                        if len(lines) > 1:
+                            with console._output_lock:
+                                for line in lines[:-1]:
+                                    if line:
+                                        # Strip ANSI escape codes when prefixing thread name
+                                        # but pass the original line (with ANSI codes) to console.print
+                                        clean_line = ansi_escape.sub('', line)
+                                        # Only add prefix if line isn't empty after stripping ANSI
+                                        if clean_line.strip():
+                                            # Use print directly to preserve ANSI codes
+                                            print(f"{thread_name}: {line}")
+                                        else:
+                                            print(line)
+
+                            # Keep the last partial line in the buffer
+                            line_buffer = lines[-1]
+                time.sleep(0.1)
+
+            # Get any remaining output
             while channel.recv_ready():
                 data = channel.recv(1024).decode("utf-8", errors="replace")
                 if data:
-                    output_buffer += data
-                    if verbose:
-                        live.update(
-                            Panel(
-                                output_buffer,
-                                title="📄 Command Output",
-                                border_style="cyan",
-                            )
-                        )
-            
-            if verbose:
-                live.stop()
+                    full_output += data
+                    line_buffer += data
 
+            # Print any remaining content in the line buffer
+            if line_buffer:
+                lines = line_buffer.split('\n')
+                with console._output_lock:
+                    for line in lines:
+                        if line:
+                            clean_line = ansi_escape.sub('', line)
+                            if clean_line.strip():
+                                print(f"{thread_name}: {line}")
+                            else:
+                                print(line)
+
+            # Check exit code
             exit_code = channel.recv_exit_status()
-            if exit_code != 0:
-                if verbose:
+
+            # Print a summary of the command execution
+            with console._output_lock:
+                if exit_code == 0:
                     console.print(
-                        f"[bold red]⚠️ Warning:[/bold red] Command exited with code [red]{exit_code}[/red]"
+                        f"[bold green]✅ {thread_name}: Command completed successfully[/bold green]"
                     )
                 else:
-                    console.print(f"Command failed with exit code {exit_code}")
-            
+                    console.print(
+                        f"[bold red]⚠️ {thread_name}: Command exited with code [red]{exit_code}[/red][/bold red]"
+                    )
+
             channel.close()
         finally:
             ssh_client.close()
-
-
+        
     def _cache_effect(
         self,
         fn: typing.Callable[[Instance], None],
@@ -541,28 +586,89 @@ class Snapshot(BaseModel):
         )
         return new_snapshot
 
-    def setup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
+    def setup(self, command: str) -> Snapshot:
         """
         Run a command (with get_pty=True, in the foreground) on top of this snapshot.
         Returns a new snapshot that includes the modifications from that command.
         Uses _cache_effect(...) to avoid re-building if an identical effect was applied before.
-        
-        Parameters:
-            command: The command to run on the instance.
-            verbose: If True, show detailed output. If None, use the client's verbose setting.
         """
-        # Use self._verbose (from client) if verbose is None, otherwise use the provided value
-        use_verbose = self._verbose if verbose is None else verbose
         return self._cache_effect(
             fn=self._run_command_effect,
             command=command,
             background=False,
             get_pty=True,
-            verbose=use_verbose,
         )
-    
-    async def asetup(self, command: str, verbose: typing.Optional[bool] = None) -> Snapshot:
-        return await asyncio.to_thread(self.setup, command, verbose)
+
+    def copy_files(
+        self, source_path: str, destination_path: str, recursive: bool = False
+    ) -> Snapshot:
+        """
+        Copy files from a local path to a snapshot, creating a new snapshot with the files.
+        
+        This method starts an instance from the snapshot, copies the files, 
+        and then takes a new snapshot. It leverages caching so identical operations 
+        return the same snapshot without repeated work.
+
+        Args:
+            source_path: Path to the source file/directory (must be local)
+            destination_path: The destination path on the instance
+            recursive: If True, copy directories recursively
+
+        Returns:
+            A new snapshot with the files copied to it
+
+        Examples:
+            # Copy a local file to the snapshot
+            new_snapshot = snapshot.copy_files('./my_file.txt', '/app/my_file.txt')
+            
+            # Copy a directory recursively
+            new_snapshot = snapshot.copy_files('./my_app', '/app', recursive=True)
+        """
+        # Define the effect function that will do the copying
+        def _copy_effect(instance: Instance, src: str, dst: str, recur: bool) -> None:
+            # Format destination with instance ID for the copy_files method
+            remote_dst = f"{instance.id}:{dst}"
+            instance.copy_files(src, remote_dst, recursive=recur)
+
+        # Cache the effect so we don't repeat work
+        return self._cache_effect(_copy_effect, source_path, destination_path, recursive)
+
+    def exec(self, command: str) -> Snapshot:
+        """
+        Execute a command on a snapshot, creating a new snapshot with the results.
+        
+        This method starts an instance from the snapshot, runs the command,
+        and then takes a new snapshot. It leverages caching so identical commands
+        return the same snapshot without repeated work.
+
+        Args:
+            command: The command to execute
+
+        Returns:
+            A new snapshot with the command's effects applied
+
+        Examples:
+            # Install a package
+            new_snapshot = snapshot.exec('apt-get update && apt-get install -y nginx')
+            
+            # Configure a service
+            new_snapshot = snapshot.exec('systemctl enable --now nginx')
+        """
+        # This is essentially an alias for setup(), which already does what we want
+        return self.setup(command)
+
+    async def asetup(self, command: str) -> Snapshot:
+        return await asyncio.to_thread(self.setup, command)
+
+    async def acopy_files(
+        self, source_path: str, destination_path: str, recursive: bool = False
+    ) -> Snapshot:
+        """Async version of copy_files()"""
+        return await asyncio.to_thread(self.copy_files, source_path, destination_path, recursive)
+
+    async def aexec(self, command: str) -> Snapshot:
+        """Async version of exec()"""
+        return await asyncio.to_thread(self.exec, command)
 
     def _apply_single_command(self, command: str) -> Snapshot:
         """
@@ -575,7 +681,6 @@ class Snapshot(BaseModel):
             command=command,
             background=False,
             get_pty=True,
-            verbose=False,
         )
 
 
@@ -642,34 +747,56 @@ class InstanceAPI(BaseAPI):
             for instance in response.json()["data"]
         ]
 
-    def start(self, snapshot_id: str, metadata: typing.Optional[typing.Dict[str, str]] = None, ttl_seconds: typing.Optional[int] = None, ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None) -> Instance:
+    def start(
+        self,
+        snapshot_id: str,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> Instance:
         """Create a new instance from a snapshot.
 
         Parameters:
             snapshot_id: The ID of the snapshot to start from.
             metadata: Optional metadata to attach to the instance.
             ttl_seconds: Optional time-to-live in seconds for the instance.
-            ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause"."""
+            ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
+        """
         response = self._client._http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
-            json={"metadata": metadata, "ttl_seconds": ttl_seconds, "ttl_action": ttl_action},
+            json={
+                "metadata": metadata,
+                "ttl_seconds": ttl_seconds,
+                "ttl_action": ttl_action,
+            },
         )
         return Instance.model_validate(response.json())._set_api(self)
 
-    async def astart(self, snapshot_id: str, metadata: typing.Optional[typing.Dict[str, str]] = None, ttl_seconds: typing.Optional[int] = None, ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None) -> Instance:
+    async def astart(
+        self,
+        snapshot_id: str,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> Instance:
         """Create a new instance from a snapshot.
 
         Parameters:
             snapshot_id: The ID of the snapshot to start from.
             metadata: Optional metadata to attach to the instance.
             ttl_seconds: Optional time-to-live in seconds for the instance.
-            ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause"."""
+            ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
+        """
 
         response = await self._client._async_http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
-            json={"metadata": metadata, "ttl_seconds": ttl_seconds, "ttl_action": ttl_action},
+            json={
+                "metadata": metadata,
+                "ttl_seconds": ttl_seconds,
+                "ttl_action": ttl_action,
+            },
         )
         return Instance.model_validate(response.json())._set_api(self)
 
@@ -1015,6 +1142,170 @@ class Instance(BaseModel):
         from morphcloud._ssh import SSHClient  # as in your snippet
 
         return SSHClient(self.ssh_connect())
+
+    def copy_files(self, source_path: str, destination_path: str, recursive: bool = False) -> None:
+        """
+        Copy files to or from an instance.
+        
+        Supports both directions:
+        - From local to instance: instance.copy_files('./local/file.txt', '/remote/path/')
+        - From instance to local: instance.copy_files('/remote/file.txt', './local/path/')
+        
+        Args:
+            source_path: Path to the source file/directory (local or instance)
+            destination_path: Path to the destination (local or instance)
+            recursive: If True, copy directories recursively
+        
+        Examples:
+            # Upload a file to the instance
+            instance.copy_files('./local/file.txt', '/home/user/file.txt')
+            
+            # Download a file from the instance
+            instance.copy_files('/home/user/file.txt', './downloaded.txt')
+            
+            # Copy a directory recursively
+            instance.copy_files('./local/dir', '/remote/dir', recursive=True)
+        """
+        import os
+        import os.path
+        import stat
+        import pathlib
+
+        def parse_instance_path(path):
+            """Check if path is in format 'instance_id:/path' and return (instance_id, path)"""
+            if ":" not in path:
+                return None, path
+            instance_id, remote_path = path.split(":", 1)
+            return instance_id, remote_path
+
+        def is_remote_dir(sftp, path):
+            """Check if remote path is a directory"""
+            try:
+                return stat.S_ISDIR(sftp.stat(path).st_mode)
+            except IOError:
+                return False
+
+        def copy_recursive_to_remote(sftp, local_path, remote_path):
+            """Recursively copy a local directory to remote"""
+            local_path = pathlib.Path(local_path)
+
+            if not local_path.exists():
+                raise ValueError(f"Local path does not exist: {local_path}")
+
+            # If source is a file, just copy it directly
+            if local_path.is_file():
+                try:
+                    sftp.put(str(local_path), remote_path)
+                except IOError:
+                    # Create parent directories if they don't exist
+                    parent_dir = os.path.dirname(remote_path)
+                    if parent_dir:
+                        try:
+                            sftp.mkdir(parent_dir)
+                        except IOError:
+                            # Directory might already exist or need parent directories
+                            sftp.makedirs(parent_dir)
+                    sftp.put(str(local_path), remote_path)
+                return
+
+            # For directories, create the remote directory if it doesn't exist
+            try:
+                sftp.mkdir(remote_path)
+            except IOError:
+                # Directory might already exist, ignore the error
+                pass
+
+            # Recursively copy contents
+            for item in local_path.iterdir():
+                remote_item_path = os.path.join(remote_path, item.name)
+                if item.is_dir():
+                    copy_recursive_to_remote(sftp, item, remote_item_path)
+                else:
+                    sftp.put(str(item), remote_item_path)
+
+        def copy_recursive_from_remote(sftp, remote_path, local_path):
+            """Recursively copy a remote directory to local"""
+            # Convert local path to Path object for easier manipulation
+            local_path = pathlib.Path(local_path)
+
+            try:
+                # Try to get remote path attributes
+                remote_attr = sftp.stat(remote_path)
+            except IOError:
+                raise ValueError(f"Remote path does not exist: {remote_path}")
+
+            # If source is a file, just copy it directly
+            if stat.S_ISREG(remote_attr.st_mode):
+                # Create parent directories if they don't exist
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                sftp.get(remote_path, str(local_path))
+                return
+
+            # For directories, create the local directory if it doesn't exist
+            local_path.mkdir(parents=True, exist_ok=True)
+
+            # Recursively copy contents
+            for item in sftp.listdir_attr(remote_path):
+                remote_item_path = os.path.join(remote_path, item.filename)
+                local_item_path = local_path / item.filename
+
+                if stat.S_ISDIR(item.st_mode):
+                    copy_recursive_from_remote(sftp, remote_item_path, local_item_path)
+                else:
+                    sftp.get(remote_item_path, str(local_item_path))
+
+        # Parse source and destination to see if either contains instance ID
+        source_instance, source_path = parse_instance_path(source_path)
+        dest_instance, dest_path = parse_instance_path(destination_path)
+
+        # Validate that exactly one side is a remote path
+        if (source_instance and dest_instance) or (not source_instance and not dest_instance):
+            raise ValueError("One (and only one) path must be a remote path in the format instance_id:/path")
+
+        # Validate the instance ID matches this instance
+        instance_id = source_instance or dest_instance
+        if instance_id != self.id:
+            raise ValueError(f"Instance ID mismatch: {instance_id} != {self.id}")
+
+        with self.ssh() as ssh:
+            sftp = ssh._client.open_sftp()
+            try:
+                if source_instance:
+                    # Downloading from instance
+                    if recursive:
+                        copy_recursive_from_remote(sftp, source_path, dest_path)
+                    else:
+                        dest_path = pathlib.Path(dest_path)
+                        if dest_path.is_dir():
+                            dest_path = dest_path / os.path.basename(source_path)
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        sftp.get(source_path, str(dest_path))
+                else:
+                    # Uploading to instance
+                    # Handle destination path
+                    if not dest_path:
+                        # Empty destination, use source filename
+                        dest_path = os.path.basename(source_path)
+                    elif dest_path.endswith("/") or is_remote_dir(sftp, dest_path):
+                        # Destination is a directory (either by '/' or by checking)
+                        dest_path = os.path.join(dest_path.rstrip("/"), os.path.basename(source_path))
+
+                    if recursive:
+                        copy_recursive_to_remote(sftp, source_path, dest_path)
+                    else:
+                        try:
+                            sftp.put(source_path, dest_path)
+                        except IOError:
+                            # Try creating parent directory if it doesn't exist
+                            parent_dir = os.path.dirname(dest_path)
+                            if parent_dir:
+                                try:
+                                    sftp.mkdir(parent_dir)
+                                except IOError:
+                                    sftp.makedirs(parent_dir)
+                            sftp.put(source_path, dest_path)
+            finally:
+                sftp.close()
 
     def __enter__(self):
         return self
@@ -1951,3 +2242,4 @@ class Instance(BaseModel):
         except Exception as e:
             logger.error(f"Sync operation failed: {e}", exc_info=True)
             raise
+
