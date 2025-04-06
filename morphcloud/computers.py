@@ -30,7 +30,7 @@ class Browser:
     and browser control operations.
     """
 
-    def __init__(self, computer: "Computer"):
+    def __init__(self, computer: Computer):
         """
         Initialize a Browser instance.
 
@@ -62,7 +62,7 @@ class Browser:
                 "Install it with: pip install aiohttp"
             )
 
-    async def connect(self, timeout_seconds: int = 30) -> "Browser":
+    async def connect(self, timeout_seconds: int = 30) -> Browser:
         """
         Connect to a CDP endpoint and create a browser client.
 
