@@ -74,7 +74,6 @@ class Browser:
             
             return self
         except Exception as e:
-            print(f"Failed to connect to CDP endpoint: {e}")
             raise
     
     async def _get_browser_ws_endpoint(self, cdp_url: str, timeout_seconds: int = 15) -> str:
@@ -95,41 +94,34 @@ class Browser:
             current_delay = min(base_delay * retry_count, 2.0)  # Cap at 2 seconds per retry
             
             try:
-                print(f"Attempt {retry_count} to get CDP WebSocket URL...")
-                
                 async with aiohttp.ClientSession() as session:
                     # Get the /json/version endpoint
                     async with session.get(json_version_url, timeout=5) as response:
                         if response.status != 200:
-                            print(f"Received status code {response.status}, retrying...")
                             await asyncio.sleep(current_delay)
                             continue
                         
                         try:
                             data = await response.json()
-                            print(f"CDP Version info: {json.dumps(data, indent=2)}")
                             
                             # Use the exact WebSocketDebuggerUrl from the response
                             websocket_url = data.get("webSocketDebuggerUrl")
                             if not websocket_url:
-                                print("No webSocketDebuggerUrl found in response, retrying...")
                                 await asyncio.sleep(current_delay)
                                 continue
                             
                             # Success!
-                            print(f"Successfully got WebSocket URL on attempt {retry_count}")
                             return websocket_url
                         except json.JSONDecodeError:
-                            print("Failed to parse JSON response, retrying...")
                             await asyncio.sleep(current_delay)
                             continue
                         
             except aiohttp.ClientError as e:
-                print(f"HTTP error: {e}, retrying...")
+                pass
             except asyncio.TimeoutError:
-                print(f"Request timed out, retrying...")
+                pass
             except Exception as e:
-                print(f"Unexpected error: {e}, retrying...")
+                pass
             
             # Sleep before retry
             await asyncio.sleep(current_delay)
@@ -140,8 +132,7 @@ class Browser:
                 break
         
         # If we got here, we've timed out
-        elapsed = time.time() - start_time
-        raise TimeoutError(f"Failed to get WebSocket URL after {retry_count} attempts ({elapsed:.1f}s)")
+        raise TimeoutError(f"Failed to get WebSocket URL after {retry_count} attempts")
     
     async def _ensure_connected(self):
         """Ensure browser is connected before performing operations."""
@@ -153,7 +144,6 @@ class Browser:
         try:
             await self._ensure_connected()
             print(f"Navigating to {url}")
-            
             # Use a shorter timeout and wait until 'domcontentloaded' instead of 'load'
             await self._page.goto(url, timeout=timeout, wait_until=wait_until)
             
@@ -161,7 +151,6 @@ class Browser:
             await asyncio.sleep(1)
             print(f"Successfully navigated to {url}")
         except Exception as e:
-            print(f"Error navigating to {url}: {e}")
             raise
     
     async def back(self, timeout: int = 10000, wait_until: str = "domcontentloaded") -> None:
@@ -175,7 +164,6 @@ class Browser:
                 await self._page.go_back(timeout=timeout, wait_until=wait_until)
             except Exception:
                 # If timeout occurs, the page might still be navigating
-                print("Navigation timeout occurred, but continuing...")
                 # Wait a bit to give the page a chance to settle
                 await asyncio.sleep(3)
             
@@ -183,7 +171,6 @@ class Browser:
             current_url = self._page.url
             print(f"Successfully went back to {current_url}")
         except Exception as e:
-            print(f"Error going back: {e}")
             raise
     
     async def forward(self, timeout: int = 10000, wait_until: str = "domcontentloaded") -> None:
@@ -197,7 +184,6 @@ class Browser:
                 await self._page.go_forward(timeout=timeout, wait_until=wait_until)
             except Exception:
                 # If timeout occurs, the page might still be navigating
-                print("Navigation timeout occurred, but continuing...")
                 # Wait a bit to give the page a chance to settle
                 await asyncio.sleep(3)
             
@@ -205,7 +191,6 @@ class Browser:
             current_url = self._page.url
             print(f"Successfully went forward to {current_url}")
         except Exception as e:
-            print(f"Error going forward: {e}")
             raise
     
     async def get_title(self) -> str:
@@ -732,6 +717,28 @@ class Computer(Instance):
         self._display = ":1"  # Default display
         return self
         
+    @property
+    def environment(self) -> str:
+        """Get the environment type (linux, mac, windows, browser)."""
+        # This implementation assumes Linux environment
+        # Could be expanded to detect other environments
+        return "linux"
+    
+    @property
+    def dimensions(self) -> tuple[int, int]:
+        """Get the screen dimensions (width, height)."""
+        # Get screen dimensions using xdpyinfo
+        result = self.exec("sudo -u morph bash -c 'DISPLAY={0} xdpyinfo | grep dimensions'".format(self.display))
+        # Parse the dimensions from output like "dimensions:    1920x1080 pixels (508x285 millimeters)"
+        dimensions_str = result.stdout.strip()
+        if "dimensions:" in dimensions_str:
+            # Extract the resolution part like "1920x1080"
+            resolution = dimensions_str.split("dimensions:")[1].strip().split()[0]
+            width, height = map(int, resolution.split("x"))
+            return (width, height)
+        # Return a default if unable to detect
+        return (1024, 768)
+        
     def as_anthropic_tools(self) -> List[Dict]:
         """
         Convert Computer's tools into Anthropic's function calling format.
@@ -797,10 +804,13 @@ class Computer(Instance):
                     "action": {
                         "type": "string", 
                         "description": "The desktop action to perform",
-                        "enum": ["move_mouse", "click", "type_text", "key_press", "screenshot"]
+                        "enum": ["move_mouse", "click", "type_text", "key_press", "screenshot", "scroll", "wait"]
                     },
-                    "x": {"type": "integer", "description": "X coordinate for mouse action (required for move_mouse and click)"},
-                    "y": {"type": "integer", "description": "Y coordinate for mouse action (required for move_mouse and click)"},
+                    "x": {"type": "integer", "description": "X coordinate for mouse action (required for move_mouse, click, and scroll)"},
+                    "y": {"type": "integer", "description": "Y coordinate for mouse action (required for move_mouse, click, and scroll)"},
+                    "scroll_x": {"type": "integer", "description": "Horizontal scroll amount (for scroll action)"},
+                    "scroll_y": {"type": "integer", "description": "Vertical scroll amount (for scroll action)"},
+                    "ms": {"type": "integer", "description": "Milliseconds to wait (for wait action)"},
                     "button": {"type": "string", "description": "Mouse button (left, right, middle)"},
                     "text": {"type": "string", "description": "Text to type (required for type_text)"},
                     "keys": {"type": "array", "description": "Special keys to press (required for key_press)", "items": {"type": "string"}},
@@ -903,6 +913,48 @@ class Computer(Instance):
         
         # Add VNC interaction tools
         tools.extend([
+            {
+                "name": "scroll",
+                "description": "Scroll at specified coordinates on the screen",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "x": {
+                            "type": "integer",
+                            "description": "X coordinate for mouse position"
+                        },
+                        "y": {
+                            "type": "integer",
+                            "description": "Y coordinate for mouse position"
+                        },
+                        "scroll_x": {
+                            "type": "integer",
+                            "description": "Horizontal scroll amount (negative = left, positive = right)",
+                            "default": 0
+                        },
+                        "scroll_y": {
+                            "type": "integer",
+                            "description": "Vertical scroll amount (negative = up, positive = down)",
+                            "default": 0
+                        }
+                    },
+                    "required": ["x", "y"]
+                }
+            },
+            {
+                "name": "wait",
+                "description": "Wait for specified milliseconds",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ms": {
+                            "type": "integer",
+                            "description": "Milliseconds to wait",
+                            "default": 1000
+                        }
+                    }
+                }
+            },
             {
                 "name": "click",
                 "description": "Click at specified coordinates on the screen",
@@ -1159,6 +1211,43 @@ class Computer(Instance):
         """Move the mouse to the specified coordinates without clicking."""
         self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'")
     
+    def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
+        """
+        Scroll at the specified coordinates.
+        
+        Args:
+            x: X coordinate of the mouse
+            y: Y coordinate of the mouse
+            scroll_x: Horizontal scroll amount (negative = left, positive = right)
+            scroll_y: Vertical scroll amount (negative = up, positive = down)
+        """
+        # First move mouse to position
+        self.move_mouse(x, y)
+        
+        # Then perform scrolling
+        if scroll_y != 0:
+            # Positive scroll_y scrolls down, negative scrolls up
+            # Xdotool takes click 4 for scroll up, 5 for scroll down
+            button = 5 if scroll_y > 0 else 4  # 5 = down, 4 = up
+            count = abs(scroll_y)
+            self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'")
+            
+        if scroll_x != 0:
+            # Horizontal scrolling (button 6 = left, 7 = right)
+            button = 7 if scroll_x > 0 else 6  # 7 = right, 6 = left
+            count = abs(scroll_x)
+            self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'")
+    
+    def wait(self, ms: int = 1000) -> None:
+        """
+        Wait for the specified number of milliseconds.
+        
+        Args:
+            ms: Number of milliseconds to wait
+        """
+        seconds = ms / 1000.0
+        time.sleep(seconds)
+    
     def type_text(self, text: str) -> None:
         """
         Type the specified text.
@@ -1267,6 +1356,29 @@ class Computer(Instance):
     async def amove_mouse(self, x: int, y: int) -> None:
         """Async version of move_mouse."""
         await self.aexec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'")
+    
+    async def ascroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
+        """Async version of scroll."""
+        # First move mouse to position
+        await self.amove_mouse(x, y)
+        
+        # Then perform scrolling
+        if scroll_y != 0:
+            # Positive scroll_y scrolls down, negative scrolls up
+            button = 5 if scroll_y > 0 else 4  # 5 = down, 4 = up
+            count = abs(scroll_y)
+            await self.aexec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'")
+            
+        if scroll_x != 0:
+            # Horizontal scrolling (button 6 = left, 7 = right)
+            button = 7 if scroll_x > 0 else 6  # 7 = right, 6 = left
+            count = abs(scroll_x)
+            await self.aexec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'")
+    
+    async def a_wait(self, ms: int = 1000) -> None:
+        """Async version of wait."""
+        seconds = ms / 1000.0
+        await asyncio.sleep(seconds)
     
     async def atype_text(self, text: str) -> None:
         """Async version of type_text."""
@@ -1388,7 +1500,6 @@ class Computer(Instance):
         if sandbox:
             self._sandbox = sandbox
         self._display = display
-
 
 
 class ComputerAPI(InstanceAPI):

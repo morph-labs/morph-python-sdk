@@ -63,21 +63,12 @@ class BrowserTool(Tool):
             print(f"[BrowserTool] Getting browser interface from computer {self.computer.id}")
             self.browser = self.computer.browser
             
-            # Debug CDP URL check - print before attempting connection
-            print(f"[BrowserTool] DEBUG: Computer CDP URL property value: {self.computer.cdp_url}")
-            # Check for existing services
-            print(f"[BrowserTool] DEBUG: Looking for existing web HTTP services...")
-            for service in self.computer.networking.http_services:
-                print(f"[BrowserTool] DEBUG: Found service: name={service.name}, url={service.url}, port={service.port}")
-            
             # If CDP URL is None, try to expose a web service
             if self.computer.cdp_url is None:
-                print(f"[BrowserTool] DEBUG: No CDP URL found. Attempting to expose HTTP service on port 8080...")
                 try:
                     url = self.computer.expose_http_service("web", 8080)
-                    print(f"[BrowserTool] DEBUG: Exposed web service at URL: {url}")
                 except Exception as e:
-                    print(f"[BrowserTool] DEBUG: Error exposing web service: {str(e)}")
+                    pass
             
             print(f"[BrowserTool] Connecting to browser...")
             try:
@@ -86,8 +77,7 @@ class BrowserTool(Tool):
                 self.is_connected = True
             except Exception as e:
                 print(f"[BrowserTool] Error connecting to browser: {str(e)}")
-                # Additional debug info on failure
-                print(f"[BrowserTool] DEBUG: Final CDP URL value: {self.computer.cdp_url}")
+                # Connection failed
                 raise
         return self.browser
     
@@ -173,7 +163,6 @@ class BrowserTool(Tool):
             except Exception as e:
                 print(f"[BrowserTool] Error closing browser connection: {str(e)}")
             self.is_connected = False
-        # Don't stop the computer - it's now managed by the agent
 
 class SandboxTool(Tool):
     """Tool for code execution in a sandbox environment."""
@@ -298,7 +287,6 @@ class SandboxTool(Tool):
             except Exception as e:
                 print(f"[SandboxTool] Error closing sandbox: {str(e)}")
             self.is_connected = False
-        # Don't stop the computer - it's now managed by the agent
 
 def show_image(base64_image):
     """
@@ -372,6 +360,21 @@ class DesktopTool(Tool):
             keys = command_data.get("keys", [])
             await self.computer.akey_press_special(keys)
             return f"Pressed special keys: {', '.join(keys)}"
+            
+        elif action == "scroll":
+            x = command_data.get("x")
+            y = command_data.get("y")
+            if x is None or y is None:
+                raise ValueError("scroll action requires both x and y parameters")
+            scroll_x = command_data.get("scroll_x", 0)
+            scroll_y = command_data.get("scroll_y", 0)
+            await self.computer.ascroll(x, y, scroll_x, scroll_y)
+            return f"Scrolled at position ({x}, {y}), amounts: horizontal={scroll_x}, vertical={scroll_y}"
+            
+        elif action == "wait":
+            ms = command_data.get("ms", 1000)
+            await self.computer.a_wait(ms)
+            return f"Waited for {ms} milliseconds"
             
         elif action == "screenshot":
             # Get screenshot directly as base64 from the computer
@@ -495,6 +498,8 @@ Desktop interaction tools:
 - type_text: Type the specified text
 - key_press: Press the specified key or key combination
 - screenshot: Take a screenshot of the desktop and return the image data
+- scroll: Scroll at specified coordinates
+- wait: Wait for specified milliseconds
 
 Sandbox code execution tools:
 - execute_code: Execute Python code in a sandbox environment
@@ -522,6 +527,8 @@ For desktop_tool, use actions like:
 - click: Click at x,y coordinates (REQUIRES both x and y parameters, don't use move_mouse then click separately)
 - type_text: Type text into the desktop (REQUIRES text parameter)
 - key_press: Press special keys like ENTER, TAB, etc. (REQUIRES keys parameter)
+- scroll: Scroll at x,y coordinates (REQUIRES both x and y parameters, plus scroll_x and/or scroll_y values)
+- wait: Wait for specified milliseconds (parameter ms, default 1000)
 - screenshot: Take a screenshot of the desktop
 
 IMPORTANT: When taking screenshots with desktop_tool or the screenshot tool:
@@ -698,7 +705,7 @@ Always use the appropriate tool for the task at hand.
                         except Exception as e:
                             result = f"Error executing sandbox method {sandbox_method}: {str(e)}"
                     # Desktop tools: click, move_mouse, type_text, etc.
-                    elif tool_name in ["click", "move_mouse", "type_text", "key_press", "double_click", "screenshot"]:
+                    elif tool_name in ["click", "move_mouse", "type_text", "key_press", "double_click", "screenshot", "scroll", "wait"]:
                         # Most can be called directly on the computer instance
                         try:
                             # Convert to async version of method
