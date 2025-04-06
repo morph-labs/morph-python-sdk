@@ -20,6 +20,34 @@ _jupyter_client_available = importlib.util.find_spec("jupyter_client") is not No
 _playwright_available = importlib.util.find_spec("playwright") is not None
 _aiohttp_available = importlib.util.find_spec("aiohttp") is not None
 
+# Optional: key mapping if your model uses "CUA" style keys
+CUA_KEY_TO_PLAYWRIGHT_KEY = {
+    "/": "Divide",
+    "\\": "Backslash",
+    "alt": "Alt",
+    "arrowdown": "ArrowDown",
+    "arrowleft": "ArrowLeft",
+    "arrowright": "ArrowRight",
+    "arrowup": "ArrowUp",
+    "backspace": "Backspace",
+    "capslock": "CapsLock",
+    "cmd": "Meta",
+    "ctrl": "Control",
+    "delete": "Delete",
+    "end": "End",
+    "enter": "Enter",
+    "esc": "Escape",
+    "home": "Home",
+    "insert": "Insert",
+    "option": "Alt",
+    "pagedown": "PageDown",
+    "pageup": "PageUp",
+    "shift": "Shift",
+    "space": " ",
+    "super": "Meta",
+    "tab": "Tab",
+    "win": "Meta",
+}
 
 class Browser:
     """
@@ -61,54 +89,6 @@ class Browser:
                 "The aiohttp package is required for browser automation. "
                 "Install it with: pip install aiohttp"
             )
-
-    async def connect(self, timeout_seconds: int = 30) -> Browser:
-        """
-        Connect to a CDP endpoint and create a browser client.
-
-        Args:
-            timeout_seconds: Maximum time to wait for connection in seconds
-
-        Returns:
-            The Browser instance for method chaining
-
-        Raises:
-            ImportError: If required dependencies are not installed
-            TimeoutError: If connection times out
-            Exception: Other connection errors
-        """
-        if self._connected:
-            return self
-
-        self._check_dependencies()
-        from playwright.async_api import async_playwright
-
-        # Get CDP URL
-        cdp_url = self._computer.cdp_url
-        assert cdp_url, "CDP URL is not set. Ensure the browser is running."
-
-        try:
-            # Get the WebSocket URL directly from the /json/version endpoint
-            browser_ws_endpoint = await self._get_browser_ws_endpoint(
-                cdp_url, timeout_seconds
-            )
-
-            # Launch playwright
-            self._playwright = await async_playwright().start()
-
-            # Connect to the browser using CDP
-            self._browser = await self._playwright.chromium.connect_over_cdp(
-                browser_ws_endpoint
-            )
-
-            # Create a new context and page
-            self._context = await self._browser.new_context()
-            self._page = await self._context.new_page()
-            self._connected = True
-
-            return self
-        except Exception as e:
-            raise Exception(f"Failed to connect to browser: {str(e)}") from e
 
     async def _get_browser_ws_endpoint(
         self, cdp_url: str, timeout_seconds: int = 15
@@ -204,6 +184,176 @@ class Browser:
         """
         if not self._connected:
             await self.connect()
+
+    async def connect(self, timeout_seconds: int = 30) -> Browser:
+        """
+        Connect to a CDP endpoint and create a browser client.
+
+        Args:
+            timeout_seconds: Maximum time to wait for connection in seconds
+
+        Returns:
+            The Browser instance for method chaining
+
+        Raises:
+            ImportError: If required dependencies are not installed
+            TimeoutError: If connection times out
+            Exception: Other connection errors
+        """
+        if self._connected:
+            return self
+
+        self._check_dependencies()
+        from playwright.async_api import async_playwright
+
+        # Get CDP URL
+        cdp_url = self._computer.cdp_url
+        assert cdp_url, "CDP URL is not set. Ensure the browser is running."
+
+        try:
+            # Get the WebSocket URL directly from the /json/version endpoint
+            browser_ws_endpoint = await self._get_browser_ws_endpoint(
+                cdp_url, timeout_seconds
+            )
+
+            # Launch playwright
+            self._playwright = await async_playwright().start()
+
+            # Connect to the browser using CDP
+            self._browser = await self._playwright.chromium.connect_over_cdp(
+                browser_ws_endpoint
+            )
+
+            # Create a new context and page
+            self._context = await self._browser.new_context()
+            self._page = await self._context.new_page()
+            self._connected = True
+
+            return self
+        except Exception as e:
+            raise Exception(f"Failed to connect to browser: {str(e)}") from e
+
+    async def close(self) -> None:
+        """
+        Close the browser and clean up resources.
+
+        This method should be called when done using the browser to free resources.
+        """
+        if not self._connected:
+            return
+
+        if self._context:
+            await self._context.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+
+        self._connected = False
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._playwright = None
+
+    async def __aenter__(self) -> Browser:
+        """
+        Enter the asynchronous context manager.
+
+        Returns:
+            The Browser instance
+        """
+        return await self.connect()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """
+        Exit the asynchronous context manager.
+
+        Closes the browser and cleans up resources.
+        """
+        _ = exc_type, exc_val, exc_tb  # Unused
+        await self.close()
+
+    async def get_current_url(self) -> str:
+        """
+        Get the current page URL.
+
+        Returns:
+            The URL of the current page
+
+        Raises:
+            Exception: If not connected
+        """
+        await self._ensure_connected()
+        assert self._page, "Page is not initialized"
+        return self._page.url
+
+    async def screenshot(self) -> str:
+        """
+        Take a screenshot of the current page and return the raw image data.
+
+        Returns:
+            Raw image data as bytes
+
+        Raises:
+            Exception: If screenshot fails
+        """
+        await self._ensure_connected()
+        assert self._page, "Page is not initialized"
+        png_bytes = await self._page.screenshot(full_page=False)
+        return base64.b64encode(png_bytes).decode("utf-8")
+
+    async def click(self, x: int, y: int, button: str = "left") -> None:
+        await self._ensure_connected()
+        assert self._page, "Page is not initialized"
+        if button == "back":
+            await self.back()
+        elif button == "forward":
+            await self.forward()
+        elif button == "wheel":
+            await self._page.mouse.wheel(x, y)
+        else:
+            button_mapping = {"left": "left", "right": "right"}
+            button_type = button_mapping.get(button, "left")
+            await self._page.mouse.click(x, y, button=button_type)
+
+    async def double_click(self, x: int, y: int) -> None:
+        assert self._page, "Page is not initialized"
+        await self._page.mouse.dblclick(x, y)
+
+    async def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
+        await self._ensure_connected()
+        assert self._page, "Page is not initialized"
+        await self._page.mouse.move(x, y)
+        await self._page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
+
+    async def type(self, text: str) -> None:
+        assert self._page, "Page is not initialized"
+        await self._page.keyboard.type(text)
+
+    async def wait(self, ms: int = 1000) -> None:
+        await asyncio.sleep(ms / 1000)
+
+    async def move(self, x: int, y: int) -> None:
+        assert self._page, "Page is not initialized"
+        await self._page.mouse.move(x, y)
+
+    async def keypress(self, keys: List[str]) -> None:
+        assert self._page, "Page is not initialized"
+        mapped_keys = [CUA_KEY_TO_PLAYWRIGHT_KEY.get(key.lower(), key) for key in keys]
+        for key in mapped_keys:
+            await self._page.keyboard.down(key)
+        for key in reversed(mapped_keys):
+            await self._page.keyboard.up(key)
+
+    async def drag(self, path: List[Dict[str, int]]) -> None:
+        assert self._page, "Page is not initialized"
+        if not path:
+            return
+        await self._page.mouse.move(path[0]["x"], path[0]["y"])
+        await self._page.mouse.down()
+        for point in path[1:]:
+            await self._page.mouse.move(point["x"], point["y"])
+        await self._page.mouse.up()
 
     async def goto(
         self, url: str, timeout: int = 15000, wait_until: str = "domcontentloaded"
@@ -307,57 +457,6 @@ class Browser:
         assert self._page, "Page is not initialized"
         return await self._page.title()
 
-    async def get_url(self) -> str:
-        """
-        Get the current page URL.
-
-        Returns:
-            The URL of the current page
-
-        Raises:
-            Exception: If not connected
-        """
-        await self._ensure_connected()
-        assert self._page, "Page is not initialized"
-        return self._page.url
-
-    async def screenshot(self) -> bytes:
-        """
-        Take a screenshot of the current page and return the raw image data.
-
-        Returns:
-            Raw image data as bytes
-
-        Raises:
-            Exception: If screenshot fails
-        """
-        await self._ensure_connected()
-        assert self._page, "Page is not initialized"
-        screenshot_bytes = await self._page.screenshot()
-        return screenshot_bytes
-
-    async def close(self) -> None:
-        """
-        Close the browser and clean up resources.
-
-        This method should be called when done using the browser to free resources.
-        """
-        if not self._connected:
-            return
-
-        if self._context:
-            await self._context.close()
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
-
-        self._connected = False
-        self._browser = None
-        self._context = None
-        self._page = None
-        self._playwright = None
-
 
 class Sandbox:
     """
@@ -398,6 +497,18 @@ class Sandbox:
                 f"Install them with: pip install {' '.join(missing)}"
             )
 
+    async def _ensure_kernel_connection(self) -> None:
+        """
+        Ensure we have an active kernel connection.
+
+        Connects to a kernel if not already connected.
+
+        Raises:
+            Various exceptions from connect() method
+        """
+        if not self._ws_connected:
+            await self.connect()
+
     @property
     def jupyter_url(self) -> str:
         """
@@ -415,30 +526,18 @@ class Sandbox:
         """
         if not self._jupyter_url:
             # Find JupyterLab in exposed services or expose it
-            for service in self._computer.networking.http_services:
+            for service in self._computer._instance.networking.http_services:
                 if service.port == 8888 or service.name == "jupyterlab":
                     self._jupyter_url = service.url
                     break
 
             # If not found, expose it
             if not self._jupyter_url:
-                self._jupyter_url = self._computer.expose_http_service(
+                self._jupyter_url = self._computer._instance.expose_http_service(
                     "jupyterlab", 8888
                 )
 
         return self._jupyter_url
-
-    async def _ensure_kernel_connection(self) -> None:
-        """
-        Ensure we have an active kernel connection.
-
-        Connects to a kernel if not already connected.
-
-        Raises:
-            Various exceptions from connect() method
-        """
-        if not self._ws_connected:
-            await self.connect()
 
     async def wait_for_service(self, timeout: int = 30) -> bool:
         """
@@ -1048,15 +1147,18 @@ class Sandbox:
         return self._run_async(self.close())
 
 
-class Computer(Instance):
+class Computer:
     """
     A Computer is an enhanced Instance with additional capabilities
     like VNC interaction, browser automation, and code execution.
     """
 
+    def __init__(self, instance: Instance):
+        self._instance = instance
+
     def _set_api(self, api: InstanceAPI) -> Computer:
         """Override _set_api to return a Computer instead of an Instance."""
-        super()._set_api(api)  # Call the parent method to set the _api attribute
+        self._instance._set_api(api)  # Set the API for the instance
 
         # Initialize computer-specific components
         self._browser = Browser(self)
@@ -1075,7 +1177,7 @@ class Computer(Instance):
     def dimensions(self) -> tuple[int, int]:
         """Get the screen dimensions (width, height)."""
         # Get screen dimensions using xdpyinfo
-        result = self.exec(
+        result = self._instance.exec(
             "sudo -u morph bash -c 'DISPLAY={0} xdpyinfo | grep dimensions'".format(
                 self.display
             )
@@ -1123,7 +1225,7 @@ class Computer(Instance):
                             "enum": [
                                 "goto",
                                 "get_title",
-                                "get_url",
+                                "get_current_url",
                                 "back",
                                 "forward",
                                 "reload",
@@ -1581,6 +1683,10 @@ class Computer(Instance):
 
         return tools
 
+    # def list_tools(): TODO: Implement
+
+    # def call_tool(): TODO: Implement
+
     @property
     def browser(self) -> Browser:
         """
@@ -1624,8 +1730,8 @@ class Computer(Instance):
         Returns:
             URL string to the CDP endpoint, or None if not found
         """
-        self.wait_until_ready()
-        for service in self.networking.http_services:
+        self._instance.wait_until_ready()
+        for service in self._instance.networking.http_services:
             if service.name == "web":
                 return service.url
 
@@ -1646,7 +1752,7 @@ class Computer(Instance):
         return getattr(self, "_display", ":1")
 
     @display.setter
-    def display(self, value: str) -> None:
+    def _display(self, value: str) -> None:
         """
         Set the X display to use.
 
@@ -1674,7 +1780,7 @@ class Computer(Instance):
         try:
             button_map = {"left": 1, "middle": 2, "right": 3}
             b = button_map.get(button, 1)
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click {b}'"
             )
         except Exception as e:
@@ -1697,7 +1803,7 @@ class Computer(Instance):
             Exception: If the double-click operation fails
         """
         try:
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click --repeat 2 1'"
             )
         except Exception as e:
@@ -1720,7 +1826,7 @@ class Computer(Instance):
             Exception: If the mouse movement operation fails
         """
         try:
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
             )
         except Exception as e:
@@ -1747,7 +1853,7 @@ class Computer(Instance):
             # Xdotool takes click 4 for scroll up, 5 for scroll down
             button = 5 if scroll_y > 0 else 4  # 5 = down, 4 = up
             count = abs(scroll_y)
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
             )
 
@@ -1755,7 +1861,7 @@ class Computer(Instance):
             # Horizontal scrolling (button 6 = left, 7 = right)
             button = 7 if scroll_x > 0 else 6  # 7 = right, 6 = left
             count = abs(scroll_x)
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
             )
 
@@ -1778,7 +1884,7 @@ class Computer(Instance):
         # Escape single quotes for bash
         safe_text = text.replace("'", "'\\''")
         # Use consistent quoting structure
-        self.exec(
+        self._instance.exec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool type -- \"{safe_text}\"'"
         )
 
@@ -1791,7 +1897,7 @@ class Computer(Instance):
             computer.key_press("ctrl+a")  # Press Ctrl+A
             computer.key_press("alt+F4")  # Press Alt+F4
         """
-        self.exec(
+        self._instance.exec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {key_combo}'"
         )
 
@@ -1824,7 +1930,9 @@ class Computer(Instance):
         }
         mapped_keys = [mapping.get(key.upper(), key) for key in keys]
         combo = "+".join(mapped_keys)
-        self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {combo}'")
+        self._instance.exec(
+            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {combo}'"
+        )
 
     def drag(self, path: List[Dict[str, int]]) -> None:
         """
@@ -1839,7 +1947,7 @@ class Computer(Instance):
         start_x = path[0]["x"]
         start_y = path[0]["y"]
 
-        self.exec(
+        self._instance.exec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {start_x} {start_y} mousedown 1'"
         )
 
@@ -1847,13 +1955,15 @@ class Computer(Instance):
             # Use separate variables for x and y to avoid escaping issues
             x = point["x"]
             y = point["y"]
-            self.exec(
+            self._instance.exec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
             )
 
-        self.exec(f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mouseup 1'")
+        self._instance.exec(
+            f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mouseup 1'"
+        )
 
-    def screenshot(self) -> bytes:
+    def screenshot(self) -> str:
         """
         Take a screenshot of the desktop and return the raw image data.
 
@@ -1861,36 +1971,36 @@ class Computer(Instance):
             Raw image data as bytes
         """
         # Ensure temp dir exists
-        self.exec("mkdir -p /tmp/screenshots && chmod 777 /tmp/screenshots")
+        self._instance.exec("mkdir -p /tmp/screenshots && chmod 777 /tmp/screenshots")
 
         # Take screenshot as the morph user
         temp_path = "/tmp/screenshots/screenshot.png"
-        self.exec(
+        self._instance.exec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root {temp_path}'"
         )
 
         # Return the raw image data
-        result = self.exec(f"cat {temp_path} | base64 -w 0")
-        return base64.b64decode(result.stdout)
+        result = self._instance.exec(f"cat {temp_path} | base64 -w 0")
+        return result.stdout
 
     # Async versions of the VNC interaction methods
     async def aclick(self, x: int, y: int, button: str = "left") -> None:
         """Async version of click."""
         button_map = {"left": 1, "middle": 2, "right": 3}
         b = button_map.get(button, 1)
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click {b}'"
         )
 
     async def adouble_click(self, x: int, y: int) -> None:
         """Async version of double_click."""
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y} click --repeat 2 1'"
         )
 
     async def amove_mouse(self, x: int, y: int) -> None:
         """Async version of move_mouse."""
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
         )
 
@@ -1904,7 +2014,7 @@ class Computer(Instance):
             # Positive scroll_y scrolls down, negative scrolls up
             button = 5 if scroll_y > 0 else 4  # 5 = down, 4 = up
             count = abs(scroll_y)
-            await self.aexec(
+            await self._instance.aexec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
             )
 
@@ -1912,7 +2022,7 @@ class Computer(Instance):
             # Horizontal scrolling (button 6 = left, 7 = right)
             button = 7 if scroll_x > 0 else 6  # 7 = right, 6 = left
             count = abs(scroll_x)
-            await self.aexec(
+            await self._instance.aexec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool click --repeat {count} {button}'"
             )
 
@@ -1939,7 +2049,7 @@ class Computer(Instance):
         # Escape single quotes for bash
         safe_text = text.replace("'", "'\\''")
         # Use consistent quoting structure
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool type -- \"{safe_text}\"'"
         )
 
@@ -1953,7 +2063,7 @@ class Computer(Instance):
         Raises:
             Exception: If key press fails
         """
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {key_combo}'"
         )
 
@@ -1987,7 +2097,7 @@ class Computer(Instance):
         }
         mapped_keys = [mapping.get(key.upper(), key) for key in keys]
         combo = "+".join(mapped_keys)
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool key {combo}'"
         )
 
@@ -1999,7 +2109,7 @@ class Computer(Instance):
         start_x = path[0]["x"]
         start_y = path[0]["y"]
 
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {start_x} {start_y} mousedown 1'"
         )
 
@@ -2007,11 +2117,11 @@ class Computer(Instance):
             # Use separate variables for x and y to avoid escaping issues
             x = point["x"]
             y = point["y"]
-            await self.aexec(
+            await self._instance.aexec(
                 f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mousemove {x} {y}'"
             )
 
-        await self.aexec(
+        await self._instance.aexec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} xdotool mouseup 1'"
         )
 
@@ -2023,7 +2133,7 @@ class Computer(Instance):
             Base64-encoded PNG data as a string
         """
         cmd = f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root png:- | base64 -w 0'"
-        result = await self.aexec(cmd)
+        result = await self._instance.aexec(cmd)
         return result.stdout.strip()
 
     def screenshot_base64_sync(self) -> str:
@@ -2034,7 +2144,7 @@ class Computer(Instance):
             Base64-encoded PNG data as a string
         """
         cmd = f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root png:- | base64 -w 0'"
-        result = self.exec(cmd)
+        result = self._instance.exec(cmd)
         return result.stdout.strip()
 
     async def ascreenshot(self) -> bytes:
@@ -2058,7 +2168,7 @@ class Computer(Instance):
         display = getattr(self, "_display", ":1")
 
         # Refresh using parent method
-        super()._refresh()
+        self._instance._refresh()
 
         # Restore computer-specific attributes
         if browser:
@@ -2074,7 +2184,7 @@ class Computer(Instance):
         display = getattr(self, "_display", ":1")
 
         # Refresh using parent method
-        await super()._refresh_async()
+        await self._instance._refresh_async()
 
         # Restore computer-specific attributes
         if browser:
@@ -2095,28 +2205,6 @@ class ComputerAPI:
             client: The MorphClient instance
         """
         self._client = client
-
-    def list(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
-        """List all computers available to the user."""
-        response = self._client._http_client.get(
-            "/instance",
-            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
-        )
-        return [
-            Computer.model_validate(instance)._set_api(self._client.instances)
-            for instance in response.json()["data"]
-        ]
-
-    async def alist(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
-        """List all computers available to the user asynchronously."""
-        response = await self._client._async_http_client.get(
-            "/instance",
-            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
-        )
-        return [
-            Computer.model_validate(instance)._set_api(self._client.instances)
-            for instance in response.json()["data"]
-        ]
 
     def _verify_snapshot_is_computer(self, snapshot_id: str) -> Snapshot:
         """
@@ -2192,7 +2280,9 @@ class ComputerAPI:
                 "ttl_action": ttl_action,
             },
         )
-        return Computer.model_validate(response.json())._set_api(self._client.instances)
+        return Computer(
+            Instance.model_validate(response.json())._set_api(self._client.instances)
+        )
 
     async def astart(
         self,
@@ -2229,14 +2319,44 @@ class ComputerAPI:
                 "ttl_action": ttl_action,
             },
         )
-        return Computer.model_validate(response.json())._set_api(self._client.instances)
+        return Computer(
+            Instance.model_validate(response.json())._set_api(self._client.instances)
+        )
 
     def get(self, computer_id: str) -> Computer:
         """Get a Computer by ID."""
         response = self._client._http_client.get(f"/instance/{computer_id}")
-        return Computer.model_validate(response.json())._set_api(self._client.instances)
+        return Computer(
+            Instance.model_validate(response.json())._set_api(self._client.instances)
+        )
 
     async def aget(self, computer_id: str) -> Computer:
         """Get a Computer by ID asynchronously."""
         response = await self._client._async_http_client.get(f"/instance/{computer_id}")
-        return Computer.model_validate(response.json())._set_api(self._client.instances)
+        return Computer(
+            Instance.model_validate(response.json())._set_api(self._client.instances)
+        )
+
+    def list(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
+        """List all computers available to the user."""
+        response = self._client._http_client.get(
+            "/instance",
+            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
+        )
+        return [
+            Computer(Instance.model_validate(instance)._set_api(self._client.instances))
+            for instance in response.json()["data"]
+        ]
+
+    async def alist(self, metadata: Optional[Dict[str, str]] = None) -> List[Computer]:
+        """List all computers available to the user asynchronously."""
+        response = await self._client._async_http_client.get(
+            "/instance",
+            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
+        )
+        return [
+            Computer(Instance.model_validate(instance)._set_api(self._client.instances))
+            for instance in response.json()["data"]
+        ]
+
+
