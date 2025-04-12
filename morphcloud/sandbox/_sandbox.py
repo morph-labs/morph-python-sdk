@@ -79,7 +79,7 @@ class LanguageSupport:
     @classmethod
     def get_supported_languages(cls) -> List[str]:
         """Return list of supported language identifiers"""
-        return ["python", "javascript", "bash"]
+        return ["python", "javascript", "bash", "cpp", "rust"]
     
     @classmethod
     def get_kernel_name(cls, language: str) -> str:
@@ -87,7 +87,9 @@ class LanguageSupport:
         kernel_mapping = {
             "python": "python3",
             "javascript": "javascript",
-            "bash": "bash"
+            "bash": "bash",
+            "cpp": "xcpp17",    # xeus-cling C++17 kernel
+            "rust": "rust"      # evcxr kernel
         }
         return kernel_mapping.get(language, "python3")  # Default to python3
 
@@ -254,12 +256,12 @@ class Sandbox:
         self._ws_connections = ws_connections
         self._session_id = session_id
     
-    def connect(self, timeout_seconds: int = 30) -> Sandbox:
+    def connect(self, timeout_seconds: int = 60) -> Sandbox:
         """Ensure Jupyter service is running and accessible"""
         self.wait_for_jupyter(timeout_seconds)
         return self
     
-    def wait_for_jupyter(self, timeout: int = 30) -> bool:
+    def wait_for_jupyter(self, timeout: int = 60) -> bool:
         """
         Wait for Jupyter service to be ready
         
@@ -406,15 +408,17 @@ class Sandbox:
         self, 
         code: str, 
         language: str = "python", 
-        timeout: float = 30.0
+        timeout: float = 60.0,
+        show_code: bool = False
     ) -> ExecutionResult:
         """
         Execute code in the specified language via Jupyter kernel
         
         Args:
             code: The code to execute
-            language: Programming language to use (python, javascript, bash)
+            language: Programming language to use (python, javascript, bash, cpp, rust)
             timeout: Maximum execution time in seconds for this specific code execution
+            show_code: Whether to print the code being executed (useful for debugging)
             
         Returns:
             ExecutionResult with execution outputs and status
@@ -428,6 +432,13 @@ class Sandbox:
             
         if not isinstance(timeout, (int, float)) or timeout <= 0:
             raise ValueError("Timeout must be a positive number")
+        
+        # Optionally show the code being executed (for testing and debugging)
+        if show_code:
+            print(f"\nExecuting {language} code:")
+            print("```")
+            print(code)
+            print("```")
             
         start_time = time.time()
         
@@ -831,8 +842,8 @@ class Sandbox:
                 print("No sandbox snapshots found. Creating new base snapshot...")
                 base_snapshot = client.snapshots.create(
                     vcpus=2,
-                    memory=4096,
-                    disk_size=8192,
+                    memory=8192,  # Increased from 4096 to 8192
+                    disk_size=16384,  # Increased from 8192 to 16384
                     image_id="morphvm-minimal",
                     digest="sandbox-dev"
                 )
@@ -854,7 +865,6 @@ class Sandbox:
         # Connect and return the sandbox
         return sandbox.connect()
 
-
 def create_python_packages(snapshot: Snapshot) -> Snapshot:
     """
     Install extensive Python packages using uv package manager.
@@ -866,100 +876,120 @@ def create_python_packages(snapshot: Snapshot) -> Snapshot:
     Returns:
         The transformed snapshot with Python packages installed
     """
+    print("Installing Python packages (this may take a few minutes)...")
+    start_time = time.time()
+    
     # Step 1: Install system dependencies and build tools
-    snapshot = snapshot.exec(
-        """
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get install -y --no-install-recommends \
-            python3-dev python3-pip python3-venv \
-            build-essential gcc g++ \
-            curl ca-certificates \
-            git cmake \
-            libblas-dev liblapack-dev libopenblas-dev
-        """
-    )
+    print("  → Installing system dependencies...")
+    
+    system_deps_script = """
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3-dev python3-pip python3-venv \
+        build-essential gcc g++ \
+        curl ca-certificates \
+        git cmake \
+        libblas-dev liblapack-dev libopenblas-dev
+    
+    echo "System dependencies installed successfully"
+    """
+    snapshot = snapshot.exec(system_deps_script)
     
     # Step 2: Install uv package manager
-    snapshot = snapshot.exec(
-        """
-        # Install uv package manager
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        uv --version
-        """
-    )
+    print("  → Installing uv package manager...")
+    uv_install_script = """
+    # Install uv package manager
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    uv --version
+    
+    echo "uv package manager installed successfully"
+    """
+    snapshot = snapshot.exec(uv_install_script)
     
     # Step 3: Create Python virtual environment with uv
-    snapshot = snapshot.exec(
-        """
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        uv venv /root/jupyter_env
-        """
-    )
+    print("  → Creating Python virtual environment...")
+    venv_script = """
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    uv venv /root/jupyter_env
+    
+    echo "Python virtual environment created successfully"
+    """
+    snapshot = snapshot.exec(venv_script)
     
     # Step 4: Install Jupyter and core Python packages
-    snapshot = snapshot.exec(
-        """
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install Jupyter and core packages
-        uv pip install jupyterlab ipykernel
-        """
-    )
+    print("  → Installing Jupyter and core packages...")
+    jupyter_script = """
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install Jupyter and core packages
+    uv pip install jupyterlab ipykernel
+    
+    echo "Jupyter and core packages installed successfully"
+    """
+    snapshot = snapshot.exec(jupyter_script)
     
     # Step 5: Install first batch of data science packages
-    snapshot = snapshot.exec(
-        """
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install first batch of data science packages
-        uv pip install numpy==1.26.4 pandas==1.5.3 matplotlib==3.8.3
-        """
-    )
+    print("  → Installing data science packages (batch 1/3)...")
+    ds_packages1_script = """
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install first batch of data science packages
+    uv pip install numpy==1.26.4 pandas==1.5.3 matplotlib==3.8.3
+    
+    echo "Data science packages (batch 1) installed successfully"
+    """
+    snapshot = snapshot.exec(ds_packages1_script)
     
     # Step 6: Install second batch of packages
-    snapshot = snapshot.exec(
-        """
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install second batch of packages
-        uv pip install scipy==1.12.0 scikit-learn==1.4.1.post1
-        """
-    )
+    print("  → Installing data science packages (batch 2/3)...")
+    ds_packages2_script = """
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install second batch of packages
+    uv pip install scipy==1.12.0 scikit-learn==1.4.1.post1
+    
+    echo "Data science packages (batch 2) installed successfully"
+    """
+    snapshot = snapshot.exec(ds_packages2_script)
     
     # Step 7: Install third batch of packages
-    snapshot = snapshot.exec(
-        """
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install third batch of packages
-        uv pip install requests==2.26.0 beautifulsoup4==4.12.3 seaborn==0.13.2
-        """
-    )
+    print("  → Installing data science packages (batch 3/3)...")
+    ds_packages3_script = """
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install third batch of packages
+    uv pip install requests==2.26.0 beautifulsoup4==4.12.3 seaborn==0.13.2
+    
+    echo "Data science packages (batch 3) installed successfully"
+    """
+    snapshot = snapshot.exec(ds_packages3_script)
     
     # Step 8: Install Python kernel and verify installation
-    snapshot = snapshot.exec(
-        """
-        source /root/jupyter_env/bin/activate
-        
-        # Install Python kernel
-        python -m ipykernel install --user
-        
-        # Verify key packages are available
-        python -c "import numpy, pandas, matplotlib, scipy, sklearn; print('Core packages verified')"
-        """
-    )
+    print("  → Setting up Python kernel...")
+    python_kernel_script = """
+    source /root/jupyter_env/bin/activate
+    
+    # Install Python kernel
+    python -m ipykernel install --user
+    
+    # Verify key packages are available
+    python -c "import numpy, pandas, matplotlib, scipy, sklearn; print('Core packages verified')"
+    
+    echo "Python kernel setup completed successfully"
+    """
+    snapshot = snapshot.exec(python_kernel_script)
     
     # Update metadata for packages
     snapshot.set_metadata(
@@ -969,12 +999,15 @@ def create_python_packages(snapshot: Snapshot) -> Snapshot:
         }
     )
     
+    elapsed_time = time.time() - start_time
+    print(f"Python packages installed successfully in {elapsed_time:.1f} seconds")
+    
     return snapshot
 
 def create_jupyter_sandbox(snapshot: Snapshot) -> Snapshot:
     """
     Morph a snapshot into a Jupyter sandbox environment with multiple language kernels.
-    Uses uv for Python package management.
+    Uses uv for Python package management and includes Rust and C++ kernels.
     
     Args:
         snapshot: The base snapshot to morph
@@ -982,64 +1015,239 @@ def create_jupyter_sandbox(snapshot: Snapshot) -> Snapshot:
     Returns:
         A morphed snapshot with a fully configured Jupyter environment
     """
-    # Step 1: Install system dependencies
-    snapshot = snapshot.exec(
-        """
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update && apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-venv \
-            nodejs npm \
-            curl net-tools
-        """
-    )
+    print("Creating Jupyter sandbox environment with multiple language support...")
+    start_time = time.time()
     
-    # Step 2: Install Python packages using uv
+    # Step 1: Install system dependencies
+    print("Step 1/9: Installing system dependencies...")
+    step_start = time.time()
+    
+    sys_deps_script = """
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+        nodejs npm \
+        curl wget \
+        net-tools \
+        build-essential \
+        git
+        
+    echo "System dependencies installed successfully"
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: System dependencies installation failed with exit code $exit_code"
+        exit $exit_code
+    fi
+    """
+    snapshot = snapshot.exec(sys_deps_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
+    
+    # Step 2: Install Python packages
+    print("Step 2/9: Installing Python packages...")
+    step_start = time.time()
     snapshot = create_python_packages(snapshot)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
     
     # Step 3: Install JavaScript kernel
-    snapshot = snapshot.exec(
-        """
-        # Make sure we're using the virtual environment where Jupyter is installed
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install JavaScript kernel globally
-        npm install -g ijavascript
-        
-        # Now use IJavaScript installer with the path to the Jupyter command
-        export PATH="/root/jupyter_env/bin:$PATH"
-        which jupyter  # Verify jupyter is in the path
-        ijsinstall --install=global
-        
-        # Verify the kernel was installed
-        jupyter kernelspec list | grep javascript
-        """
-    )
+    print("Step 3/9: Installing JavaScript kernel...")
+    step_start = time.time()
+    
+    js_kernel_script = """
+    # Make sure we're using the virtual environment where Jupyter is installed
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install JavaScript kernel globally
+    npm install -g ijavascript
+    
+    # Now use IJavaScript installer with the path to the Jupyter command
+    export PATH="/root/jupyter_env/bin:$PATH"
+    which jupyter  # Verify jupyter is in the path
+    ijsinstall --install=global
+    
+    # Verify the kernel was installed
+    jupyter kernelspec list | grep javascript
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: JavaScript kernel installation verification failed"
+        exit 1
+    fi
+    
+    echo "JavaScript kernel installed successfully"
+    """
+    snapshot = snapshot.exec(js_kernel_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
     
     # Step 4: Install Bash kernel
-    snapshot = snapshot.exec(
-        """
-        # Activate virtual environment
-        source /root/jupyter_env/bin/activate
-        export PATH="/root/.local/bin:$PATH"
-        source $HOME/.local/bin/env
-        
-        # Install Bash kernel using uv
-        uv pip install bash_kernel
-        python -m bash_kernel.install
-        
-        # Verify the kernel was installed
-        jupyter kernelspec list | grep bash
-        """
-    )
+    print("Step 4/9: Installing Bash kernel...")
+    step_start = time.time()
     
-    # Step 5: Create startup script
-    snapshot = snapshot.exec(
-        """
-        cat > /root/start_jupyter.sh << 'EOF'
+    bash_kernel_script = """
+    # Activate virtual environment
+    source /root/jupyter_env/bin/activate
+    export PATH="/root/.local/bin:$PATH"
+    source $HOME/.local/bin/env
+    
+    # Install Bash kernel using uv
+    uv pip install bash_kernel
+    python -m bash_kernel.install
+    
+    # Verify the kernel was installed
+    jupyter kernelspec list | grep bash
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: Bash kernel installation verification failed"
+        exit 1
+    fi
+    
+    echo "Bash kernel installed successfully"
+    """
+    snapshot = snapshot.exec(bash_kernel_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
+    
+    # Step 5: Install Rust (evcxr) kernel
+    print("Step 5/9: Installing Rust kernel (evcxr)...")
+    step_start = time.time()
+    
+    rust_kernel_script = """
+    # Install Rust toolchain
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    export PATH="$HOME/.cargo/bin:$PATH"
+    source $HOME/.cargo/env
+    
+    # Add Rust standard library source (required by evcxr)
+    rustup component add rust-src
+    
+    # Install evcxr_jupyter
+    source /root/jupyter_env/bin/activate
+    RUSTFLAGS="-C debuginfo=0" cargo install --locked evcxr_jupyter
+    
+    # Register the kernel with Jupyter
+    evcxr_jupyter --install
+    
+    # Verify kernel installation
+    jupyter kernelspec list | grep rust
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: Rust kernel installation verification failed"
+        exit 1
+    fi
+    
+    # Create a test notebook for Rust
+    mkdir -p /root/notebook-tests
+    echo '{
+     "cells": [
+      {
+       "cell_type": "code",
+       "execution_count": null,
+       "metadata": {},
+       "source": [
+        "println!(\\\"Rust kernel test\\\");"
+       ],
+       "outputs": []
+      }
+     ],
+     "metadata": {
+      "kernelspec": {
+       "display_name": "Rust",
+       "language": "rust",
+       "name": "rust"
+      }
+     },
+     "nbformat": 4,
+     "nbformat_minor": 5
+    }' > /root/notebook-tests/rust-test.ipynb
+    
+    echo "Rust kernel (evcxr) installed successfully"
+    """
+    snapshot = snapshot.exec(rust_kernel_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
+    
+    # Step 6: Install C++ (xeus-cling) kernel
+    print("Step 6/9: Installing C++ kernel (xeus-cling)...")
+    step_start = time.time()
+    
+    cpp_kernel_script = """
+    # Install micromamba for xeus-cling installation
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
+    mv bin/micromamba /usr/local/bin/ && rmdir bin
+    
+    # Set up mamba environment
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    mkdir -p $MAMBA_ROOT_PREFIX
+    
+    # Initialize micromamba
+    /usr/local/bin/micromamba shell init -s bash -p $MAMBA_ROOT_PREFIX
+    source ~/.bashrc
+    
+    # Create cling environment and install xeus-cling
+    micromamba create -y -n cling
+    echo "Environment created, installing xeus-cling..."
+    
+    # Install xeus-cling in the environment
+    micromamba install -y -n cling -c conda-forge xeus-cling
+    
+    # Make kernels accessible to Jupyter
+    mkdir -p /root/.local/share/jupyter/kernels/
+    cp -r $MAMBA_ROOT_PREFIX/envs/cling/share/jupyter/kernels/xcpp* /root/.local/share/jupyter/kernels/
+    
+    # Verify kernel installation
+    source /root/jupyter_env/bin/activate
+    jupyter kernelspec list | grep xcpp
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo "Error: C++ kernel installation verification failed"
+        exit 1
+    fi
+    
+    # Create a test notebook for C++
+    mkdir -p /root/notebook-tests
+    echo '{
+     "cells": [
+      {
+       "cell_type": "code",
+       "execution_count": null,
+       "metadata": {},
+       "source": [
+        "#include <iostream>\\nstd::cout << \\\"C++ kernel test\\\" << std::endl;"
+       ],
+       "outputs": []
+      }
+     ],
+     "metadata": {
+      "kernelspec": {
+       "display_name": "C++17",
+       "language": "C++17",
+       "name": "xcpp17"
+      }
+     },
+     "nbformat": 4,
+     "nbformat_minor": 5
+    }' > /root/notebook-tests/cpp-test.ipynb
+    
+    echo "C++ kernel (xeus-cling) installed successfully"
+    """
+    snapshot = snapshot.exec(cpp_kernel_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
+    
+    # Step 7: Create startup script
+    print("Step 7/9: Creating startup script...")
+    step_start = time.time()
+    
+    startup_script = """
+    cat > /root/start_jupyter.sh << 'EOF'
 #!/bin/bash
 source /root/jupyter_env/bin/activate
+
+# Add Rust to PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+source $HOME/.cargo/env
+
+# Add micromamba setup for xeus-cling
+export MAMBA_ROOT_PREFIX=/opt/conda
+eval "$(/usr/local/bin/micromamba shell hook -s bash)"
+micromamba activate cling
 
 # Start JupyterLab
 jupyter lab \\
@@ -1057,13 +1265,18 @@ EOF
 # Ensure script has executable permissions
 chmod +x /root/start_jupyter.sh
 ls -la /root/start_jupyter.sh
-        """
-    )
+
+echo "Startup script created successfully"
+    """
+    snapshot = snapshot.exec(startup_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
     
-    # Step 6: Set up systemd service
-    snapshot = snapshot.exec(
-        """
-        cat > /etc/systemd/system/jupyter.service << 'EOF'
+    # Step 8: Set up systemd service
+    print("Step 8/9: Setting up systemd service...")
+    step_start = time.time()
+    
+    systemd_script = """
+    cat > /etc/systemd/system/jupyter.service << 'EOF'
 [Unit]
 Description=JupyterLab Service
 After=network.target
@@ -1079,98 +1292,376 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
         
-        systemctl daemon-reload
-        systemctl enable jupyter.service
-        
-        # Mark as a sandbox environment
-        touch /test_sandbox_environment_valid
-        """
-    )
+    systemctl daemon-reload
+    systemctl enable jupyter.service
     
-    # Step 7: Define function to start services when an instance is created
+    # Mark as a sandbox environment
+    touch /test_sandbox_environment_valid
+    
+    echo "Systemd service configured successfully"
+    """
+    snapshot = snapshot.exec(systemd_script)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
+    
+    # Step 9: Define function to start services when an instance is created
+    print("Step 9/9: Configuring service startup function...")
+    step_start = time.time()
+    
     def expose_jupyter_services(instance: Instance) -> Instance:
         """Start and expose Jupyter services for the instance."""
+        print("Starting and exposing Jupyter services...")
+        
         # Start JupyterLab service
-        instance.exec(
-            """
-            # Ensure the startup script has executable permissions
-            chmod +x /root/start_jupyter.sh
-            systemctl restart jupyter.service
-            
-            # Wait for service to be ready
-            echo "Waiting for JupyterLab to start..."
-            for i in {1..30}; do
-                if curl -s http://localhost:8888/api/status >/dev/null; then
-                    echo "JupyterLab is ready"
-                    break
-                fi
-                echo "Waiting... ($i/30)"
-                sleep 2
-            done
-            """
-        )
+        jupyter_start_script = """
+        # Ensure the startup script has executable permissions
+        chmod +x /root/start_jupyter.sh
+        systemctl restart jupyter.service
+        
+        # Wait for service to be ready
+        echo "Waiting for JupyterLab to start..."
+        for i in {1..60}; do
+            if curl -s http://localhost:8888/api/status >/dev/null; then
+                echo "JupyterLab is ready"
+                break
+            fi
+            if [ $i -eq 60 ]; then
+                echo "ERROR: JupyterLab failed to start after 2 minutes"
+                exit 1
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+        done
+        """
+        instance.exec(jupyter_start_script)
         
         # Expose JupyterLab service
         jupyter_url = instance.expose_http_service("jupyter", 8888)
         print(f"JupyterLab is running at: {jupyter_url}")
         
         # Initialize all kernels before creating snapshot
-        print("Initializing all kernels...")
+        print("Initializing and testing all kernels...")
         temp_sandbox = Sandbox(instance)
         temp_sandbox.connect(timeout_seconds=60)
+        
+        # Define comprehensive test code for each language
+        python_test_code = """
+print("Python kernel test: stdout works")
+import sys
+print("Python version:", sys.version)
+x = 42
+x  # This should return 42
+"""
+
+        javascript_test_code = """
+console.log("JavaScript kernel test: stdout works");
+let testVar = "JavaScript working";
+testVar;  // This should return "JavaScript working"
+"""
+
+        bash_test_code = """
+echo "Bash kernel test: stdout works"
+echo "Shell version: $SHELL $BASH_VERSION"
+"""
+
+        cpp_test_code = """
+#include <iostream>
+#include <string>
+std::cout << "C++ kernel test: stdout works" << std::endl;
+std::string test_var = "C++ working";
+test_var;  // This should return "C++ working"
+"""
+
+        rust_test_code = """
+println!("Rust kernel test: stdout works");
+let test_var = format!("Rust {}", "working");
+test_var  // This should return "Rust working"
+"""
+        
+        # Print test code for documentation
+        print("\nTest code for each language:")
+        for language, code in {
+            "Python": python_test_code,
+            "JavaScript": javascript_test_code,
+            "Bash": bash_test_code,
+            "C++": cpp_test_code,
+            "Rust": rust_test_code
+        }.items():
+            print(f"\n--- {language} Test Code ---")
+            print("```")
+            print(code)
+            print("```")
+        
+        test_code = {
+            "python": python_test_code,
+            "javascript": javascript_test_code,
+            "bash": bash_test_code,
+            "cpp": cpp_test_code,
+            "rust": rust_test_code
+        }
         
         # Start and test each kernel
         kernel_statuses = {}
         for language in LanguageSupport.get_supported_languages():
             try:
-                print(f"Starting {language} kernel...", end="", flush=True)
+                print(f"Testing {language} kernel...", end="", flush=True)
                 kernel_id = temp_sandbox._ensure_kernel_for_language(language)
                 
-                # Run a simple test on each kernel
-                test_code = {
-                    "python": "print('Kernel test: Python')",
-                    "javascript": "console.log('Kernel test: JavaScript')",
-                    "bash": "echo 'Kernel test: Bash'"
-                }
+                result = temp_sandbox.run_code(test_code[language], language=language, timeout=60, show_code=True)
                 
-                result = temp_sandbox.run_code(test_code[language], language=language, timeout=30)
-                
-                if result.success:
+                # More thorough validation based on expected outputs
+                if language == "python" and "42" in result.text and "Python" in result.text:
+                    print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
+                    kernel_statuses[language] = True
+                elif language == "javascript" and "JavaScript working" in result.text:
+                    print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
+                    kernel_statuses[language] = True
+                elif language == "bash" and "Bash kernel test" in result.text:
+                    print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
+                    kernel_statuses[language] = True
+                elif language == "cpp" and "C++ working" in result.text:
+                    print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
+                    kernel_statuses[language] = True
+                elif language == "rust" and "Rust working" in result.text:
+                    print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
+                    kernel_statuses[language] = True
+                elif result.success:
                     print(f" ✓ (kernel_id: {kernel_id[:8]}...)")
                     kernel_statuses[language] = True
                 else:
                     print(f" ⚠ (kernel started but test failed: {result.error})")
                     kernel_statuses[language] = False
+                    
+                    # If a kernel fails to pass tests, we'll raise an error
+                    # This is to ensure we address issues during development
+                    raise RuntimeError(f"Kernel test failed for {language}: {result.error}")
+                    
             except Exception as e:
                 print(f" ✗ Failed: {str(e)}")
                 kernel_statuses[language] = False
+                # Fail early if any kernel has problems
+                raise RuntimeError(f"Kernel initialization failed for {language}: {str(e)}")
         
         # Report on kernel statuses
         successful_kernels = sum(1 for status in kernel_statuses.values() if status)
         print(f"\nKernel initialization: {successful_kernels}/{len(LanguageSupport.get_supported_languages())} successful")
         
+        if successful_kernels < len(LanguageSupport.get_supported_languages()):
+            # Should never reach here due to early failure, but just in case
+            raise RuntimeError(f"Not all kernels initialized successfully")
+        
         # Close the temporary sandbox
         temp_sandbox.close()
         
         # Store kernel initialization information
-        instance.exec(f"""
-            echo "initialized_kernels={','.join([lang for lang, status in kernel_statuses.items() if status])}" > /kernel_status.txt
-        """)
+        kernel_status_script = f"""
+        echo "initialized_kernels={','.join([lang for lang, status in kernel_statuses.items() if status])}" > /kernel_status.txt
+        """
+        instance.exec(kernel_status_script)
         
         return instance
     
     snapshot = snapshot._cache_effect(expose_jupyter_services)
+    print(f"  → Completed in {time.time() - step_start:.1f} seconds")
 
-    # Step 8: Set metadata for the snapshot
+    # Step 10: Set metadata for the snapshot
+    print("Setting snapshot metadata...")
     snapshot.set_metadata(
         metadata={
             "type": "sandbox-dev", 
-            "description": "Jupyter Sandbox environment (Python, JavaScript, Bash)",
-            "package_manager": "uv"
+            "description": "Jupyter Sandbox environment (Python, JavaScript, Bash, C++, Rust)",
+            "kernels": "python,javascript,bash,cpp,rust",
+            "package_manager": "uv",
+            "created_at": datetime.now().isoformat()
         }
     )
+    
+    total_elapsed = time.time() - start_time
+    print(f"Jupyter sandbox creation completed in {total_elapsed:.1f} seconds")
     
     # Return the final snapshot
     return snapshot
 
 
+def main():
+    """
+    Main entry point to test the Jupyter sandbox with multiple language support.
+    
+    Usage:
+        python sandbox.py create     # Create a new sandbox and test all languages
+        python sandbox.py test       # Test languages on an existing sandbox
+    """
+    import sys
+    import argparse
+    from morphcloud.api import MorphCloudClient
+    
+    parser = argparse.ArgumentParser(description="Test Jupyter sandbox with multiple languages")
+    parser.add_argument('action', choices=['create', 'test'], 
+                        help='Action to perform: create new sandbox or test existing one')
+    parser.add_argument('--snapshot-id', help='Optional snapshot ID to start from')
+    parser.add_argument('--sandbox-id', help='Sandbox ID to test (only with test action)')
+    args = parser.parse_args()
+    
+    # Initialize client
+    client = MorphCloudClient()
+    
+    if args.action == 'create':
+        print("Creating a new sandbox with multi-language support...")
+        try:
+            # Create a new sandbox
+            sandbox = Sandbox.new(
+                client=client,
+                ttl_seconds=1800,  # 30 minutes
+                snapshot_id=args.snapshot_id
+            )
+            
+            print(f"\nSandbox created successfully!")
+            print(f"Jupyter URL: {sandbox.jupyter_url}")
+            print(f"Sandbox ID: {sandbox._instance.id}")
+            
+            # Test all supported languages
+            test_all_languages(sandbox)
+            
+        except Exception as e:
+            print(f"Error creating sandbox: {str(e)}")
+            sys.exit(1)
+    
+    elif args.action == 'test':
+        if not args.sandbox_id:
+            print("Error: --sandbox-id is required with the 'test' action")
+            sys.exit(1)
+            
+        print(f"Testing languages on existing sandbox {args.sandbox_id}...")
+        try:
+            # Get the sandbox API
+            sandbox_api = SandboxAPI(client)
+            
+            # Get the existing sandbox
+            sandbox = sandbox_api.get(args.sandbox_id)
+            
+            # Connect to the sandbox
+            sandbox.connect()
+            print(f"Connected to sandbox at {sandbox.jupyter_url}")
+            
+            # Test all supported languages
+            test_all_languages(sandbox)
+            
+        except Exception as e:
+            print(f"Error testing sandbox: {str(e)}")
+            sys.exit(1)
+
+
+def test_all_languages(sandbox: Sandbox):
+    """Test code execution in all supported languages."""
+    print("\nTesting all supported languages:")
+    
+    # Define test code for each language
+    python_code = """
+import sys
+print(f"Python version: {sys.version}")
+import numpy as np
+import pandas as pd
+print(f"NumPy version: {np.__version__}")
+print(f"Pandas version: {pd.__version__}")
+x = 42
+x  # Return value
+"""
+
+    javascript_code = """
+console.log("JavaScript kernel test");
+let versions = process.versions;
+console.log("Node.js version:", versions.node);
+let result = "JS working!";
+result;  // Return value
+"""
+
+    bash_code = """
+echo "Bash kernel test"
+echo "Shell: $SHELL"
+echo "Bash version: $BASH_VERSION"
+echo "Directory: $(pwd)"
+ls -la  # Return directory listing
+"""
+
+    cpp_code = """
+#include <iostream>
+#include <vector>
+#include <string>
+
+std::cout << "C++ kernel test" << std::endl;
+
+// Test vector operations
+std::vector<int> v = {1, 2, 3, 4, 5};
+std::cout << "Vector size: " << v.size() << std::endl;
+
+// Return a string
+std::string result = "C++ is working!";
+result;
+"""
+
+    # Update the Rust test code in test_all_languages()
+    rust_code = """
+println!("Rust kernel test");
+
+// Test some basic Rust features
+let numbers = vec![1, 2, 3, 4, 5];
+println!("Vector sum: {}", numbers.iter().sum::<i32>());
+
+// Return value
+"Rust is working!".to_string()
+"""
+
+    # Organize all code samples in a dictionary
+    test_code = {
+        "python": python_code,
+        "javascript": javascript_code,
+        "bash": bash_code,
+        "cpp": cpp_code,
+        "rust": rust_code
+    }
+    
+    # Test each language
+    results = {}
+    for language in LanguageSupport.get_supported_languages():
+        print(f"\n--- Testing {language.upper()} ---")
+        try:
+            start_time = time.time()
+            result = sandbox.run_code(test_code[language], language=language, timeout=60, show_code=True)
+            elapsed = time.time() - start_time
+            
+            if result.success:
+                print(f"✅ {language} test PASSED ({elapsed:.2f}s)")
+                print("Output:")
+                print("-" * 40)
+                print(result.text.strip())
+                print("-" * 40)
+                results[language] = True
+            else:
+                print(f"❌ {language} test FAILED ({elapsed:.2f}s)")
+                print("Error:")
+                print("-" * 40)
+                print(result.error or "No specific error message")
+                print("-" * 40)
+                results[language] = False
+        except Exception as e:
+            print(f"❌ {language} test ERROR: {str(e)}")
+            results[language] = False
+    
+    # Summary
+    print("\n=== Test Summary ===")
+    successful = sum(1 for success in results.values() if success)
+    total = len(results)
+    
+    print(f"Languages tested: {total}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {total - successful}")
+    
+    if successful == total:
+        print("\n🎉 All language tests PASSED! The sandbox is working correctly.")
+    else:
+        print("\n⚠️ Some language tests FAILED. Please check the output above for details.")
+        failed_langs = [lang for lang, success in results.items() if not success]
+        print(f"Failed languages: {', '.join(failed_langs)}")
+
+
+if __name__ == "__main__":
+    main()
