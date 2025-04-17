@@ -1,2 +1,2 @@
-from ._sandbox import Sandbox, ExecutionResult, OutputType
+from ._sandbox import Sandbox, ExecutionResult, OutputType, LanguageSupport
 
