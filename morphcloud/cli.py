@@ -1248,9 +1248,7 @@ def computer(instance_id):
 @click.option("--memory", type=int, required=False)
 @click.option("--disk-size", type=int, required=False)
 @click.option("--metadata", "-m", "metadata_options", multiple=True)
-def boot_instance(
-    snapshot_id, vcpus, memory, disk_size, metadata_options
-):
+def boot_instance(snapshot_id, vcpus, memory, disk_size, metadata_options):
     """Boot a new instance from a snapshot."""
     client = get_client()
     try:
@@ -1283,6 +1281,7 @@ def boot_instance(
             handle_api_error(e)
     except Exception as e:
         handle_api_error(e)
+
 
 if __name__ == "__main__":
     cli()

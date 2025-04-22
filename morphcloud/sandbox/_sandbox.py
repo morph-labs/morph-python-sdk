@@ -239,9 +239,9 @@ class Sandbox:
         self._instance = instance
         self._jupyter_url = None
         self._kernel_ids: Dict[str, str] = {}  # language -> kernel_id
-        self._ws_connections: Dict[
-            str, websocket.WebSocket
-        ] = {}  # kernel_id -> WebSocket
+        self._ws_connections: Dict[str, websocket.WebSocket] = (
+            {}
+        )  # kernel_id -> WebSocket
         self._session_id = str(uuid.uuid4())
 
     def _set_api(self, api: SandboxAPI) -> Sandbox:

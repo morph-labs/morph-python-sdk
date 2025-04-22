@@ -1734,14 +1734,14 @@ class Computer:
 
             # Extract properties from inputSchema if available
             if hasattr(tool, "inputSchema") and isinstance(tool.inputSchema, dict):
-                openai_tool["function"]["parameters"][
-                    "properties"
-                ] = tool.inputSchema.get("properties", {})
+                openai_tool["function"]["parameters"]["properties"] = (
+                    tool.inputSchema.get("properties", {})
+                )
                 # Only include required field if it exists
                 if "required" in tool.inputSchema:
-                    openai_tool["function"]["parameters"][
-                        "required"
-                    ] = tool.inputSchema.get("required", [])
+                    openai_tool["function"]["parameters"]["required"] = (
+                        tool.inputSchema.get("required", [])
+                    )
 
             openai_tools.append(openai_tool)
 
