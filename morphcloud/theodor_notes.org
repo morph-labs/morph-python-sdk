@@ -1,0 +1,16 @@
+* Use-case
+- Multi-step containerized software engineering agent workflow
+- Spin up VMs for Claude Code alongside client codebases.
+  - Claude Code is colocated on the VM with the code, accessible via MCP
+- Might need multiple containers in the workflow
+- Have the ability to quickly trigger these containers via CI
+- Might want to spin up multiple containers in parallel
+- Thinking about just using a REST API for now and just a very simple server
+
+
+- What Morph can do:
+  - If you have a devcontainer.json or any container that you want to run, you can do the following:
+    - use Instance.as_container('ubuntu:42.02') to set up a container, get it running, and set up SSH passthrough to basically treat the VM as a container.
+
+    - If you furthermore expose e.g. port 3000 from the container, then you can do `morphcloud expose-http $VM_ID $SVC_NAME 3000` and this produces an https proxy url that is uniquely parametrized by the VM_ID.
+

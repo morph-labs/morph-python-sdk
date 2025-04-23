@@ -940,8 +940,7 @@ def set_instance_metadata(instance_id, metadata_args):
 
 @instance.command("set-ttl")
 @click.argument("instance_id")
-@click.option("--ttl-seconds",
-              type=int, required=True, help="Time-to-live in seconds.")
+@click.option("--ttl-seconds", type=int, required=True, help="Time-to-live in seconds.")
 @click.option(
     "--ttl-action",
     type=click.Choice(["stop", "pause"]),
