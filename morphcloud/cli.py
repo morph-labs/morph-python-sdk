@@ -210,7 +210,12 @@ def handle_api_error(error):
     elif isinstance(error, click.ClickException):
         raise error
     else:
+        # Print more detailed error information
+        import traceback
         click.echo(f"An unexpected error occurred: {error}", err=True)
+        click.echo(f"Error type: {type(error).__name__}", err=True)
+        click.echo("\nTraceback:", err=True)
+        traceback.print_exc()
     sys.exit(1)
 
 
@@ -450,6 +455,100 @@ def set_snapshot_metadata(snapshot_id, metadata_args):
             handle_api_error(e)
     except Exception as e:
         handle_api_error(e)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Agent Commands
+# ─────────────────────────────────────────────────────────────
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+@click.option(
+    "--debug", is_flag=True, help="Enable debug mode with verbose output for troubleshooting"
+)
+@click.option(
+    "--instruction", "-i", help="Initial instruction to send to the agent (skips first input prompt)"
+)
+def agent(ctx, debug, instruction):
+    """
+    Interact with Morph Cloud using an AI agent.
+    
+    You can start the agent in two ways:
+    
+    1. Direct invocation: morph agent [--debug] [--instruction "your instruction"]
+    2. Using subcommand: morph agent start [--debug] [--instruction "your instruction"]
+    
+    The --instruction option lets you provide the first message to the agent without manual input,
+    which is useful for automation or quick commands.
+    """
+    # If no subcommand was invoked, run the agent directly
+    if ctx.invoked_subcommand is None:
+        client = get_client()
+        try:
+            from morphcloud._agent import agent_loop
+
+            click.echo("Starting Morph Cloud agent...")
+            if debug:
+                click.echo("Debug mode enabled. Verbose output will be shown.")
+            
+            # When debug is enabled, don't catch exceptions so we get the full traceback
+            if debug:
+                agent_loop(client, debug=debug, initial_instruction=instruction)
+            else:
+                try:
+                    agent_loop(client, debug=debug, initial_instruction=instruction)
+                except Exception as e:
+                    handle_api_error(e)
+        
+        except ImportError:
+            click.echo(
+                "Error: Agent requires additional dependencies (e.g., 'anthropic').",
+                err=True,
+            )
+            sys.exit(1)
+
+
+@agent.command("start")
+@click.option(
+    "--debug", is_flag=True, help="Enable debug mode with verbose output for troubleshooting"
+)
+@click.option(
+    "--instruction", "-i", help="Initial instruction to send to the agent (skips first input prompt)"
+)
+def agent_start(debug, instruction):
+    """
+    Start an interactive AI agent session with Morph Cloud API access.
+    
+    Examples:
+    
+    $ morph agent start                        # Start interactive session
+    $ morph agent start -i "list images"       # Start and immediately list images
+    $ morph agent start --instruction "help"   # Start and show help
+    """
+    client = get_client()
+    try:
+        from morphcloud._agent import agent_loop
+
+        click.echo("Starting Morph Cloud agent...")
+        if debug:
+            click.echo("Debug mode enabled. Verbose output will be shown.")
+            
+        # When debug is enabled, don't catch exceptions so we get the full traceback
+        if debug:
+            agent_loop(client, debug=debug, initial_instruction=instruction)
+        else:
+            try:
+                agent_loop(client, debug=debug, initial_instruction=instruction)
+            except Exception as e:
+                handle_api_error(e)
+    
+    except ImportError:
+        click.echo(
+            "Error: Agent requires additional dependencies (e.g., 'anthropic').",
+            err=True,
+        )
+        sys.exit(1)
 
 
 # ─────────────────────────────────────────────────────────────
