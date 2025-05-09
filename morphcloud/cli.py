@@ -463,6 +463,64 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
     except Exception as e:
         handle_api_error(e)
 
+# ─────────────────────────────────────────────────────────────
+#  Agent Commands
+# ─────────────────────────────────────────────────────────────
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+@click.option(
+    "--debug", is_flag=True, help="Enable debug mode with verbose output for troubleshooting"
+)
+@click.option(
+    "--instruction", "-i", help="Initial instruction to send to the agent (skips first input prompt)"
+)
+@click.option(
+    "--conversation-file", "-f", type=click.Path(dir_okay=False),
+    help="Path to a conversation file for persistence between sessions"
+)
+def agent(ctx, debug, instruction, conversation_file):
+    """
+    Interact with Morph Cloud using an AI agent.
+    
+    The agent provides a natural language interface to manage your Morph Cloud resources.
+    You can create and manage snapshots, instances, and execute commands remotely.
+    
+    Examples:
+    
+    $ morph agent                              # Start interactive session
+    $ morph agent -i "list images"             # Start and immediately list images  
+    $ morph agent -f session.yaml              # Resume a previous conversation
+    $ morph agent --debug                      # Enable verbose debug output
+    
+    The --instruction option lets you provide the first message without manual input.
+    The --conversation-file option allows persisting conversations between sessions.
+    """
+    # This will run whenever 'morph agent' is invoked (with or without options)
+    if ctx.invoked_subcommand is None:
+        client = get_client()
+        try:
+            from morphcloud._agent import agent_loop
+
+            click.echo("Starting Morph Cloud agent...")
+            if debug:
+                click.echo("Debug mode enabled. Verbose output will be shown.")
+            
+            # When debug is enabled, don't catch exceptions so we get the full traceback
+            if debug:
+                agent_loop(client, debug=debug, initial_prompt=instruction, conversation_file=conversation_file)
+            else:
+                try:
+                    agent_loop(client, debug=debug, initial_prompt=instruction, conversation_file=conversation_file)
+                except Exception as e:
+                    handle_api_error(e)
+        
+        except ImportError:
+            click.echo(
+                "Error: Agent requires additional dependencies (e.g., 'anthropic').",
+                err=True,
+            )
+            sys.exit(1)
 
 # ─────────────────────────────────────────────────────────────
 #  Instance Commands
