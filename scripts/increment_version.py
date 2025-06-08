@@ -13,7 +13,12 @@ def increment_version():
     current_version = pyproject['project']['version']
     
     # Get latest version from PyPI
-    response = requests.get('https://pypi.org/pypi/morphcloud/json', timeout=2)
+    # use this because PyPI was blocking Python request headers as of May 24 2025, 10:24 PM
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }    
+    response = requests.get('https://pypi.org/pypi/morphcloud/json', timeout=5, headers=headers)
+    print(f"{response.text=}")
     latest_version = response.json()['info']['version']
     
     print(f'Current version: {current_version}')

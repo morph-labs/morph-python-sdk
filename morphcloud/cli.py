@@ -1435,5 +1435,141 @@ def boot_instance(snapshot_id, vcpus, memory, disk_size, metadata_options):
         handle_api_error(e)
 
 
+@instance.command("cleanup")
+@click.option(
+    "--snapshot-pattern",
+    help="Comma-separated glob patterns to match snapshot IDs (e.g., 'snapshot_dev_*,snapshot_test_*')",
+)
+@click.option(
+    "--snapshot-exclude-pattern",
+    help="Comma-separated glob patterns to exclude snapshot IDs",
+)
+@click.option(
+    "--service-pattern",
+    help="Comma-separated glob patterns to match exposed service names (instances with matching services are kept alive)",
+)
+@click.option(
+    "--service-exclude-pattern",
+    help="Comma-separated glob patterns to exclude service names (instances with matching services are processed)",
+)
+@click.option(
+    "--exclude-paused/--include-paused",
+    default=True,
+    help="Whether to exclude paused instances from cleanup (default: exclude)",
+)
+@click.option(
+    "--action",
+    type=click.Choice(["stop", "pause"]),
+    default="stop",
+    help="Action to perform on filtered instances",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=10,
+    help="Maximum number of concurrent operations",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt and proceed immediately",
+)
+@click.option(
+    "--json",
+    "json_mode",
+    is_flag=True,
+    default=False,
+    help="Output results in JSON format",
+)
+def cleanup_instances(
+    snapshot_pattern,
+    snapshot_exclude_pattern,
+    service_pattern,
+    service_exclude_pattern,
+    exclude_paused,
+    action,
+    max_workers,
+    yes,
+    json_mode,
+):
+    """
+    Clean up instances based on various filtering criteria.
+
+    All pattern options support comma-separated lists of glob patterns.
+
+    Examples:
+
+      # Stop all instances from dev snapshots
+      morph instance cleanup --snapshot-pattern "snapshot_dev_*"
+
+      # Stop instances from multiple snapshot patterns
+      morph instance cleanup --snapshot-pattern "snapshot_dev_*,snapshot_test_*,snapshot_tmp_*"
+
+      # Keep instances exposing webhook or monitoring services, stop everything else
+      morph instance cleanup --service-pattern "*webhook*,*monitor*"
+
+      # Clean up test instances but exclude production snapshots
+      morph instance cleanup --snapshot-pattern "snapshot_test_*" --snapshot-exclude-pattern "snapshot_prod_*,snapshot_staging_*"
+
+      # Pause instances that don't have monitoring or logging services
+      morph instance cleanup --service-exclude-pattern "*monitor*,*log*" --action pause
+
+      # Skip confirmation for automated scripts
+      morph instance cleanup --snapshot-pattern "snapshot_temp_*" --yes
+    """
+    client = get_client()
+
+    try:
+        # Use confirmation unless --yes flag is provided
+        confirm = not yes
+
+        result = client.instances.cleanup(
+            snapshot_pattern=snapshot_pattern,
+            snapshot_exclude_pattern=snapshot_exclude_pattern,
+            service_pattern=service_pattern,
+            service_exclude_pattern=service_exclude_pattern,
+            exclude_paused=exclude_paused,
+            action=action,
+            max_workers=max_workers,
+            confirm=confirm,
+        )
+
+        if json_mode:
+            click.echo(json.dumps(result, indent=2))
+        else:
+            # Rich output is already handled by the cleanup method itself
+            # Just show a final summary
+            if result.get("success"):
+                if result.get("cancelled"):
+                    click.secho("Operation cancelled by user.", fg="cyan")
+                elif result["processed"] > 0:
+                    click.secho(
+                        f"✅ Successfully {action}{'ped' if action == 'stop' else 'd'} {result['processed']} instances.",
+                        fg="green",
+                    )
+                else:
+                    click.secho("No instances needed cleanup.", fg="green")
+            else:
+                if "error" in result:
+                    click.secho(f"❌ Error: {result['error']}", fg="red", err=True)
+                else:
+                    click.secho(
+                        f"❌ {result['failed']} instances failed to {action}.",
+                        fg="red",
+                        err=True,
+                    )
+                    sys.exit(1)
+
+    except api.ApiError as e:
+        click.echo(f"API Error (Status Code: {e.status_code})", err=True)
+        click.echo(f"Response Body: {e.response_body}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"An unexpected error occurred: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

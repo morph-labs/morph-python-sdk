@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import os
 import time
 import typing
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
 import httpx
@@ -287,7 +288,9 @@ class SnapshotAPI:
         if metadata is not None:
             body["metadata"] = metadata
         response = self._client._http_client.post("/snapshot", json=body)
-        return Snapshot.model_validate(response.json())._set_api(self)
+        snap: Snapshot = Snapshot.model_validate(response.json())._set_api(self)
+        snap.wait_until_ready()
+        return snap
 
     async def acreate(
         self,
@@ -321,7 +324,9 @@ class SnapshotAPI:
         if metadata is not None:
             body["metadata"] = metadata
         response = await self._client._async_http_client.post("/snapshot", json=body)
-        return Snapshot.model_validate(response.json())._set_api(self)
+        snap: Snapshot = Snapshot.model_validate(response.json())._set_api(self)
+        await snap.await_until_ready()
+        return snap
 
     def get(self, snapshot_id: str) -> Snapshot:
         response = self._client._http_client.get(f"/snapshot/{snapshot_id}")
@@ -391,6 +396,28 @@ class Snapshot(BaseModel):
         updated = type(self).model_validate(refreshed.model_dump())
         for key, value in updated.__dict__.items():
             setattr(self, key, value)
+
+    def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+        """Wait until the snapshot is ready."""
+        start_time = time.time()
+        while self.status != SnapshotStatus.READY:
+            if timeout is not None and time.time() - start_time > timeout:
+                raise TimeoutError("Snapshot did not become ready before timeout")
+            time.sleep(1)
+            self._refresh()
+            if self.status == SnapshotStatus.FAILED:
+                raise RuntimeError("Snapshot creation failed / encountered an error")
+
+    async def await_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+        """Wait until the snapshot is ready."""
+        start_time = time.time()
+        while self.status != SnapshotStatus.READY:
+            if timeout is not None and time.time() - start_time > timeout:
+                raise TimeoutError("Snapshot did not become ready before timeout")
+            await asyncio.sleep(1)
+            await self._refresh_async()
+            if self.status == SnapshotStatus.FAILED:
+                raise RuntimeError("Snapshot creation failed / encountered an error")
 
     @staticmethod
     def compute_chain_hash(parent_chain_hash: str, effect_identifier: str) -> str:
@@ -881,6 +908,8 @@ class InstanceAPI(BaseAPI):
             ttl_seconds: Optional time-to-live in seconds for the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
         """
+        if isinstance(snapshot_id, Snapshot):
+            assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
         response = self._client._http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
@@ -907,7 +936,8 @@ class InstanceAPI(BaseAPI):
             ttl_seconds: Optional time-to-live in seconds for the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
         """
-
+        if isinstance(snapshot_id, Snapshot):
+            assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
         response = await self._client._async_http_client.post(
             "/instance",
             params={"snapshot_id": snapshot_id},
@@ -988,6 +1018,826 @@ class InstanceAPI(BaseAPI):
             json=body,
         )
         return Instance.model_validate(response.json())._set_api(self)
+
+    def cleanup(
+        self,
+        snapshot_pattern: typing.Optional[str] = None,
+        snapshot_exclude_pattern: typing.Optional[str] = None,
+        service_pattern: typing.Optional[str] = None,
+        service_exclude_pattern: typing.Optional[str] = None,
+        exclude_paused: bool = True,
+        action: str = "stop",
+        max_workers: int = 10,
+        confirm: bool = False,
+    ) -> typing.Dict[str, typing.Any]:
+        """
+        Clean up instances based on various filtering criteria.
+
+        Parameters:
+            snapshot_pattern: Comma-separated glob patterns to match snapshot IDs for processing
+            snapshot_exclude_pattern: Comma-separated glob patterns to exclude snapshot IDs from processing
+            service_pattern: Comma-separated glob patterns - instances with matching services are kept alive
+            service_exclude_pattern: Comma-separated glob patterns - instances with matching services are kept alive (excluded from processing)
+            exclude_paused: If True, exclude paused instances from cleanup
+            action: Action to perform on filtered instances ("stop" or "pause")
+            max_workers: Maximum number of concurrent operations
+            confirm: If True, ask for user confirmation before proceeding
+
+        Returns:
+            Dictionary with cleanup results including success/failure counts and details
+        """
+        from rich.console import Console
+
+        console = Console()
+
+        # Validate action parameter
+        valid_actions = ["stop", "pause"]
+        if action not in valid_actions:
+            raise ValueError(
+                f"Invalid action '{action}'. Must be one of: {valid_actions}"
+            )
+
+        console.print(f"[bold blue]Starting MorphCloud Instance Cleanup[/bold blue]")
+        console.print(f"Action: [cyan]{action}[/cyan]")
+
+        # List all instances
+        try:
+            console.print("Fetching list of all instances...")
+            all_instances = self.list()
+            console.print(f"Found {len(all_instances)} total instances.")
+
+            if not all_instances:
+                console.print("[green]No instances found. Nothing to clean up.[/green]")
+                return {
+                    "success": True,
+                    "total": 0,
+                    "processed": 0,
+                    "kept": 0,
+                    "errors": [],
+                }
+
+        except Exception as e:
+            console.print(
+                f"[bold red]Error listing instances:[/bold red] {e}", style="error"
+            )
+            return {"success": False, "error": str(e)}
+
+        # Filter instances
+        instances_to_process: typing.List[Instance] = []
+        instances_to_keep: typing.List[Instance] = []
+
+        console.print("\n[bold]Filtering instances...[/bold]")
+
+        for instance in all_instances:
+            should_process = True
+            reasons_to_keep = []
+            reasons_to_process = []
+
+            # Check if instance status is eligible for the action
+            if action == "stop":
+                if instance.status not in [InstanceStatus.READY, InstanceStatus.PAUSED]:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"status is {instance.status.value} (not ready/paused)"
+                    )
+            elif action == "pause":
+                if instance.status != InstanceStatus.READY:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"status is {instance.status.value} (not ready)"
+                    )
+
+            # Check exclude_paused flag
+            if exclude_paused and instance.status == InstanceStatus.PAUSED:
+                should_process = False
+                reasons_to_keep.append("instance is paused (exclude_paused=True)")
+
+            # Check snapshot patterns
+            snapshot_id = instance.refs.snapshot_id
+
+            # Helper function to check multiple patterns
+            def matches_any_pattern(value, pattern_list):
+                if not pattern_list:
+                    return False
+                patterns = [p.strip() for p in pattern_list.split(",")]
+                return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
+
+            # Include snapshot pattern check
+            if snapshot_pattern and not matches_any_pattern(
+                snapshot_id, snapshot_pattern
+            ):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'"
+                )
+            elif snapshot_pattern and matches_any_pattern(
+                snapshot_id, snapshot_pattern
+            ):
+                reasons_to_process.append(
+                    f"snapshot ID matches patterns '{snapshot_pattern}'"
+                )
+
+            # Exclude pattern check
+            if snapshot_exclude_pattern and matches_any_pattern(
+                snapshot_id, snapshot_exclude_pattern
+            ):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'"
+                )
+
+            # Check service patterns
+            exposed_service_names = {
+                service.name for service in instance.networking.http_services
+            }
+
+            if service_pattern or service_exclude_pattern:
+                service_match_found = False
+                service_exclude_found = False
+                matching_keep_services = []
+                matching_exclude_services = []
+
+                for service_name in exposed_service_names:
+                    # Include pattern check (keep instances with these services)
+                    if service_pattern and matches_any_pattern(
+                        service_name, service_pattern
+                    ):
+                        service_match_found = True
+                        matching_keep_services.append(service_name)
+
+                    # Exclude pattern check (also keep instances with these services)
+                    if service_exclude_pattern and matches_any_pattern(
+                        service_name, service_exclude_pattern
+                    ):
+                        service_exclude_found = True
+                        matching_exclude_services.append(service_name)
+
+                # If service_pattern is provided and we have matches, remove this instance
+                if service_pattern and service_match_found:
+                    reasons_to_keep.append(
+                        f"services {matching_keep_services} match cleanup patterns '{service_pattern}'"
+                    )
+                # If service_exclude_pattern is provided and we have matches, keep this instance
+                elif service_exclude_pattern and service_exclude_found:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)"
+                    )
+                # If we have service patterns but no matches, this instance should be kept
+                elif service_pattern and not service_match_found:
+                    should_process = False
+                    reasons_to_process.append(
+                        f"no services match keep patterns '{service_pattern}'"
+                    )
+                elif service_exclude_pattern and not service_exclude_found:
+                    reasons_to_process.append(
+                        f"no services match exclude patterns '{service_exclude_pattern}'"
+                    )
+
+            # Final decision
+            if should_process:
+                instances_to_process.append(instance)
+                console.print(
+                    f"  - [yellow]Will {action} instance {instance.id}[/yellow]: "
+                    f"{', '.join(reasons_to_process) if reasons_to_process else 'meets criteria'}"
+                )
+            else:
+                instances_to_keep.append(instance)
+                console.print(
+                    f"  - [green]Keeping instance {instance.id}[/green]: "
+                    f"{', '.join(reasons_to_keep)}"
+                )
+
+        # Summary
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
+        console.print(
+            f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
+        )
+
+        if not instances_to_process:
+            console.print(f"\n[green]No instances marked for {action}ing.[/green]")
+            return {
+                "success": True,
+                "total": len(all_instances),
+                "processed": 0,
+                "kept": len(instances_to_keep),
+                "errors": [],
+            }
+
+        # User confirmation
+        if confirm:
+            console.print(
+                f"\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]"
+            )
+
+            if instances_to_process:
+                # Display table of instances to be processed
+                console.print("\n[bold]Instances that will be processed:[/bold]")
+
+                # Helper function to print table
+                def print_instance_table(instances, title_color="yellow"):
+                    headers = [
+                        "Instance ID",
+                        "Snapshot ID",
+                        "Status",
+                        "VCPUs",
+                        "Memory (MB)",
+                        "Services",
+                    ]
+                    rows = []
+
+                    for inst in instances:
+                        services = ", ".join(
+                            f"{svc.name}:{svc.port}"
+                            for svc in inst.networking.http_services
+                        )
+                        rows.append(
+                            [
+                                inst.id,
+                                inst.refs.snapshot_id,
+                                inst.status.value,
+                                str(inst.spec.vcpus),
+                                str(inst.spec.memory),
+                                services if services else "None",
+                            ]
+                        )
+
+                    # Calculate column widths
+                    widths = []
+                    for i in range(len(headers)):
+                        width = len(headers[i])
+                        if rows:
+                            column_values = [row[i] for row in rows]
+                            width = max(width, max(len(val) for val in column_values))
+                        widths.append(width)
+
+                    # Print header
+                    header_line = "  "
+                    for i, header in enumerate(headers):
+                        header_line += f"{header:<{widths[i]}}  "
+                    console.print(
+                        f"[bold {title_color}]{header_line}[/bold {title_color}]"
+                    )
+
+                    # Print separator
+                    separator_line = "  "
+                    for width in widths:
+                        separator_line += "-" * width + "  "
+                    console.print(f"[dim]{separator_line}[/dim]")
+
+                    # Print rows
+                    for row in rows:
+                        row_line = "  "
+                        for i, value in enumerate(row):
+                            row_line += f"{value:<{widths[i]}}  "
+                        console.print(row_line)
+
+                print_instance_table(instances_to_process, "yellow")
+
+            if instances_to_keep:
+                console.print(
+                    f"\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]"
+                )
+                print_instance_table(instances_to_keep, "green")
+
+            response = (
+                input(
+                    f"\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): "
+                )
+                .lower()
+                .strip()
+            )
+            if response not in ["y", "yes"]:
+                console.print("[cyan]Operation cancelled by user.[/cyan]")
+                return {
+                    "success": True,
+                    "total": len(all_instances),
+                    "processed": 0,
+                    "kept": len(all_instances),
+                    "cancelled": True,
+                    "errors": [],
+                }
+
+        # Worker function for concurrent operations
+        def process_instance_worker(
+            instance: Instance,
+        ) -> typing.Tuple[str, bool, typing.Optional[str]]:
+            """Worker function to process a single instance."""
+            instance_id = instance.id
+            try:
+                console.print(
+                    f"[yellow]Attempting to {action} instance {instance_id}..."
+                )
+
+                if action == "stop":
+                    instance.stop()
+                elif action == "pause":
+                    instance.pause()
+
+                console.print(
+                    f"[green]Successfully {action}ped instance {instance_id}[/green]"
+                )
+                return instance_id, True, None
+
+            except ApiError as e:
+                error_msg = f"API Error: {e.status_code}"
+                console.print(
+                    f"[bold red]API Error {action}ping instance {instance_id}:[/bold red] "
+                    f"Status {e.status_code} - {e.response_body}",
+                    style="error",
+                )
+                return instance_id, False, error_msg
+            except Exception as e:
+                error_msg = f"Unexpected Error: {str(e)}"
+                console.print(
+                    f"[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}",
+                    style="error",
+                )
+                return instance_id, False, error_msg
+
+        # Execute operations concurrently
+        console.print(
+            f"\nStarting concurrent {action} operation (max_workers={max_workers})..."
+        )
+
+        processed_successfully = 0
+        processed_failed = 0
+        error_details = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Create futures mapping
+            future_to_instance = {
+                executor.submit(process_instance_worker, instance): instance.id
+                for instance in instances_to_process
+            }
+
+            # Process futures as they complete
+            for future in as_completed(future_to_instance):
+                instance_id = future_to_instance[future]
+                try:
+                    result = future.result()  # (instance_id, success, error_msg)
+                    if result[1]:  # success
+                        processed_successfully += 1
+                    else:
+                        processed_failed += 1
+                        error_details.append(
+                            {"instance_id": result[0], "error": result[2]}
+                        )
+                except Exception as exc:
+                    console.print(
+                        f"[bold red]Critical Error processing instance {instance_id}:[/bold red] {exc}",
+                        style="error",
+                    )
+                    processed_failed += 1
+                    error_details.append(
+                        {
+                            "instance_id": instance_id,
+                            "error": f"Future Execution Error: {str(exc)}",
+                        }
+                    )
+
+        # Final report
+        console.print(f"\n[bold blue]Cleanup Operation Complete[/bold blue]")
+        console.print(
+            f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
+        )
+        console.print(f"  - Failed to {action}: [red]{processed_failed}[/red]")
+        console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
+
+        if processed_failed > 0:
+            console.print(f"\n[bold red]Failures occurred:[/bold red]")
+            for error in error_details:
+                console.print(f"  - Instance {error['instance_id']}: {error['error']}")
+
+        success = processed_failed == 0
+        if success:
+            console.print(
+                f"[bold green]All targeted instances {action}ped successfully![/bold green]"
+            )
+
+        return {
+            "success": success,
+            "total": len(all_instances),
+            "processed": processed_successfully,
+            "failed": processed_failed,
+            "kept": len(instances_to_keep),
+            "errors": error_details,
+        }
+
+    async def acleanup(
+        self,
+        snapshot_pattern: typing.Optional[str] = None,
+        snapshot_exclude_pattern: typing.Optional[str] = None,
+        service_pattern: typing.Optional[str] = None,
+        service_exclude_pattern: typing.Optional[str] = None,
+        exclude_paused: bool = True,
+        action: str = "stop",
+        max_concurrency: int = 10,
+        confirm: bool = False,
+    ) -> typing.Dict[str, typing.Any]:
+        """
+        Asynchronously clean up instances based on various filtering criteria.
+
+        Parameters:
+            snapshot_pattern: Comma-separated glob patterns to match snapshot IDs for processing
+            snapshot_exclude_pattern: Comma-separated glob patterns to exclude snapshot IDs from processing
+            service_pattern: Comma-separated glob patterns - instances with matching services are kept alive
+            service_exclude_pattern: Comma-separated glob patterns - instances with matching services are kept alive (excluded from processing)
+            exclude_paused: If True, exclude paused instances from cleanup
+            action: Action to perform on filtered instances ("stop" or "pause")
+            max_concurrency: Maximum number of concurrent operations
+            confirm: If True, ask for user confirmation before proceeding
+
+        Returns:
+            Dictionary with cleanup results including success/failure counts and details
+        """
+        import asyncio
+
+        from rich.console import Console
+
+        console = Console()
+
+        # Validate action parameter
+        valid_actions = ["stop", "pause"]
+        if action not in valid_actions:
+            raise ValueError(
+                f"Invalid action '{action}'. Must be one of: {valid_actions}"
+            )
+
+        console.print(
+            f"[bold blue]Starting Async MorphCloud Instance Cleanup[/bold blue]"
+        )
+        console.print(f"Action: [cyan]{action}[/cyan]")
+
+        # List all instances
+        try:
+            console.print("Fetching list of all instances...")
+            all_instances = await self.alist()
+            console.print(f"Found {len(all_instances)} total instances.")
+
+            if not all_instances:
+                console.print("[green]No instances found. Nothing to clean up.[/green]")
+                return {
+                    "success": True,
+                    "total": 0,
+                    "processed": 0,
+                    "kept": 0,
+                    "errors": [],
+                }
+
+        except Exception as e:
+            console.print(
+                f"[bold red]Error listing instances:[/bold red] {e}", style="error"
+            )
+            return {"success": False, "error": str(e)}
+
+        # Filter instances (same logic as sync version)
+        instances_to_process: typing.List[Instance] = []
+        instances_to_keep: typing.List[Instance] = []
+
+        console.print("\n[bold]Filtering instances...[/bold]")
+
+        for instance in all_instances:
+            should_process = True
+            reasons_to_keep = []
+            reasons_to_process = []
+
+            # Check if instance status is eligible for the action
+            if action == "stop":
+                if instance.status not in [InstanceStatus.READY, InstanceStatus.PAUSED]:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"status is {instance.status.value} (not ready/paused)"
+                    )
+            elif action == "pause":
+                if instance.status != InstanceStatus.READY:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"status is {instance.status.value} (not ready)"
+                    )
+
+            # Check exclude_paused flag
+            if exclude_paused and instance.status == InstanceStatus.PAUSED:
+                should_process = False
+                reasons_to_keep.append("instance is paused (exclude_paused=True)")
+
+            # Check snapshot patterns
+            snapshot_id = instance.refs.snapshot_id
+
+            # Helper function to check multiple patterns
+            def matches_any_pattern(value, pattern_list):
+                if not pattern_list:
+                    return False
+                patterns = [p.strip() for p in pattern_list.split(",")]
+                return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
+
+            # Include pattern check
+            if snapshot_pattern and not matches_any_pattern(
+                snapshot_id, snapshot_pattern
+            ):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'"
+                )
+            elif snapshot_pattern and matches_any_pattern(
+                snapshot_id, snapshot_pattern
+            ):
+                reasons_to_process.append(
+                    f"snapshot ID matches patterns '{snapshot_pattern}'"
+                )
+
+            # Exclude pattern check
+            if snapshot_exclude_pattern and matches_any_pattern(
+                snapshot_id, snapshot_exclude_pattern
+            ):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'"
+                )
+
+            # Check service patterns
+            exposed_service_names = {
+                service.name for service in instance.networking.http_services
+            }
+
+            if service_pattern or service_exclude_pattern:
+                service_match_found = False
+                service_exclude_found = False
+                matching_keep_services = []
+                matching_exclude_services = []
+
+                for service_name in exposed_service_names:
+                    # Include pattern check (keep instances with these services)
+                    if service_pattern and matches_any_pattern(
+                        service_name, service_pattern
+                    ):
+                        service_match_found = True
+                        matching_keep_services.append(service_name)
+
+                    # Exclude pattern check (also keep instances with these services)
+                    if service_exclude_pattern and matches_any_pattern(
+                        service_name, service_exclude_pattern
+                    ):
+                        service_exclude_found = True
+                        matching_exclude_services.append(service_name)
+
+                # If service_pattern is provided and we have matches, keep this instance
+                if service_pattern and service_match_found:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"services {matching_keep_services} match keep patterns '{service_pattern}'"
+                    )
+                # If service_exclude_pattern is provided and we have matches, keep this instance
+                elif service_exclude_pattern and service_exclude_found:
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)"
+                    )
+                # If we have service patterns but no matches, this instance can be processed
+                elif service_pattern and not service_match_found:
+                    reasons_to_process.append(
+                        f"no services match keep patterns '{service_pattern}'"
+                    )
+                elif service_exclude_pattern and not service_exclude_found:
+                    reasons_to_process.append(
+                        f"no services match exclude patterns '{service_exclude_pattern}'"
+                    )
+
+            # Final decision
+            if should_process:
+                instances_to_process.append(instance)
+                console.print(
+                    f"  - [yellow]Will {action} instance {instance.id}[/yellow]: "
+                    f"{', '.join(reasons_to_process) if reasons_to_process else 'meets criteria'}"
+                )
+            else:
+                instances_to_keep.append(instance)
+                console.print(
+                    f"  - [green]Keeping instance {instance.id}[/green]: "
+                    f"{', '.join(reasons_to_keep)}"
+                )
+
+        # Summary
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
+        console.print(
+            f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
+        )
+
+        if not instances_to_process:
+            console.print(f"\n[green]No instances marked for {action}ing.[/green]")
+            return {
+                "success": True,
+                "total": len(all_instances),
+                "processed": 0,
+                "kept": len(instances_to_keep),
+                "errors": [],
+            }
+
+        # User confirmation (run in thread to avoid blocking)
+        if confirm:
+            console.print(
+                f"\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]"
+            )
+
+            if instances_to_process:
+                # Display table of instances to be processed
+                console.print("\n[bold]Instances that will be processed:[/bold]")
+
+                # Helper function to print table
+                def print_instance_table(instances, title_color="yellow"):
+                    headers = [
+                        "Instance ID",
+                        "Snapshot ID",
+                        "Status",
+                        "VCPUs",
+                        "Memory (MB)",
+                        "Services",
+                    ]
+                    rows = []
+
+                    for inst in instances:
+                        services = ", ".join(
+                            f"{svc.name}:{svc.port}"
+                            for svc in inst.networking.http_services
+                        )
+                        rows.append(
+                            [
+                                inst.id,
+                                inst.refs.snapshot_id,
+                                inst.status.value,
+                                str(inst.spec.vcpus),
+                                str(inst.spec.memory),
+                                services if services else "None",
+                            ]
+                        )
+
+                    # Calculate column widths
+                    widths = []
+                    for i in range(len(headers)):
+                        width = len(headers[i])
+                        if rows:
+                            column_values = [row[i] for row in rows]
+                            width = max(width, max(len(val) for val in column_values))
+                        widths.append(width)
+
+                    # Print header
+                    header_line = "  "
+                    for i, header in enumerate(headers):
+                        header_line += f"{header:<{widths[i]}}  "
+                    console.print(
+                        f"[bold {title_color}]{header_line}[/bold {title_color}]"
+                    )
+
+                    # Print separator
+                    separator_line = "  "
+                    for width in widths:
+                        separator_line += "-" * width + "  "
+                    console.print(f"[dim]{separator_line}[/dim]")
+
+                    # Print rows
+                    for row in rows:
+                        row_line = "  "
+                        for i, value in enumerate(row):
+                            row_line += f"{value:<{widths[i]}}  "
+                        console.print(row_line)
+
+                print_instance_table(instances_to_process, "yellow")
+
+            if instances_to_keep:
+                console.print(
+                    f"\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]"
+                )
+                print_instance_table(instances_to_keep, "green")
+
+            response = await asyncio.to_thread(
+                lambda: input(
+                    f"\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): "
+                )
+                .lower()
+                .strip()
+            )
+            if response not in ["y", "yes"]:
+                console.print("[cyan]Operation cancelled by user.[/cyan]")
+                return {
+                    "success": True,
+                    "total": len(all_instances),
+                    "processed": 0,
+                    "kept": len(all_instances),
+                    "cancelled": True,
+                    "errors": [],
+                }
+
+        # Async worker function
+        async def process_instance_worker(
+            instance: Instance,
+        ) -> typing.Tuple[str, bool, typing.Optional[str]]:
+            """Async worker function to process a single instance."""
+            instance_id = instance.id
+            try:
+                console.print(
+                    f"[yellow]Attempting to {action} instance {instance_id}..."
+                )
+
+                if action == "stop":
+                    await instance.astop()
+                elif action == "pause":
+                    await instance.apause()
+
+                console.print(
+                    f"[green]Successfully {action}ped instance {instance_id}[/green]"
+                )
+                return instance_id, True, None
+
+            except ApiError as e:
+                error_msg = f"API Error: {e.status_code}"
+                console.print(
+                    f"[bold red]API Error {action}ping instance {instance_id}:[/bold red] "
+                    f"Status {e.status_code} - {e.response_body}",
+                    style="error",
+                )
+                return instance_id, False, error_msg
+            except Exception as e:
+                error_msg = f"Unexpected Error: {str(e)}"
+                console.print(
+                    f"[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}",
+                    style="error",
+                )
+                return instance_id, False, error_msg
+
+        # Execute operations concurrently with asyncio
+        console.print(
+            f"\nStarting concurrent {action} operation (max_concurrency={max_concurrency})..."
+        )
+
+        # Use asyncio semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def limited_worker(instance):
+            async with semaphore:
+                return await process_instance_worker(instance)
+
+        # Run all tasks concurrently
+        tasks = [limited_worker(instance) for instance in instances_to_process]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        processed_successfully = 0
+        processed_failed = 0
+        error_details = []
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                instance_id = instances_to_process[i].id
+                console.print(
+                    f"[bold red]Critical Error processing instance {instance_id}:[/bold red] {result}",
+                    style="error",
+                )
+                processed_failed += 1
+                error_details.append(
+                    {
+                        "instance_id": instance_id,
+                        "error": f"Task Exception: {str(result)}",
+                    }
+                )
+            else:
+                instance_id, success, error_msg = result
+                if success:
+                    processed_successfully += 1
+                else:
+                    processed_failed += 1
+                    error_details.append(
+                        {"instance_id": instance_id, "error": error_msg}
+                    )
+
+        # Final report
+        console.print(f"\n[bold blue]Async Cleanup Operation Complete[/bold blue]")
+        console.print(
+            f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
+        )
+        console.print(f"  - Failed to {action}: [red]{processed_failed}[/red]")
+        console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
+
+        if processed_failed > 0:
+            console.print(f"\n[bold red]Failures occurred:[/bold red]")
+            for error in error_details:
+                console.print(f"  - Instance {error['instance_id']}: {error['error']}")
+
+        success = processed_failed == 0
+        if success:
+            console.print(
+                f"[bold green]All targeted instances {action}ped successfully![/bold green]"
+            )
+
+        return {
+            "success": success,
+            "total": len(all_instances),
+            "processed": processed_successfully,
+            "failed": processed_failed,
+            "kept": len(instances_to_keep),
+            "errors": error_details,
+        }
 
 
 class Instance(BaseModel):
@@ -1516,7 +2366,15 @@ class Instance(BaseModel):
                 console.print("[green]Docker service is active.[/green]")
 
             # Build docker run command
-            docker_cmd = ["docker", "run", "-d", "--name", container_name]
+            docker_cmd = [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container_name,
+                "--network",
+                "host",
+            ]
 
             # Add restart policy
             docker_cmd.extend(["--restart", restart_policy])
