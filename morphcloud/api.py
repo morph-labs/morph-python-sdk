@@ -705,7 +705,6 @@ class Snapshot(BaseModel):
         dockerfile: typing.Optional[str] = None,
         build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -737,7 +736,6 @@ class Snapshot(BaseModel):
             build_context: Optional build context directory path on the remote instance.
                         Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -755,7 +753,6 @@ class Snapshot(BaseModel):
             dockerfile=None,
             build_context=None,
             container_name="container",
-            command="tail -f /dev/null",
             container_args=None,
             ports=None,
             volumes=None,
@@ -768,7 +765,6 @@ class Snapshot(BaseModel):
                 dockerfile=dockerfile,
                 build_context=build_context,
                 container_name=container_name,
-                command=command,
                 container_args=container_args,
                 ports=ports,
                 volumes=volumes,
@@ -784,7 +780,6 @@ class Snapshot(BaseModel):
             dockerfile=dockerfile,
             build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
@@ -798,7 +793,6 @@ class Snapshot(BaseModel):
         dockerfile: typing.Optional[str] = None,
         build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -830,7 +824,6 @@ class Snapshot(BaseModel):
             build_context: Optional build context directory path on the remote instance.
                         Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -847,7 +840,6 @@ class Snapshot(BaseModel):
             dockerfile=dockerfile,
             build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
@@ -2284,7 +2276,6 @@ class Instance(BaseModel):
         dockerfile: typing.Optional[str] = None,
         build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -2312,7 +2303,6 @@ class Instance(BaseModel):
             build_context: Optional build context directory path on the remote instance.
                         Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -2323,7 +2313,6 @@ class Instance(BaseModel):
             None
         """
         import hashlib
-        import tempfile
 
         # Validate parameters
         if not image and not dockerfile:
@@ -2423,7 +2412,6 @@ class Instance(BaseModel):
                 else:
                     # Set up build context directory
                     build_dir = build_context or "/tmp/docker-build"
-                    ssh.run(["rm", "-rf", build_dir])  # Clean up any existing build directory
                     ssh.run(["mkdir", "-p", build_dir])
                     
                     try:
@@ -2438,8 +2426,10 @@ class Instance(BaseModel):
                         build_result = ssh.run(build_cmd)
                         
                         if build_result.exit_code != 0:
-                            error_msg = f"Failed to build Docker image: {build_result.stderr}"
-                            console.print(f"[bold red]{error_msg}[/bold red]")
+                            # Only include the last 50 lines of stdout for brevity
+                            stdout_lines = build_result.stdout.splitlines()
+                            last_stdout = "\n".join(stdout_lines[-50:]) if len(stdout_lines) > 50 else build_result.stdout
+                            error_msg = f"Failed to build Docker image: {last_stdout}"
                             raise RuntimeError(error_msg)
                         
                         console.print(f"[green]Successfully built image '{final_image_name}'[/green]")
@@ -2474,10 +2464,11 @@ class Instance(BaseModel):
                 container_name,
                 "--network",
                 "host",
+                "--entrypoint=''",
             ]
 
             # Add restart policy
-            docker_cmd.extend(["--restart", restart_policy])
+            docker_cmd.extend([f"--restart={restart_policy}"])
 
             # Add port mappings if provided
             if ports:
@@ -2501,11 +2492,7 @@ class Instance(BaseModel):
             # Add the final image name and command
             docker_cmd.append(final_image_name)
 
-            # Split the command if it's a string
-            if isinstance(command, str):
-                docker_cmd.extend(command.split())
-            else:
-                docker_cmd.extend(command)
+            docker_cmd.extend(["tail", "-f", "/dev/null"]) # Keep the container alive
 
             # Run the docker container
             console.print(
@@ -2513,6 +2500,7 @@ class Instance(BaseModel):
             )
             console.print(f"[blue]{docker_cmd=}[/blue]")
             result = ssh.run(docker_cmd)
+            console.print(f"[blue]Docker run command executed: {result.stdout}[/blue]")
             if result.exit_code != 0:
                 error_msg = f"Failed to start container: {result.stderr}"
                 console.print(f"[bold red]{error_msg}[/bold red]")
@@ -2616,7 +2604,7 @@ class Instance(BaseModel):
         dockerfile: typing.Optional[str] = None,
         build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
+        
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -2644,7 +2632,6 @@ class Instance(BaseModel):
             build_context: Optional build context directory path on the remote instance.
                         Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -2663,7 +2650,6 @@ class Instance(BaseModel):
             dockerfile=dockerfile,
             build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
