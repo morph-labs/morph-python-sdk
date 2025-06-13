@@ -701,9 +701,10 @@ class Snapshot(BaseModel):
 
     def as_container(
         self,
-        image: str,
+        image: typing.Optional[str] = None,
+        dockerfile: typing.Optional[str] = None,
+        build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -717,18 +718,24 @@ class Snapshot(BaseModel):
         This method:
         1. Starts a temporary instance from this snapshot
         2. Ensures Docker is running on the instance
-        3. Runs the specified Docker container
-        4. Configures SSH to redirect all commands to the container
-        5. Creates a new snapshot with these changes
-        6. Returns the new snapshot
+        3. Either pulls a pre-built image OR builds from Dockerfile contents
+        4. Runs the specified Docker container
+        5. Configures SSH to redirect all commands to the container
+        6. Creates a new snapshot with these changes
+        7. Returns the new snapshot
 
         After starting an instance from the returned snapshot, all SSH connections
         and commands will be passed through to the container rather than the host VM.
 
         Parameters:
-            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13")
+            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13").
+                If dockerfile is provided, this becomes the tag for the built image.
+                If neither image nor dockerfile is provided, raises ValueError.
+            dockerfile: Optional Dockerfile contents as a string. When provided,
+                    the image will be built on the remote instance.
+            build_context: Optional build context directory path on the remote instance.
+                        Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -742,20 +749,22 @@ class Snapshot(BaseModel):
         # The function to apply on the instance that will be used for caching
         def _container_effect(
             instance: Instance,
-            image,
+            image=None,
+            dockerfile=None,
+            build_context=None,
             container_name="container",
-            command="tail -f /dev/null",
             container_args=None,
             ports=None,
             volumes=None,
             env=None,
             restart_policy="unless-stopped",
         ):
-            # Call the existing instance.as_container method
+            # Call the enhanced instance.as_container method
             instance.as_container(
                 image=image,
+                dockerfile=dockerfile,
+                build_context=build_context,
                 container_name=container_name,
-                command=command,
                 container_args=container_args,
                 ports=ports,
                 volumes=volumes,
@@ -768,8 +777,9 @@ class Snapshot(BaseModel):
         return self._cache_effect(
             fn=_container_effect,
             image=image,
+            dockerfile=dockerfile,
+            build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
@@ -779,9 +789,10 @@ class Snapshot(BaseModel):
 
     async def aas_container(
         self,
-        image: str,
+        image: typing.Optional[str] = None,
+        dockerfile: typing.Optional[str] = None,
+        build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -795,18 +806,24 @@ class Snapshot(BaseModel):
         This method:
         1. Starts a temporary instance from this snapshot
         2. Ensures Docker is running on the instance
-        3. Runs the specified Docker container
-        4. Configures SSH to redirect all commands to the container
-        5. Creates a new snapshot with these changes
-        6. Returns the new snapshot
+        3. Either pulls a pre-built image OR builds from Dockerfile contents
+        4. Runs the specified Docker container
+        5. Configures SSH to redirect all commands to the container
+        6. Creates a new snapshot with these changes
+        7. Returns the new snapshot
 
         After starting an instance from the returned snapshot, all SSH connections
         and commands will be passed through to the container rather than the host VM.
 
         Parameters:
-            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13")
+            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13").
+                If dockerfile is provided, this becomes the tag for the built image.
+                If neither image nor dockerfile is provided, raises ValueError.
+            dockerfile: Optional Dockerfile contents as a string. When provided,
+                    the image will be built on the remote instance.
+            build_context: Optional build context directory path on the remote instance.
+                        Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -820,8 +837,9 @@ class Snapshot(BaseModel):
         return await asyncio.to_thread(
             self.as_container,
             image=image,
+            dockerfile=dockerfile,
+            build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
@@ -2254,9 +2272,10 @@ class Instance(BaseModel):
 
     def as_container(
         self,
-        image: str,
+        image: typing.Optional[str] = None,
+        dockerfile: typing.Optional[str] = None,
+        build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -2268,16 +2287,22 @@ class Instance(BaseModel):
 
         This method:
         1. Ensures Docker is running on the instance
-        2. Runs the specified Docker container
-        3. Configures SSH to redirect all commands to the container
+        2. Either pulls a pre-built image OR builds from Dockerfile contents
+        3. Runs the specified Docker container
+        4. Configures SSH to redirect all commands to the container
 
         After calling this method, all SSH connections and commands will be passed
         through to the container rather than the host VM.
 
         Parameters:
-            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13")
+            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13").
+                If dockerfile is provided, this becomes the tag for the built image.
+                If neither image nor dockerfile is provided, raises ValueError.
+            dockerfile: Optional Dockerfile contents as a string. When provided,
+                    the image will be built on the remote instance.
+            build_context: Optional build context directory path on the remote instance.
+                        Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -2287,6 +2312,12 @@ class Instance(BaseModel):
         Returns:
             None
         """
+        import hashlib
+
+        # Validate parameters
+        if not image and not dockerfile:
+            raise ValueError("Either 'image' or 'dockerfile' must be provided")
+        
         # Make sure the instance is ready
         self.wait_until_ready()
 
@@ -2302,8 +2333,6 @@ class Instance(BaseModel):
                 if result.exit_code != 0:
                     console.print(f"[yellow]Package '{pkg}' not found.[/yellow]")
                     missing_packages.append(pkg)
-                # else: # Optional: uncomment for more verbosity
-                #     console.print(f"[green]Package '{pkg}' found.[/green]")
 
             if missing_packages:
                 console.print(
@@ -2343,11 +2372,9 @@ class Instance(BaseModel):
                 console.print(
                     "[yellow]Docker service not active, attempting to start...[/yellow]"
                 )
-                # Attempt to start services (might fail if installation just happened and needs reboot, but usually works)
-                ssh.run(
-                    ["systemctl", "start", "containerd.service"]
-                )  # Best effort start
-                ssh.run(["systemctl", "start", "docker.service"])  # Best effort start
+                # Attempt to start services
+                ssh.run(["systemctl", "start", "containerd.service"])
+                ssh.run(["systemctl", "start", "docker.service"])
 
                 # Re-check docker status after attempting to start
                 time.sleep(2)  # Give services a moment to start
@@ -2355,7 +2382,6 @@ class Instance(BaseModel):
                 if result.exit_code != 0:
                     error_msg = f"Docker service failed to start or is not installed correctly. Status check stderr: {result.stderr}"
                     console.print(f"[bold red]{error_msg}[/bold red]")
-                    # Consider checking for common issues like needing a reboot after install
                     console.print(
                         "[bold yellow]Hint: A system reboot might be required after Docker installation.[/bold yellow]"
                     )
@@ -2364,6 +2390,70 @@ class Instance(BaseModel):
                     console.print("[green]Docker service started successfully.[/green]")
             else:
                 console.print("[green]Docker service is active.[/green]")
+
+            # Handle image preparation (either pull existing or build from Dockerfile)
+            final_image_name = image
+            
+            if dockerfile:
+                # Build image from Dockerfile contents
+                console.print("[blue]Building Docker image from Dockerfile...[/blue]")
+                
+                # Generate a unique image name based on Dockerfile contents if not provided
+                if not image:
+                    dockerfile_hash = hashlib.sha256(dockerfile.encode()).hexdigest()[:12]
+                    final_image_name = f"morphcloud-custom:{dockerfile_hash}"
+                else:
+                    final_image_name = image
+                
+                # Check if image already exists to avoid rebuilding
+                check_result = ssh.run(["docker", "images", "-q", final_image_name])
+                if check_result.exit_code == 0 and check_result.stdout.strip():
+                    console.print(f"[green]Image '{final_image_name}' already exists, skipping build.[/green]")
+                else:
+                    # Set up build context directory
+                    build_dir = build_context or "/tmp/docker-build"
+                    ssh.run(["mkdir", "-p", build_dir])
+                    
+                    try:
+                        # Write Dockerfile to remote instance
+                        dockerfile_path = f"{build_dir}/Dockerfile"
+                        ssh.write_file(dockerfile_path, dockerfile)
+                        console.print(f"[blue]Dockerfile written to {dockerfile_path}[/blue]")
+                        
+                        # Build the Docker image
+                        console.print(f"[blue]Building image '{final_image_name}'...[/blue]")
+                        build_cmd = ["docker", "build", "-t", final_image_name, build_dir]
+                        build_result = ssh.run(build_cmd)
+                        
+                        if build_result.exit_code != 0:
+                            # Only include the last 50 lines of stdout for brevity
+                            stdout_lines = build_result.stdout.splitlines()
+                            last_stdout = "\n".join(stdout_lines[-50:]) if len(stdout_lines) > 50 else build_result.stdout
+                            error_msg = f"Failed to build Docker image: {last_stdout}"
+                            raise RuntimeError(error_msg)
+                        
+                        console.print(f"[green]Successfully built image '{final_image_name}'[/green]")
+                        
+                    finally:
+                        # Clean up build directory
+                        ssh.run(["rm", "-rf", build_dir])
+                        console.print(f"[blue]Cleaned up build directory {build_dir}[/blue]")
+            
+            elif image:
+                # Pull the specified image if it doesn't exist locally
+                console.print(f"[blue]Checking if image '{image}' exists locally...[/blue]")
+                check_result = ssh.run(["docker", "images", "-q", image])
+                
+                if not check_result.stdout.strip():
+                    console.print(f"[blue]Image '{image}' not found locally, pulling...[/blue]")
+                    pull_result = ssh.run(["docker", "pull", image])
+                    if pull_result.exit_code != 0:
+                        error_msg = f"Failed to pull Docker image '{image}': {pull_result.stderr}"
+                        console.print(f"[bold red]{error_msg}[/bold red]")
+                        raise RuntimeError(error_msg)
+                    console.print(f"[green]Successfully pulled image '{image}'[/green]")
+                else:
+                    console.print(f"[green]Image '{image}' found locally[/green]")
 
             # Build docker run command
             docker_cmd = [
@@ -2374,10 +2464,11 @@ class Instance(BaseModel):
                 container_name,
                 "--network",
                 "host",
+                "--entrypoint=''",
             ]
 
             # Add restart policy
-            docker_cmd.extend(["--restart", restart_policy])
+            docker_cmd.extend([f"--restart={restart_policy}"])
 
             # Add port mappings if provided
             if ports:
@@ -2398,33 +2489,146 @@ class Instance(BaseModel):
             if container_args:
                 docker_cmd.extend(container_args)
 
-            # Add the image and command
-            docker_cmd.append(image)
+            # Add the final image name and command
+            docker_cmd.append(final_image_name)
 
-            # Split the command if it's a string
-            if isinstance(command, str):
-                docker_cmd.extend(command.split())
-            else:
-                docker_cmd.extend(command)
+            docker_cmd.extend(["tail", "-f", "/dev/null"]) # Keep the container alive
 
             # Run the docker container
             console.print(
-                f"[blue]Starting container '{container_name}' from image '{image}'...[/blue]"
+                f"[blue]Starting container '{container_name}' from image '{final_image_name}'...[/blue]"
             )
             console.print(f"[blue]{docker_cmd=}[/blue]")
             result = ssh.run(docker_cmd)
+            console.print(f"[blue]Docker run command executed: {result.stdout}[/blue]")
             if result.exit_code != 0:
                 error_msg = f"Failed to start container: {result.stderr}"
                 console.print(f"[bold red]{error_msg}[/bold red]")
                 raise RuntimeError(error_msg)
 
+            console.print("[blue]Testing container status and connectivity...[/blue]")
+
+            # Check if container is running
+            status_result = ssh.run(["docker", "inspect", container_name, "--format", "{{.State.Status}}"])
+            if status_result.exit_code != 0 or status_result.stdout.strip() != "running":
+                # Get detailed container information
+                logs_result = ssh.run(["docker", "logs", "--tail=20", container_name])
+                ps_result = ssh.run(["docker", "ps", "-a", "--filter", f"name={container_name}"])
+                
+                error_msg = f"""Container '{container_name}' is not running properly.
+            Status: {status_result.stdout.strip() if status_result.exit_code == 0 else 'unknown'}
+
+            Container info:
+            {ps_result.stdout if ps_result.exit_code == 0 else 'Could not get container info'}
+
+            Recent logs:
+            {logs_result.stdout if logs_result.exit_code == 0 else 'Could not get logs'}"""
+                
+                console.print(f"[bold red]{error_msg}[/bold red]")
+                raise RuntimeError(f"Container '{container_name}' failed to start properly")
+
+            # Test shell availability
+            shell_test_result = ssh.run(["docker", "exec", container_name, "echo", "test"])
+            if shell_test_result.exit_code != 0:
+                console.print("[yellow]Warning: Container is running but not responsive to commands[/yellow]")
+                
+                # Get more debugging info
+                logs_result = ssh.run(["docker", "logs", "--tail=10", container_name])
+                console.print(f"[yellow]Recent container logs:\n{logs_result.stdout}[/yellow]")
+                
+            else:
+                console.print("[green]Container is running and responsive[/green]")
+
             # Create improved container.sh script with TTY detection
             container_script = (
                 f"""#!/bin/bash
 
-# container.sh - Redirects SSH commands to the Docker container
-CONTAINER_NAME={container_name}"""
+    # container.sh - Redirects SSH commands to the Docker container
+    CONTAINER_NAME={container_name}"""
                 + """
+
+# Function to check container status and provide detailed error information
+check_container_status() {
+    # Check if container exists at all
+    if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+        echo "ERROR: Container '$CONTAINER_NAME' does not exist." >&2
+        echo "Available containers:" >&2
+        docker ps -a --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}" >&2
+        return 1
+    fi
+
+    # Get container status
+    CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format "{{.State.Status}}" 2>/dev/null)
+    
+    if [ "$CONTAINER_STATUS" != "running" ]; then
+        echo "ERROR: Container '$CONTAINER_NAME' is not running." >&2
+        echo "Current status: $CONTAINER_STATUS" >&2
+        
+        case "$CONTAINER_STATUS" in
+            "exited")
+                EXIT_CODE=$(docker inspect "$CONTAINER_NAME" --format "{{.State.ExitCode}}" 2>/dev/null)
+                echo "Container exited with code: $EXIT_CODE" >&2
+                echo "" >&2
+                echo "Recent container logs:" >&2
+                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
+                ;;
+            "paused")
+                echo "Container is paused. Try: docker unpause $CONTAINER_NAME" >&2
+                ;;
+            "restarting")
+                RESTART_COUNT=$(docker inspect "$CONTAINER_NAME" --format "{{.RestartCount}}" 2>/dev/null)
+                echo "Container is stuck restarting (restart count: $RESTART_COUNT)" >&2
+                echo "" >&2
+                echo "Recent container logs:" >&2
+                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
+                ;;
+            "dead")
+                echo "Container is in a dead state. May need to remove and recreate." >&2
+                echo "" >&2
+                echo "Recent container logs:" >&2
+                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
+                ;;
+            *)
+                echo "Unknown container status: $CONTAINER_STATUS" >&2
+                echo "" >&2
+                echo "Container details:" >&2
+                docker inspect "$CONTAINER_NAME" --format "{{json .State}}" 2>&1 | sed 's/^/  /' >&2
+                ;;
+        esac
+        
+        echo "" >&2
+        echo "Container overview:" >&2
+        docker ps -a --filter "name=$CONTAINER_NAME" --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}" >&2
+        
+        return 1
+    fi
+    
+    # Additional health check - try a simple command
+    if ! docker exec "$CONTAINER_NAME" echo "health-check" >/dev/null 2>&1; then
+        echo "ERROR: Container '$CONTAINER_NAME' is running but not responsive." >&2
+        echo "The container may be overloaded or in an unhealthy state." >&2
+        echo "" >&2
+        echo "Recent container logs:" >&2
+        docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
+        echo "" >&2
+        echo "Container processes:" >&2
+        docker exec "$CONTAINER_NAME" ps aux 2>&1 | sed 's/^/  /' >&2 || echo "  Could not list processes" >&2
+        return 1
+    fi
+    
+    return 0
+}
+
+# Check container status before proceeding
+if ! check_container_status; then
+    echo "" >&2
+    echo "TROUBLESHOOTING TIPS:" >&2
+    echo "1. Check if the container image has issues: docker logs $CONTAINER_NAME" >&2
+    echo "2. Try restarting the container: docker restart $CONTAINER_NAME" >&2
+    echo "3. Check Docker daemon status: systemctl status docker" >&2
+    echo "4. Check available resources: df -h && free -h" >&2
+    exit 1
+fi
 
 # Function to check if the container has the specified shell
 check_shell() {
@@ -2444,35 +2648,40 @@ for shell in bash sh ash; do
     fi
 done
 
-# If no shell was found, fail gracefully
+# If no shell was found, provide better error messaging
 if [ -z "$SHELL_TO_USE" ]; then
-    echo "Error: No usable shell found in container. Container might be too minimal." >&2
+    echo "ERROR: No usable shell found in container '$CONTAINER_NAME'." >&2
+    echo "This usually means the container is too minimal (like distroless images)." >&2
+    echo "" >&2
+    echo "Available executables in common locations:" >&2
+    docker exec "$CONTAINER_NAME" find /bin /usr/bin -type f -executable 2>/dev/null | head -10 | sed 's/^/  /' >&2 || echo "  Could not list executables" >&2
+    echo "" >&2
+    echo "Container image details:" >&2
+    docker inspect "$CONTAINER_NAME" --format "{{.Config.Image}}" | sed 's/^/  Image: /' >&2
+    docker inspect "$CONTAINER_NAME" --format "{{.Config.Entrypoint}}" | sed 's/^/  Entrypoint: /' >&2
+    docker inspect "$CONTAINER_NAME" --format "{{.Config.Cmd}}" | sed 's/^/  Cmd: /' >&2
     exit 1
 fi
 
+# Main execution logic
 if [ -z "$SSH_ORIGINAL_COMMAND" ]; then
     # Interactive login shell - use -it flags but WITHOUT -l
-    # This is for when users SSH in directly without a command
     exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE"
 else
     # Command execution - detect if TTY is available
     if [ -t 0 ]; then
         # TTY is available, use interactive mode WITHOUT -l
-        # This makes it a non-login interactive shell
         exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"
     else
         # No TTY available, run without -it flags and without -l
-        # This makes it a non-login, non-interactive shell
         exec docker exec "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"
     fi
 fi"""
             )
 
-            # Write the container.sh script to the instance using our new write_file method
+            # Write the container.sh script to the instance
             console.print("[blue]Installing container redirection script...[/blue]")
-            ssh.write_file(
-                "/root/container.sh", container_script, mode=0o755
-            )  # Using 0o755 to make it executable
+            ssh.write_file("/root/container.sh", container_script, mode=0o755)
 
             # Update SSH configuration to force commands through the script
             console.print("[blue]Configuring SSH to redirect to container...[/blue]")
@@ -2487,16 +2696,14 @@ fi"""
                 )
             else:
                 # Add ForceCommand to the end of sshd_config
-                ssh.run(
-                    'echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config'
-                )
+                ssh.run('echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config')
 
             # Restart SSH service
             console.print("[blue]Restarting SSH service...[/blue]")
             ssh.run(["systemctl", "restart", "sshd"])
 
             # Test the container setup
-            console.print("[blue]Testing container connectivity...[/blue]")
+            console.print("[blue]Testing ssh redirection...[/blue]")
             test_result = ssh.run('echo "Container setup test"')
             if test_result.returncode != 0:
                 console.print(
@@ -2506,15 +2713,21 @@ fi"""
         console.print(
             f"[bold green]✅ Instance now redirects all SSH sessions to the '{container_name}' container[/bold green]"
         )
+        if dockerfile:
+            console.print(
+                f"[dim]Built custom image '{final_image_name}' from provided Dockerfile[/dim]"
+            )
         console.print(
             "[dim]Note: This change cannot be easily reversed. Consider creating a snapshot before using this method.[/dim]"
         )
 
     async def aas_container(
         self,
-        image: str,
+        image: typing.Optional[str] = None,
+        dockerfile: typing.Optional[str] = None,
+        build_context: typing.Optional[str] = None,
         container_name: str = "container",
-        command: str = "tail -f /dev/null",
+        
         container_args: typing.Optional[typing.List[str]] = None,
         ports: typing.Optional[typing.Dict[int, int]] = None,
         volumes: typing.Optional[typing.List[str]] = None,
@@ -2526,16 +2739,22 @@ fi"""
 
         This method:
         1. Ensures Docker is running on the instance
-        2. Runs the specified Docker container
-        3. Configures SSH to redirect all commands to the container
+        2. Either pulls a pre-built image OR builds from Dockerfile contents
+        3. Runs the specified Docker container
+        4. Configures SSH to redirect all commands to the container
 
         After calling this method, all SSH connections and commands will be passed
         through to the container rather than the host VM.
 
         Parameters:
-            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13")
+            image: The Docker image to run (e.g. "ubuntu:latest", "postgres:13").
+                If dockerfile is provided, this becomes the tag for the built image.
+                If neither image nor dockerfile is provided, raises ValueError.
+            dockerfile: Optional Dockerfile contents as a string. When provided,
+                    the image will be built on the remote instance.
+            build_context: Optional build context directory path on the remote instance.
+                        Only used when dockerfile is provided. Defaults to /tmp/docker-build.
             container_name: The name to give the container (default: "container")
-            command: The command to run in the container (default: "tail -f /dev/null")
             container_args: Additional arguments to pass to "docker run"
             ports: Dictionary mapping host ports to container ports
             volumes: List of volume mounts (e.g. ["/host/path:/container/path"])
@@ -2551,8 +2770,9 @@ fi"""
         return await asyncio.to_thread(
             self.as_container,
             image=image,
+            dockerfile=dockerfile,
+            build_context=build_context,
             container_name=container_name,
-            command=command,
             container_args=container_args,
             ports=ports,
             volumes=volumes,
