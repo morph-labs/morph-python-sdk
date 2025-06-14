@@ -4,36 +4,21 @@ Simple function-scoped tests for MorphCloud SDK.
 This file doesn't rely on conftest.py and can be run directly.
 """
 import pytest
-import asyncio
 import logging
 import uuid
 import os
+import pytest_asyncio
 
 from morphcloud.api import MorphCloudClient
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("pytest.log"),
-        logging.StreamHandler()
-    ]
-)
-
 logger = logging.getLogger("morph-tests")
-
-# Configure the event loop policy for pytest-asyncio
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    policy = asyncio.get_event_loop_policy()
-    loop = policy.new_event_loop()
-    yield loop
-    loop.close()
 
 # Mark all tests as asyncio tests
 pytestmark = pytest.mark.asyncio
+
+# Configure pytest-asyncio
+def pytest_configure(config):
+    config.option.asyncio_default_fixture_loop_scope = "function"
 
 
 @pytest.fixture
@@ -51,7 +36,7 @@ def base_url():
     return os.environ.get("MORPH_BASE_URL")
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client(api_key, base_url):
     """Create a MorphCloudClient."""
     client = MorphCloudClient(api_key=api_key, base_url=base_url)
@@ -59,7 +44,7 @@ async def client(api_key, base_url):
     return client
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def base_image(client):
     """Get a base image to use for tests."""
     images = await client.images.alist()
@@ -128,7 +113,7 @@ async def test_instance_lifecycle(client, base_image):
         logger.info(f"Instance {instance.id} is ready")
         
         # Verify instance properties
-        assert instance.id.startswith("instance_"), "Instance ID should start with 'instance_'"
+        assert instance.id.startswith("morphvm_"), "Instance ID should start with 'morphvm_'"
         assert hasattr(instance, "refs"), "Instance should have a refs attribute"
         assert hasattr(instance.refs, "snapshot_id"), "Instance should have refs.snapshot_id attribute"
         assert instance.refs.snapshot_id == snapshot.id, "Instance should be created from the specified snapshot"

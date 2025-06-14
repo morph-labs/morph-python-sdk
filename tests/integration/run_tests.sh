@@ -26,15 +26,6 @@ python -m pytest . -v --timeout=600
 # echo "Running branching and parallel operations tests..."
 # python -m pytest test_branching.py -v --timeout=300
 
-# echo "Running instance lifecycle tests..."
-# python -m pytest test_instance_lifecycle.py -v --timeout=300
-
-# echo "Running resource lifecycle tests..."
-# python -m pytest test_resource_lifecycle.py -v --timeout=300
-
-# echo "Running session tests..."
-# python -m pytest test_session.py -v --timeout=300
-
 # echo "Running simple tests..."
 # python -m pytest test_simple.py -v --timeout=300
 

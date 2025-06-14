@@ -58,6 +58,7 @@ async def base_image(client):
 async def test_instance_metadata(client, base_image):
     """Test metadata operations on an instance."""
     logger.info("Testing instance metadata operations")
+    logger.info(f"Using base image: {base_image.id}")
     
     try:
         # Create snapshot
@@ -75,8 +76,15 @@ async def test_instance_metadata(client, base_image):
         
         # Wait for instance to be ready
         logger.info(f"Waiting for instance {instance.id} to be ready")
-        await instance.await_until_ready(timeout=300)
-        logger.info(f"Instance {instance.id} is ready")
+        try:
+            await instance.await_until_ready(timeout=60)
+            logger.info(f"Instance {instance.id} is ready")
+        except TimeoutError:
+            logger.error(f"Instance {instance.id} did not become ready within 60 seconds. Current status: {instance.status}")
+            raise
+        except Exception as e:
+            logger.error(f"Error waiting for instance {instance.id}: {e}. Current status: {instance.status}")
+            raise
         
         # Set metadata
         test_key = f"test-key-{uuid.uuid4()}"
@@ -104,13 +112,15 @@ async def test_instance_metadata(client, base_image):
         # Verify metadata was updated
         assert instance.metadata.get(test_key) == new_value
         
-        # Set multiple metadata values
+        # Set multiple metadata values (preserve existing metadata)
         multi_metadata = {
             f"key1-{uuid.uuid4()}": f"value1-{uuid.uuid4()}",
             f"key2-{uuid.uuid4()}": f"value2-{uuid.uuid4()}"
         }
+        # Merge with existing metadata to avoid overwriting
+        merged_metadata = {**instance.metadata, **multi_metadata}
         logger.info(f"Setting multiple metadata values: {multi_metadata}")
-        await instance.aset_metadata(multi_metadata)
+        await instance.aset_metadata(merged_metadata)
         
         # Verify all metadata values
         for key, value in multi_metadata.items():
@@ -223,7 +233,14 @@ async def test_filter_by_metadata(client, base_image):
             # Set unique metadata on each snapshot
             unique_key = f"test-unique-key-{i+1}"
             unique_value = f"test-unique-value-{i+1}"
-            await snapshot.aset_metadata({unique_key: unique_value})
+            # Merge with existing metadata to avoid overwriting
+            existing_metadata = snapshot.metadata or {}
+            merged_metadata = {**existing_metadata, unique_key: unique_value}
+            await snapshot.aset_metadata(merged_metadata)
+        
+        # Add a small delay to allow metadata to propagate
+        import asyncio
+        await asyncio.sleep(1)
         
         # Filter snapshots by common metadata
         filtered_snapshots = await client.snapshots.alist(metadata={common_key: common_value})
@@ -255,3 +272,4 @@ async def test_filter_by_metadata(client, base_image):
                 logger.info(f"Snapshot deleted")
             except Exception as e:
                 logger.error(f"Error deleting snapshot: {e}")
+

@@ -88,34 +88,37 @@ async def test_http_service_expose_unexpose(client, base_image):
         html_content = f"<html><body><h1>Hello World</h1><p>Test ID: {test_id}</p></body></html>"
         await instance.aexec(f"echo '{html_content}' > /tmp/index.html")
         
-        # Start a Python HTTP server in the background
-        server_cmd = f"cd /tmp && python3 -m http.server {port} > /tmp/http_server.log 2>&1 &"
+        # Install tmux if not available
+        await instance.aexec("apt-get update && apt-get install -y tmux python3")
+        
+        # Start a Python HTTP server in tmux session
+        server_cmd = f"cd /tmp && tmux new-session -d -s httpserver 'python3 -m http.server {port}'"
         result = await instance.aexec(server_cmd)
-        assert result.exit_code == 0, "Failed to start HTTP server"
+        assert result.exit_code == 0, "Failed to start HTTP server in tmux"
         
         # Give the server a moment to start
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
-        # Verify the server is running
-        ps_result = await instance.aexec("ps aux | grep http.server")
-        assert "python3 -m http.server" in ps_result.stdout, "HTTP server is not running"
+        # Verify the tmux session is running
+        tmux_result = await instance.aexec("tmux list-sessions")
+        assert "httpserver" in tmux_result.stdout, "HTTP server tmux session is not running"
         
         # Expose the HTTP service
         logger.info(f"Exposing HTTP service on port {port}")
-        service = await instance.aexpose_http(internal_port=port)
-        logger.info(f"Service exposed at URL: {service.url}")
+        service_url = await instance.aexpose_http_service(name="test-service", port=port)
+        logger.info(f"Service exposed at URL: {service_url}")
         
         # Verify service is listed in instance networking
         assert len(instance.networking.http_services) > 0, "No HTTP services exposed"
-        assert any(s.internal_port == port for s in instance.networking.http_services), "Service not found in instance networking"
+        assert any(s.port == port for s in instance.networking.http_services), "Service not found in instance networking"
         
         # Test unexpose
         logger.info("Unexposing HTTP service")
-        await instance.aunexpose_http(internal_port=port)
+        await instance.ahide_http_service(name="test-service")
         
         # Verify service is no longer listed
         instance = await client.instances.aget(instance.id)  # Refresh instance data
-        assert not any(s.internal_port == port for s in instance.networking.http_services), "Service still exposed after unexpose"
+        assert not any(s.port == port for s in instance.networking.http_services), "Service still exposed after unexpose"
         
         logger.info("HTTP service exposure/unexposure test completed successfully")
         
@@ -170,24 +173,27 @@ async def test_http_service_access(client, base_image):
         html_content = f"<html><body><h1>Hello World</h1><p>Test ID: {test_id}</p></body></html>"
         await instance.aexec(f"echo '{html_content}' > /tmp/index.html")
         
-        # Start a Python HTTP server in the background
-        server_cmd = f"cd /tmp && python3 -m http.server {port} > /tmp/http_server.log 2>&1 &"
+        # Install tmux if not available
+        await instance.aexec("apt-get update && apt-get install -y tmux python3")
+        
+        # Start a Python HTTP server in tmux session
+        server_cmd = f"cd /tmp && tmux new-session -d -s httpserver2 'python3 -m http.server {port}'"
         result = await instance.aexec(server_cmd)
-        assert result.exit_code == 0, "Failed to start HTTP server"
+        assert result.exit_code == 0, "Failed to start HTTP server in tmux"
         
         # Give the server a moment to start
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
         # Expose the HTTP service
         logger.info(f"Exposing HTTP service on port {port}")
-        service = await instance.aexpose_http(internal_port=port)
-        logger.info(f"Service exposed at URL: {service.url}")
+        service_url = await instance.aexpose_http_service(name="test-service-access", port=port)
+        logger.info(f"Service exposed at URL: {service_url}")
         
         # Verify we can access the service (if possible)
         try:
             import aiohttp
             async with aiohttp.ClientSession() as session:
-                async with session.get(service.url) as response:
+                async with session.get(service_url) as response:
                     # Check status code
                     assert response.status == 200, f"HTTP request failed with status {response.status}"
                     
@@ -248,6 +254,9 @@ async def test_multiple_http_services(client, base_image):
         await instance.await_until_ready(timeout=300)
         logger.info(f"Instance {instance.id} is ready")
         
+        # Install tmux if not available
+        await instance.aexec("apt-get update && apt-get install -y tmux python3")
+        
         # Set up multiple HTTP servers on different ports
         ports = [8000, 8001, 8002]
         exposed_services = []
@@ -259,33 +268,34 @@ async def test_multiple_http_services(client, base_image):
             await instance.aexec(f"mkdir -p /tmp/service{i+1}")
             await instance.aexec(f"echo '{html_content}' > /tmp/service{i+1}/index.html")
             
-            # Start a Python HTTP server in the background
-            server_cmd = f"cd /tmp/service{i+1} && python3 -m http.server {port} > /tmp/http_server_{port}.log 2>&1 &"
+            # Start a Python HTTP server in tmux session
+            server_cmd = f"cd /tmp/service{i+1} && tmux new-session -d -s httpserver{i+1} 'python3 -m http.server {port}'"
             result = await instance.aexec(server_cmd)
-            assert result.exit_code == 0, f"Failed to start HTTP server on port {port}"
+            assert result.exit_code == 0, f"Failed to start HTTP server on port {port} in tmux"
             
             # Give the server a moment to start
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             
             # Expose the HTTP service
             logger.info(f"Exposing HTTP service on port {port}")
-            service = await instance.aexpose_http(internal_port=port)
-            logger.info(f"Service {i+1} exposed at URL: {service.url}")
-            exposed_services.append((port, service.url, test_id))
+            service_name = f"test-service-{i+1}"
+            service_url = await instance.aexpose_http_service(name=service_name, port=port)
+            logger.info(f"Service {i+1} exposed at URL: {service_url}")
+            exposed_services.append((port, service_url, test_id, service_name))
         
         # Verify all services are listed in instance networking
         instance = await client.instances.aget(instance.id)  # Refresh instance data
-        for port, _, _ in exposed_services:
-            assert any(s.internal_port == port for s in instance.networking.http_services), f"Service on port {port} not found in instance networking"
+        for port, _, _, _ in exposed_services:
+            assert any(s.port == port for s in instance.networking.http_services), f"Service on port {port} not found in instance networking"
         
         # Unexpose services one by one
-        for i, (port, _, _) in enumerate(exposed_services):
+        for i, (port, _, _, service_name) in enumerate(exposed_services):
             logger.info(f"Unexposing service {i+1} on port {port}")
-            await instance.aunexpose_http(internal_port=port)
+            await instance.ahide_http_service(name=service_name)
             
             # Verify service is no longer listed
             instance = await client.instances.aget(instance.id)  # Refresh instance data
-            assert not any(s.internal_port == port for s in instance.networking.http_services), f"Service on port {port} still exposed after unexpose"
+            assert not any(s.port == port for s in instance.networking.http_services), f"Service on port {port} still exposed after unexpose"
         
         logger.info("Multiple HTTP services test completed successfully")
         
