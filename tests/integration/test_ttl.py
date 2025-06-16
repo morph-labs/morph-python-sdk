@@ -1,5 +1,5 @@
 """
-Function-scoped tests for Time-To-Live (TTL) and auto-cleanup in MorphCloud SDK.
+Function-scoped tests for Time-To-Live (TTL), wake-on-event, and auto-cleanup in MorphCloud SDK.
 """
 import pytest
 import logging
@@ -8,9 +8,10 @@ import os
 import asyncio
 import time
 import datetime
+import httpx
 import pytest_asyncio
 
-from morphcloud.api import MorphCloudClient
+from morphcloud.api import MorphCloudClient, InstanceStatus, Snapshot
 
 logger = logging.getLogger("morph-tests")
 
@@ -51,177 +52,230 @@ async def base_image(client):
     images = await client.images.alist()
     if not images:
         pytest.fail("No images available")
-    
-    # Use an Ubuntu image or fall back to the first available
-    image = next((img for img in images if "ubuntu" in img.id.lower()), images[0])
+
+    # Use a minimal image as it's common and has python3
+    image = next((img for img in images if "minimal" in img.id.lower()), None)
+    if not image:
+        pytest.fail("A minimal base image is required for these tests.")
+
     logger.info(f"Using base image: {image.id}")
     return image
 
 
-async def test_instance_ttl(client, base_image):
-    """Test instance Time-To-Live (TTL) setting."""
-    logger.info("Testing instance TTL")
-    
-    # Set TTL to a short duration for testing (e.g., 3 minutes)
-    ttl_seconds = 180
-    
+@pytest_asyncio.fixture
+async def instance_snapshot(client: MorphCloudClient, base_image) -> Snapshot:
+    """
+    Provides a ready snapshot for tests that need to start an instance,
+    and handles cleanup automatically.
+    """
+    snapshot = None
     try:
-        # Create snapshot
         snapshot = await client.snapshots.acreate(
             image_id=base_image.id,
             vcpus=1,
             memory=512,
             disk_size=8192
         )
-        logger.info(f"Created snapshot: {snapshot.id}")
-        
-        # Start instance
-        logger.info("Starting instance")
-        instance = await client.instances.astart(snapshot.id)
-        logger.info(f"Created instance: {instance.id}")
-        
-        # Wait for instance to be ready
-        logger.info(f"Waiting for instance {instance.id} to be ready")
-        await instance.await_until_ready(timeout=300)
-        logger.info(f"Instance {instance.id} is ready")
-        
-        # Set TTL on instance
-        logger.info(f"Setting instance TTL to {ttl_seconds} seconds")
-        await instance.aset_ttl(ttl_seconds)
-        
-        # Attempt to get the updated instance
-        logger.info(f"Getting updated instance {instance.id}")
-        updated_instance = await client.instances.aget(instance.id)
-        
-        # We're not checking for specific TTL attributes as the API might change
-        # Just verify that we can set a TTL and it doesn't cause errors
-        logger.info(f"Successfully set TTL on instance {instance.id}")
-        
-        # Print instance attributes for debugging
-        logger.info(f"Instance attributes: {dir(updated_instance)}")
-        logger.info(f"Instance data: {updated_instance.model_dump()}")
-        
-        # Verify we can modify TTL
-        new_ttl_seconds = ttl_seconds * 2
-        logger.info(f"Updating TTL to {new_ttl_seconds} seconds")
-        await instance.aset_ttl(new_ttl_seconds)
-        
-        # Get updated instance
-        updated_instance = await client.instances.aget(instance.id)
-        logger.info("Successfully updated TTL")
-        
-        # Wait up to 30 seconds to see if instance is still accessible
-        await asyncio.sleep(30)
-        
-        # Verify instance is still accessible
-        try:
-            instance_check = await client.instances.aget(instance.id)
-            assert instance_check.id == instance.id, "Instance should still be accessible"
-            logger.info(f"Instance {instance.id} is still accessible after 30 seconds")
-        except Exception as e:
-            pytest.fail(f"Instance {instance.id} should still be accessible but got error: {e}")
-        
-        # Note: We don't wait for the full TTL to expire in this test since it would take too long
-        # In a real-world scenario, you might want to set a very short TTL (e.g., 30 seconds)
-        # and verify the instance is automatically deleted
-        
-        logger.info("Instance TTL test completed successfully")
-        
+        await snapshot.await_until_ready(timeout=300)
+        logger.info(f"Fixture created snapshot: {snapshot.id}")
+        yield snapshot
     finally:
-        # Clean up resources
-        if 'instance' in locals():
+        if snapshot:
             try:
-                logger.info(f"Stopping instance {instance.id}")
-                await instance.astop()
-                logger.info(f"Instance stopped")
-            except Exception as e:
-                logger.error(f"Error stopping instance: {e}")
-        
-        if 'snapshot' in locals():
-            try:
-                logger.info(f"Deleting snapshot {snapshot.id}")
+                logger.info(f"Fixture cleaning up snapshot: {snapshot.id}")
                 await snapshot.adelete()
-                logger.info(f"Snapshot deleted")
+                logger.info(f"Snapshot {snapshot.id} deleted.")
             except Exception as e:
-                logger.error(f"Error deleting snapshot: {e}")
+                logger.error(f"Error deleting snapshot in fixture: {e}")
 
 
-# Snapshot TTL is not supported by the API
-
-
-async def test_auto_cleanup(client, base_image):
-    """Test automatic resource cleanup after TTL expiration."""
-    logger.info("Testing automatic resource cleanup")
+async def test_instance_ttl_stop_action(client: MorphCloudClient, instance_snapshot: Snapshot):
+    """Test instance TTL with the default 'stop' action."""
+    logger.info("Testing instance TTL with stop action")
     
-    # Set a very short TTL for testing (15 seconds)
-    ttl_seconds = 15
+    # Set a very short TTL for testing
+    ttl_seconds = 20
+    instance = None
     
     try:
-        # Create snapshot
-        logger.info("Creating snapshot")
-        snapshot = await client.snapshots.acreate(
-            image_id=base_image.id,
-            vcpus=1,
-            memory=512,
-            disk_size=8192
+        logger.info(f"Starting instance with TTL of {ttl_seconds} seconds")
+        instance = await client.instances.astart(
+            instance_snapshot.id,
+            ttl_seconds=ttl_seconds,
+            ttl_action='stop' # Explicitly set stop action
         )
-        logger.info(f"Created snapshot: {snapshot.id}")
         
-        # Start instance
-        logger.info("Starting instance")
-        instance = await client.instances.astart(snapshot.id)
-        logger.info(f"Created instance: {instance.id}")
-        
-        # Wait for instance to be ready
-        logger.info(f"Waiting for instance {instance.id} to be ready")
         await instance.await_until_ready(timeout=300)
         logger.info(f"Instance {instance.id} is ready")
         
-        # Set TTL on instance
-        logger.info(f"Setting instance TTL to {ttl_seconds} seconds")
-        await instance.aset_ttl(ttl_seconds)
-        
-        # Attempt to get the updated instance
-        logger.info(f"Getting updated instance {instance.id}")
-        updated_instance = await client.instances.aget(instance.id)
-        
-        # We're not checking for specific TTL attributes as the API might change
-        # Just verify that we can set a TTL and it doesn't cause errors
-        logger.info(f"Successfully set TTL on instance {instance.id}")
-        
-        # Print instance attributes for debugging
-        logger.info(f"Instance attributes: {dir(updated_instance)}")
-        logger.info(f"Instance data: {updated_instance.model_dump()}")
+        # Verify the TTL is set by checking expiration time
+        await instance._refresh_async()
+        assert instance.ttl.ttl_expire_at is not None
+        logger.info(f"Instance TTL is set, expires at: {datetime.datetime.fromtimestamp(instance.ttl.ttl_expire_at)}")
         
         # Wait for slightly longer than the TTL
-        wait_time = ttl_seconds + 10
-        logger.info(f"Waiting {wait_time} seconds for resources to expire")
+        wait_time = ttl_seconds + 15
+        logger.info(f"Waiting {wait_time} seconds for instance to be stopped by TTL")
         await asyncio.sleep(wait_time)
         
-        # Verify instance has been automatically deleted
+        # Verify instance has been automatically stopped (deleted)
         try:
             await client.instances.aget(instance.id)
-            pytest.fail(f"Instance {instance.id} should have been automatically deleted")
+            pytest.fail(f"Instance {instance.id} should have been automatically stopped")
         except Exception as e:
-            logger.info(f"Instance {instance.id} has been automatically deleted as expected: {str(e)}")
-        
-        logger.info("Auto-cleanup test completed successfully")
-        
+            logger.info(f"Instance {instance.id} has been stopped as expected: {str(e)}")
+            instance = None # Avoid double-cleanup
+            
     finally:
-        # Clean up resources (just in case the test fails)
-        if 'instance' in locals():
+        if instance:
             try:
-                logger.info(f"Stopping instance {instance.id}")
                 await instance.astop()
-                logger.info(f"Instance stopped")
             except Exception as e:
-                # If the instance was already deleted by TTL, this is expected
                 logger.info(f"Instance cleanup: {e}")
+
+async def test_wake_on_ssh(client: MorphCloudClient, instance_snapshot: Snapshot):
+    """
+    Tests the full wake_on_ssh lifecycle:
+    1. Instance starts and then pauses due to TTL.
+    2. An SSH connection wakes the instance up.
+    3. The TTL is reset, and the instance pauses again after the TTL expires.
+    """
+    logger.info("Testing wake_on_ssh functionality")
+    ttl_seconds = 30  # Use a short TTL for the test cycle
+    instance = None
+
+    try:
+        # 1. Start an instance with wake_on_ssh enabled and a 'pause' action
+        logger.info(f"Starting instance with ttl={ttl_seconds}s, action=pause, wake_on_ssh=true")
+        instance = await client.instances.astart(
+            snapshot_id=instance_snapshot.id,
+            ttl_seconds=ttl_seconds,
+            ttl_action='pause'
+        )
+        await instance.aset_wake_on(wake_on_ssh=True)
+        await instance.await_until_ready(timeout=300)
+        logger.info(f"Instance {instance.id} is ready.")
+
+        # Verify the initial settings are correct after refresh
+        assert instance.ttl.ttl_action == 'pause'
+        assert instance.ttl.ttl_seconds == ttl_seconds
+        assert instance.wake_on.wake_on_ssh is True
+        initial_expire_at = instance.ttl.ttl_expire_at
+        assert initial_expire_at is not None
+
+        # 2. Wait for the instance to pause automatically
+        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 10)
+
+        await instance._refresh_async()
+        assert instance.status == InstanceStatus.PAUSED
+        logger.info(f"Instance {instance.id} is PAUSED as expected.")
+
+        # 3. Attempt to SSH, which should trigger auto-resume
+        logger.info("Attempting to connect via SSH to trigger wake-up...")
+        # We don't need a full command, just establishing the connection is enough
+        with instance.ssh() as ssh:
+            result = ssh.run("echo 'SSH connection successful'")
+            assert result.exit_code == 0
+            assert "successful" in result.stdout
+        logger.info("SSH connection was successful, instance should be resuming.")
+
+        # 4. Verify the instance is READY again and the TTL has been reset
+        await instance.await_until_ready(timeout=60)
+        assert instance.status == InstanceStatus.READY
+        logger.info(f"Instance {instance.id} is READY again.")
+
+        await instance._refresh_async()
+        new_expire_at = instance.ttl.ttl_expire_at
+        assert new_expire_at is not None
+        assert new_expire_at > initial_expire_at
+        logger.info(f"TTL expiration has been reset to a future time: {datetime.datetime.fromtimestamp(new_expire_at)}")
+
+        # 5. Wait for the *second* TTL to expire to ensure it pauses again
+        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause again...")
+        await asyncio.sleep(ttl_seconds + 10)
         
-        if 'snapshot' in locals():
+        await instance._refresh_async()
+        assert instance.status == InstanceStatus.PAUSED
+        logger.info(f"Instance {instance.id} has auto-paused again, completing the cycle.")
+
+    finally:
+        if instance:
             try:
-                logger.info(f"Deleting snapshot {snapshot.id}")
-                await snapshot.adelete()
-                logger.info(f"Snapshot deleted")
+                await instance.astop()
             except Exception as e:
-                logger.error(f"Error deleting snapshot: {e}")
+                logger.info(f"Instance cleanup: {e}")
+
+
+async def test_wake_on_http(client: MorphCloudClient, instance_snapshot: Snapshot):
+    """
+    Tests the wake_on_http functionality:
+    1. Starts a simple python HTTP server inside the instance.
+    2. Exposes the port and gets a public URL.
+    3. Pauses the instance via TTL.
+    4. Sends an HTTP request to the URL to wake it up.
+    """
+    logger.info("Testing wake_on_http functionality")
+    ttl_seconds = 30
+    instance = None
+    service_port = 8888
+    
+    try:
+        # 1. Start instance and configure it with a simple web server
+        logger.info("Starting instance for wake_on_http test")
+        instance = await client.instances.astart(snapshot_id=instance_snapshot.id)
+        await instance.await_until_ready(timeout=300)
+        logger.info(f"Instance {instance.id} ready.")
+
+        # Command to run a simple python web server in the background
+        server_command = f"python3 -m http.server {service_port} > /dev/null 2>&1 &"
+        exec_result = await instance.aexec(server_command)
+        assert exec_result.exit_code == 0
+        logger.info(f"Started Python HTTP server on port {service_port}")
+        await asyncio.sleep(5) # Give the server a moment to start
+
+        # 2. Expose the service and set wake_on_http
+        url = await instance.aexpose_http_service(name="test-server", port=service_port)
+        logger.info(f"Service exposed at URL: {url}")
+        
+        await instance.aset_wake_on(wake_on_http=True)
+        await instance.aset_ttl(ttl_seconds=ttl_seconds, ttl_action='pause')
+        logger.info(f"Instance configured to wake on HTTP and pause in {ttl_seconds}s")
+        
+        # Verify settings
+        await instance._refresh_async()
+        assert instance.wake_on.wake_on_http is True
+
+        # 3. Wait for the instance to pause
+        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 10)
+
+        await instance._refresh_async()
+        assert instance.status == InstanceStatus.PAUSED
+        logger.info(f"Instance {instance.id} is PAUSED as expected.")
+
+        # 4. Send an HTTP request to wake it up
+        logger.info(f"Sending GET request to {url} to wake instance...")
+        async with httpx.AsyncClient() as http_client:
+            # The request might time out as the instance wakes up, which is acceptable.
+            # We just need to send it. A successful response isn't required.
+            try:
+                response = await http_client.get(url, timeout=60)
+                logger.info(f"Wake-up request completed with status: {response.status_code}")
+            except httpx.ReadTimeout:
+                logger.info("Request timed out as expected during wake-up, which is fine.")
+            except httpx.ConnectError as e:
+                logger.warning(f"Connection error during wake-up (can be expected): {e}")
+
+        # 5. Verify the instance is READY again
+        logger.info("Waiting for instance to become ready after HTTP request...")
+        await instance.await_until_ready(timeout=60)
+        assert instance.status == InstanceStatus.READY
+        logger.info(f"Instance {instance.id} is READY again.")
+
+    finally:
+        if instance:
+            try:
+                await instance.astop()
+            except Exception as e:
+                logger.info(f"Instance cleanup: {e}")
