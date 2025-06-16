@@ -1502,6 +1502,56 @@ def boot_instance(snapshot_id, vcpus, memory, disk_size, metadata_options):
     except Exception as e:
         handle_api_error(e)
 
+@instance.command("ssh-key")
+@click.argument("instance_id")
+@click.option(
+    "--password",
+    "show_password_only",
+    is_flag=True,
+    help="Output only the value of the password field.",
+)
+def ssh_key(instance_id, show_password_only):
+    """
+    Retrieve the SSH key details for an instance.
+
+    This key is ephemeral and is used for establishing the SSH connection.
+    """
+    client = get_client()
+    try:
+        # A spinner provides better UX for network requests.
+        with Spinner(
+            text=f"Retrieving SSH key for instance {instance_id}...",
+            success_text="SSH key retrieved!",
+            success_emoji="🔑",
+        ):
+            # Per the request, this command calls the endpoint directly.
+            # It accesses the internal http_client from the main client object.
+            response = client._http_client.get(f"/instance/{instance_id}/ssh/key")
+            key_data = response.json()
+
+        if show_password_only:
+            # If the --password flag is used, print only that value.
+            password = key_data.get("password")
+            if password is not None:
+                click.echo(password)
+            else:
+                # Handle cases where the key might be missing from the response.
+                click.echo("Error: 'password' field not found in the API response.", err=True)
+                sys.exit(1)
+        else:
+            # Print the full key details in a formatted JSON output.
+            click.echo(format_json(key_data))
+
+
+    except api.ApiError as e:
+        if e.status_code == 404:
+            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
+            sys.exit(1)
+        else:
+            handle_api_error(e)
+    except Exception as e:
+        handle_api_error(e)
+
 
 @instance.command("cleanup")
 @click.option(
