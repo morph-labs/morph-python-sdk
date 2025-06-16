@@ -132,6 +132,65 @@ async def test_instance_ttl_stop_action(client: MorphCloudClient, instance_snaps
                 await instance.astop()
             except Exception as e:
                 logger.info(f"Instance cleanup: {e}")
+                
+async def test_instance_ttl_pause_action(client: MorphCloudClient, instance_snapshot: Snapshot):
+    """
+    Tests the TTL lifecycle with ttl_action='pause'.
+    1. Instance starts and then pauses due to TTL.
+    2. It is manually resumed.
+    3. The TTL is reset, and the instance pauses again after the TTL expires.
+    """
+    logger.info("Testing instance TTL with pause action")
+    ttl_seconds = 30  # Use a short TTL for the test cycle
+    instance = None
+
+    try:
+        # 1. Start an instance and set it to pause after TTL
+        logger.info(f"Starting instance with ttl={ttl_seconds}s and action=pause")
+        instance = await client.instances.astart(snapshot_id=instance_snapshot.id)
+        await instance.await_until_ready(timeout=300)
+        await instance.aset_ttl(ttl_seconds=ttl_seconds, ttl_action='pause')
+        logger.info(f"Instance {instance.id} is ready.")
+
+        initial_expire_at = instance.ttl.ttl_expire_at
+        assert initial_expire_at is not None
+
+        # 2. Wait for the instance to pause automatically
+        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 10)
+
+        await instance._refresh_async()
+        assert instance.status == InstanceStatus.PAUSED
+        logger.info(f"Instance {instance.id} is PAUSED as expected.")
+
+        # 3. Manually resume the instance
+        logger.info("Manually resuming instance...")
+        await instance.aresume()
+        await instance.await_until_ready(timeout=60)
+        assert instance.status == InstanceStatus.READY
+        logger.info(f"Instance {instance.id} is READY again.")
+        
+        # 4. Verify the TTL has been reset automatically by the resume method
+        await instance._refresh_async()
+        new_expire_at = instance.ttl.ttl_expire_at
+        assert new_expire_at is not None
+        assert new_expire_at > initial_expire_at
+        logger.info(f"TTL expiration has been reset to a future time: {datetime.datetime.fromtimestamp(new_expire_at)}")
+        
+        # 5. Wait for the *second* TTL to expire to ensure it pauses again
+        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause again...")
+        await asyncio.sleep(ttl_seconds + 10)
+        
+        await instance._refresh_async()
+        assert instance.status == InstanceStatus.PAUSED
+        logger.info(f"Instance {instance.id} has auto-paused again, completing the pause/resume cycle.")
+
+    finally:
+        if instance:
+            try:
+                await instance.astop()
+            except Exception as e:
+                logger.info(f"Instance cleanup: {e}")
 
 async def test_wake_on_ssh(client: MorphCloudClient, instance_snapshot: Snapshot):
     """
@@ -190,14 +249,6 @@ async def test_wake_on_ssh(client: MorphCloudClient, instance_snapshot: Snapshot
         assert new_expire_at is not None
         assert new_expire_at > initial_expire_at
         logger.info(f"TTL expiration has been reset to a future time: {datetime.datetime.fromtimestamp(new_expire_at)}")
-
-        # 5. Wait for the *second* TTL to expire to ensure it pauses again
-        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause again...")
-        await asyncio.sleep(ttl_seconds + 10)
-        
-        await instance._refresh_async()
-        assert instance.status == InstanceStatus.PAUSED
-        logger.info(f"Instance {instance.id} has auto-paused again, completing the cycle.")
 
     finally:
         if instance:
