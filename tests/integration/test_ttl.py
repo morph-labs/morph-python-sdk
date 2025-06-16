@@ -94,7 +94,7 @@ async def test_instance_ttl_stop_action(client: MorphCloudClient, instance_snaps
     logger.info("Testing instance TTL with stop action")
     
     # Set a very short TTL for testing
-    ttl_seconds = 20
+    ttl_seconds = 10
     instance = None
     
     try:
@@ -114,7 +114,7 @@ async def test_instance_ttl_stop_action(client: MorphCloudClient, instance_snaps
         logger.info(f"Instance TTL is set, expires at: {datetime.datetime.fromtimestamp(instance.ttl.ttl_expire_at)}")
         
         # Wait for slightly longer than the TTL
-        wait_time = ttl_seconds + 15
+        wait_time = ttl_seconds + 1
         logger.info(f"Waiting {wait_time} seconds for instance to be stopped by TTL")
         await asyncio.sleep(wait_time)
         
@@ -141,7 +141,7 @@ async def test_instance_ttl_pause_action(client: MorphCloudClient, instance_snap
     3. The TTL is reset, and the instance pauses again after the TTL expires.
     """
     logger.info("Testing instance TTL with pause action")
-    ttl_seconds = 30  # Use a short TTL for the test cycle
+    ttl_seconds = 10  # Use a short TTL for the test cycle
     instance = None
 
     try:
@@ -156,8 +156,8 @@ async def test_instance_ttl_pause_action(client: MorphCloudClient, instance_snap
         assert initial_expire_at is not None
 
         # 2. Wait for the instance to pause automatically
-        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
-        await asyncio.sleep(ttl_seconds + 10)
+        logger.info(f"Waiting {ttl_seconds + 1}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 1)
 
         await instance._refresh_async()
         assert instance.status == InstanceStatus.PAUSED
@@ -178,8 +178,8 @@ async def test_instance_ttl_pause_action(client: MorphCloudClient, instance_snap
         logger.info(f"TTL expiration has been reset to a future time: {datetime.datetime.fromtimestamp(new_expire_at)}")
         
         # 5. Wait for the *second* TTL to expire to ensure it pauses again
-        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause again...")
-        await asyncio.sleep(ttl_seconds + 10)
+        logger.info(f"Waiting {ttl_seconds + 1}s for instance to auto-pause again...")
+        await asyncio.sleep(ttl_seconds + 1)
         
         await instance._refresh_async()
         assert instance.status == InstanceStatus.PAUSED
@@ -200,7 +200,7 @@ async def test_wake_on_ssh(client: MorphCloudClient, instance_snapshot: Snapshot
     3. The TTL is reset, and the instance pauses again after the TTL expires.
     """
     logger.info("Testing wake_on_ssh functionality")
-    ttl_seconds = 30  # Use a short TTL for the test cycle
+    ttl_seconds = 10  # Use a short TTL for the test cycle
     instance = None
 
     try:
@@ -223,8 +223,8 @@ async def test_wake_on_ssh(client: MorphCloudClient, instance_snapshot: Snapshot
         assert initial_expire_at is not None
 
         # 2. Wait for the instance to pause automatically
-        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
-        await asyncio.sleep(ttl_seconds + 10)
+        logger.info(f"Waiting {ttl_seconds + 1}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 1)
 
         await instance._refresh_async()
         assert instance.status == InstanceStatus.PAUSED
@@ -267,7 +267,7 @@ async def test_wake_on_http(client: MorphCloudClient, instance_snapshot: Snapsho
     4. Sends an HTTP request to the URL to wake it up.
     """
     logger.info("Testing wake_on_http functionality")
-    ttl_seconds = 30
+    ttl_seconds = 10
     instance = None
     service_port = 8888
     
@@ -298,8 +298,8 @@ async def test_wake_on_http(client: MorphCloudClient, instance_snapshot: Snapsho
         assert instance.wake_on.wake_on_http is True
 
         # 3. Wait for the instance to pause
-        logger.info(f"Waiting {ttl_seconds + 10}s for instance to auto-pause...")
-        await asyncio.sleep(ttl_seconds + 10)
+        logger.info(f"Waiting {ttl_seconds + 1}s for instance to auto-pause...")
+        await asyncio.sleep(ttl_seconds + 1)
 
         await instance._refresh_async()
         assert instance.status == InstanceStatus.PAUSED
