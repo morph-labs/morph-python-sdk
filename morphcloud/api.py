@@ -2264,6 +2264,10 @@ class Instance(BaseModel):
                 console.print(f"[yellow]Waiting for instance {self.id} to become ready...[/yellow]")
                 self.wait_until_ready(timeout=300)
                 console.print(f"[green]Instance {self.id} is now ready.[/green]")
+            else :
+                raise RuntimeError(
+                    f"Instance {self.id} is paused and wake_on_ssh is not enabled. Cannot connect via SSH."
+                )
 
 
         client.connect(
