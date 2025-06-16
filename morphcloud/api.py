@@ -90,6 +90,17 @@ class AsyncApiClient(httpx.AsyncClient):
             await self.raise_for_status(response)
         return response
 
+class TTL(BaseModel):
+    """Represents the Time-To-Live configuration for an instance."""
+    ttl_seconds: typing.Optional[int] = Field(None, description="Time in seconds until the action is triggered.")
+    ttl_expire_at: typing.Optional[int] = Field(None, description="Unix timestamp when the instance is set to expire.")
+    ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = Field("stop", description="Action to take when TTL expires.")
+    
+class WakeOn(BaseModel):
+    """Represents the wake-on-event configuration for an instance."""
+    wake_on_ssh: bool = Field(False, description="Whether the instance should wake on an SSH attempt.")
+    wake_on_http: bool = Field(False, description="Whether the instance should wake on an HTTP request.")
+
 
 class MorphCloudClient:
     def __init__(
@@ -1867,6 +1878,8 @@ class Instance(BaseModel):
     spec: ResourceSpec
     refs: InstanceRefs
     networking: InstanceNetworking
+    ttl: TTL = Field(default_factory=TTL)
+    wake_on: WakeOn = Field(default_factory=WakeOn)
     metadata: typing.Dict[str, str] = Field(
         default_factory=dict,
         description="User provided metadata for the instance",
@@ -2157,6 +2170,64 @@ class Instance(BaseModel):
         response.raise_for_status()
         await self._refresh_async()
 
+    def set_wake_on(
+        self,
+        wake_on_ssh: typing.Optional[bool] = None,
+        wake_on_http: typing.Optional[bool] = None,
+    ) -> None:
+        """
+        Configure the wake-on-event settings for the instance.
+
+        Parameters:
+            wake_on_ssh: If true, the instance will wake from pause on an SSH attempt.
+            wake_on_http: If true, the instance will wake from pause on an HTTP request.
+        """
+        payload = {}
+        if wake_on_ssh is not None:
+            payload["wake_on_ssh"] = wake_on_ssh
+        if wake_on_http is not None:
+            payload["wake_on_http"] = wake_on_http
+
+        if not payload:
+            # Nothing to do if no parameters are provided
+            return
+
+        response = self._api._client._http_client.post(
+            f"/instance/{self.id}/wake-on",
+            json=payload,
+        )
+        response.raise_for_status()
+        self._refresh()
+        
+    async def aset_wake_on(
+        self,
+        wake_on_ssh: typing.Optional[bool] = None,
+        wake_on_http: typing.Optional[bool] = None,
+    ) -> None:
+        """
+        Asynchronously configure the wake-on-event settings for the instance.
+
+        Parameters:
+            wake_on_ssh: If true, the instance will wake from pause on an SSH attempt.
+            wake_on_http: If true, the instance will wake from pause on an HTTP request.
+        """
+        payload = {}
+        if wake_on_ssh is not None:
+            payload["wake_on_ssh"] = wake_on_ssh
+        if wake_on_http is not None:
+            payload["wake_on_http"] = wake_on_http
+
+        if not payload:
+            # Nothing to do if no parameters are provided
+            return
+
+        response = await self._api._client._async_http_client.post(
+            f"/instance/{self.id}/wake-on",
+            json=payload,
+        )
+        response.raise_for_status()
+        await self._refresh_async()
+
     def _refresh(self) -> None:
         refreshed = self._api.get(self.id)
         updated = type(self).model_validate(refreshed.model_dump())
@@ -2183,6 +2254,17 @@ class Instance(BaseModel):
             raise ValueError("API key must be provided to connect to the instance")
 
         username = self.id + ":" + self._api._client.api_key
+
+        if self.status == InstanceStatus.PAUSED:
+            self._refresh()
+            # Update this condition to use the nested WakeOn model
+            if self.wake_on.wake_on_ssh:
+                console.print(f"[yellow]Instance {self.id} is paused. Resuming for SSH access...[/yellow]")
+                self.resume()
+                console.print(f"[yellow]Waiting for instance {self.id} to become ready...[/yellow]")
+                self.wait_until_ready(timeout=300)
+                console.print(f"[green]Instance {self.id} is now ready.[/green]")
+
 
         client.connect(
             hostname,
