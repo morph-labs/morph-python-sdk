@@ -2399,240 +2399,287 @@ class Instance(BaseModel):
             None
         """
         import hashlib
+        import time
 
         # Validate parameters
         if not image and not dockerfile:
             raise ValueError("Either 'image' or 'dockerfile' must be provided")
         
-        # Make sure the instance is ready
-        self.wait_until_ready()
+        # Initialize log buffer
+        log_output = ["Debugging logs:"]
+        
+        try:
+            # Make sure the instance is ready
+            self.wait_until_ready()
 
-        # Establish SSH connection
-        with self.ssh() as ssh:
-            # --- Start: Added Package Check and Installation ---
-            required_packages = ["docker.io", "git", "curl"]
-            missing_packages = []
-            console.print("[blue]Checking for required packages...[/blue]")
-            for pkg in required_packages:
-                # Use dpkg -s which exits non-zero if package is not installed or unknown
-                result = ssh.run(["dpkg", "-s", pkg])
-                if result.exit_code != 0:
-                    console.print(f"[yellow]Package '{pkg}' not found.[/yellow]")
-                    missing_packages.append(pkg)
+            # Establish SSH connection
+            with self.ssh() as ssh:
+                # --- Start: Added Package Check and Installation ---
+                required_packages = ["docker.io", "git", "curl"]
+                missing_packages = []
+                log_output.append("Checking for required packages...")
+                
+                for pkg in required_packages:
+                    # Use dpkg -s which exits non-zero if package is not installed or unknown
+                    result = ssh.run(["dpkg", "-s", pkg])
+                    if result.exit_code != 0:
+                        log_output.append(f"Package '{pkg}' not found.")
+                        missing_packages.append(pkg)
 
-            if missing_packages:
-                console.print(
-                    "[yellow]Updating package lists (apt-get update)...[/yellow]"
-                )
-                # Run apt-get update first
-                update_result = ssh.run(["apt-get", "update", "-y"])
-                if update_result.exit_code != 0:
-                    error_msg = (
-                        f"Failed to update apt package lists: {update_result.stderr}"
-                    )
-                    console.print(f"[bold red]{error_msg}[/bold red]")
-                    raise RuntimeError(error_msg)
+                if missing_packages:
+                    log_output.append("Updating package lists (apt-get update)...")
+                    # Run apt-get update first
+                    update_result = ssh.run(["apt-get", "update", "-y"])
+                    if update_result.exit_code != 0:
+                        error_msg = f"Failed to update apt package lists: {update_result.stderr}"
+                        log_output.append(error_msg)
+                        raise RuntimeError("\n".join(log_output))
 
-                # Install all missing packages at once
-                console.print(
-                    f"[yellow]Installing missing packages: {', '.join(missing_packages)}...[/yellow]"
-                )
-                install_cmd = ["apt-get", "install", "-y"] + missing_packages
-                install_result = ssh.run(install_cmd)
-                if install_result.exit_code != 0:
-                    error_msg = f"Failed to install packages ({', '.join(missing_packages)}): {install_result.stderr}"
-                    console.print(f"[bold red]{error_msg}[/bold red]")
-                    raise RuntimeError(error_msg)
-                console.print(
-                    "[green]Required packages installed successfully.[/green]"
-                )
-            else:
-                console.print(
-                    "[green]All required packages are already installed.[/green]"
-                )
-            # --- End: Added Package Check and Installation ---
+                    # Install all missing packages at once
+                    log_output.append(f"Installing missing packages: {', '.join(missing_packages)}...")
+                    install_cmd = ["apt-get", "install", "-y"] + missing_packages
+                    install_result = ssh.run(install_cmd)
+                    if install_result.exit_code != 0:
+                        error_msg = f"Failed to install packages ({', '.join(missing_packages)}): {install_result.stderr}"
+                        log_output.append(error_msg)
+                        raise RuntimeError("\n".join(log_output))
+                    log_output.append("Required packages installed successfully.")
+                else:
+                    log_output.append("All required packages are already installed.")
+                # --- End: Added Package Check and Installation ---
 
-            # Verify docker service is running
-            result = ssh.run(["systemctl", "is-active", "docker"])
-            if result.exit_code != 0:
-                console.print(
-                    "[yellow]Docker service not active, attempting to start...[/yellow]"
-                )
-                # Attempt to start services
-                ssh.run(["systemctl", "start", "containerd.service"])
-                ssh.run(["systemctl", "start", "docker.service"])
-
-                # Re-check docker status after attempting to start
-                time.sleep(2)  # Give services a moment to start
+                # Verify docker service is running
                 result = ssh.run(["systemctl", "is-active", "docker"])
                 if result.exit_code != 0:
-                    error_msg = f"Docker service failed to start or is not installed correctly. Status check stderr: {result.stderr}"
-                    console.print(f"[bold red]{error_msg}[/bold red]")
-                    console.print(
-                        "[bold yellow]Hint: A system reboot might be required after Docker installation.[/bold yellow]"
-                    )
-                    raise RuntimeError(error_msg)
-                else:
-                    console.print("[green]Docker service started successfully.[/green]")
-            else:
-                console.print("[green]Docker service is active.[/green]")
+                    log_output.append("Docker service not active, attempting to start...")
+                    # Attempt to start services
+                    ssh.run(["systemctl", "start", "containerd.service"])
+                    ssh.run(["systemctl", "start", "docker.service"])
 
-            # Handle image preparation (either pull existing or build from Dockerfile)
-            final_image_name = image
-            
-            if dockerfile:
-                # Build image from Dockerfile contents
-                console.print("[blue]Building Docker image from Dockerfile...[/blue]")
-                
-                # Generate a unique image name based on Dockerfile contents if not provided
-                if not image:
-                    dockerfile_hash = hashlib.sha256(dockerfile.encode()).hexdigest()[:12]
-                    final_image_name = f"morphcloud-custom:{dockerfile_hash}"
+                    # Re-check docker status after attempting to start
+                    time.sleep(2)  # Give services a moment to start
+                    result = ssh.run(["systemctl", "is-active", "docker"])
+                    if result.exit_code != 0:
+                        error_msg = f"Docker service failed to start or is not installed correctly. Status check stderr: {result.stderr}"
+                        log_output.append(error_msg)
+                        log_output.append("Hint: A system reboot might be required after Docker installation.")
+                        raise RuntimeError("\n".join(log_output))
+                    else:
+                        log_output.append("Docker service started successfully.")
                 else:
-                    final_image_name = image
+                    log_output.append("Docker service is active.")
+
+                # Handle image preparation (either pull existing or build from Dockerfile)
+                final_image_name = image
                 
-                # Check if image already exists to avoid rebuilding
-                check_result = ssh.run(["docker", "images", "-q", final_image_name])
-                if check_result.exit_code == 0 and check_result.stdout.strip():
-                    console.print(f"[green]Image '{final_image_name}' already exists, skipping build.[/green]")
-                else:
-                    # Set up build context directory
-                    build_dir = build_context or "/tmp/docker-build"
-                    ssh.run(["mkdir", "-p", build_dir])
+                if dockerfile:
+                    # Build image from Dockerfile contents
+                    log_output.append("Building Docker image from Dockerfile...")
                     
-                    try:
-                        # Write Dockerfile to remote instance
-                        dockerfile_path = f"{build_dir}/Dockerfile"
-                        ssh.write_file(dockerfile_path, dockerfile)
-                        console.print(f"[blue]Dockerfile written to {dockerfile_path}[/blue]")
+                    # Generate a unique image name based on Dockerfile contents if not provided
+                    if not image:
+                        dockerfile_hash = hashlib.sha256(dockerfile.encode()).hexdigest()[:12]
+                        final_image_name = f"morphcloud-custom:{dockerfile_hash}"
+                    else:
+                        final_image_name = image
+                    
+                    # Check if image already exists to avoid rebuilding
+                    check_result = ssh.run(["docker", "images", "-q", final_image_name])
+                    if check_result.exit_code == 0 and check_result.stdout.strip():
+                        log_output.append(f"Image '{final_image_name}' already exists, skipping build.")
+                    else:
+                        # Set up build context directory
+                        build_dir = build_context or "/tmp/docker-build"
+                        ssh.run(["mkdir", "-p", build_dir])
                         
-                        # Build the Docker image
-                        console.print(f"[blue]Building image '{final_image_name}'...[/blue]")
-                        build_cmd = ["docker", "build", "-t", final_image_name, build_dir]
-                        build_result = ssh.run(build_cmd)
-                        
-                        if build_result.exit_code != 0:
-                            # Only include the last 50 lines of stdout for brevity
-                            stdout_lines = build_result.stdout.splitlines()
-                            last_stdout = "\n".join(stdout_lines[-50:]) if len(stdout_lines) > 50 else build_result.stdout
-                            error_msg = f"Failed to build Docker image: {last_stdout}"
-                            raise RuntimeError(error_msg)
-                        
-                        console.print(f"[green]Successfully built image '{final_image_name}'[/green]")
-                        
-                    finally:
-                        # Clean up build directory
-                        ssh.run(["rm", "-rf", build_dir])
-                        console.print(f"[blue]Cleaned up build directory {build_dir}[/blue]")
-            
-            elif image:
-                # Pull the specified image if it doesn't exist locally
-                console.print(f"[blue]Checking if image '{image}' exists locally...[/blue]")
-                check_result = ssh.run(["docker", "images", "-q", image])
+                        try:
+                            # Write Dockerfile to remote instance
+                            dockerfile_path = f"{build_dir}/Dockerfile"
+                            ssh.write_file(dockerfile_path, dockerfile)
+                            log_output.append(f"Dockerfile written to {dockerfile_path}")
+                            
+                            # Build the Docker image
+                            log_output.append(f"Building image '{final_image_name}'...")
+                            build_cmd = ["docker", "build", "-t", final_image_name, build_dir]
+                            build_result = ssh.run(build_cmd)
+                            
+                            if build_result.exit_code != 0:
+                                # Only include the last 50 lines of stdout for brevity
+                                stdout_lines = build_result.stdout.splitlines()
+                                last_stdout = "\n".join(stdout_lines[-50:]) if len(stdout_lines) > 50 else build_result.stdout
+                                error_msg = f"Failed to build Docker image: {last_stdout}"
+                                log_output.append(error_msg)
+                                raise RuntimeError("\n".join(log_output))
+                            
+                            log_output.append(f"Successfully built image '{final_image_name}'")
+                            
+                        finally:
+                            # Clean up build directory
+                            ssh.run(["rm", "-rf", build_dir])
+                            log_output.append(f"Cleaned up build directory {build_dir}")
                 
-                if not check_result.stdout.strip():
-                    console.print(f"[blue]Image '{image}' not found locally, pulling...[/blue]")
-                    pull_result = ssh.run(["docker", "pull", image])
-                    if pull_result.exit_code != 0:
-                        error_msg = f"Failed to pull Docker image '{image}': {pull_result.stderr}"
-                        console.print(f"[bold red]{error_msg}[/bold red]")
-                        raise RuntimeError(error_msg)
-                    console.print(f"[green]Successfully pulled image '{image}'[/green]")
+                elif image:
+                    # Pull the specified image if it doesn't exist locally
+                    log_output.append(f"Checking if image '{image}' exists locally...")
+                    check_result = ssh.run(["docker", "images", "-q", image])
+                    
+                    if not check_result.stdout.strip():
+                        log_output.append(f"Image '{image}' not found locally, pulling...")
+                        pull_result = ssh.run(["docker", "pull", image])
+                        if pull_result.exit_code != 0:
+                            error_msg = f"Failed to pull Docker image '{image}': {pull_result.stderr}"
+                            log_output.append(error_msg)
+                            raise RuntimeError("\n".join(log_output))
+                        log_output.append(f"Successfully pulled image '{image}'")
+                    else:
+                        log_output.append(f"Image '{image}' found locally")
+
+                # Build docker run command
+                docker_cmd = [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    container_name,
+                    "--network",
+                    "host",
+                    "--entrypoint=''",
+                ]
+
+                # Add restart policy
+                docker_cmd.extend([f"--restart={restart_policy}"])
+
+                # Add port mappings if provided
+                if ports:
+                    for host_port, container_port in ports.items():
+                        docker_cmd.extend(["-p", f"{host_port}:{container_port}"])
+
+                # Add volume mounts if provided
+                if volumes:
+                    for volume in volumes:
+                        docker_cmd.extend(["-v", volume])
+
+                # Add environment variables if provided
+                if env:
+                    for key, value in env.items():
+                        docker_cmd.extend(["-e", f"{key}={value}"])
+
+                # Add any additional docker run arguments
+                if container_args:
+                    docker_cmd.extend(container_args)
+
+                # Add the final image name and command
+                docker_cmd.append(final_image_name)
+                docker_cmd.extend(["tail", "-f", "/dev/null"]) # Keep the container alive
+
+                # Run the docker container
+                log_output.append(f"Starting container '{container_name}' from image '{final_image_name}'...")
+                log_output.append(f"Docker command: {docker_cmd}")
+                result = ssh.run(docker_cmd)
+                log_output.append(f"Docker run command executed: {result.stdout}")
+                if result.exit_code != 0:
+                    error_msg = f"Failed to start container: {result.stderr}"
+                    log_output.append(error_msg)
+                    raise RuntimeError("\n".join(log_output))
+
+                log_output.append("Testing container status and connectivity...")
+
+                # Check if container is running
+                status_result = ssh.run(["docker", "inspect", container_name, "--format", "{{.State.Status}}"])
+                if status_result.exit_code != 0 or status_result.stdout.strip() != "running":
+                    container_status = status_result.stdout.strip() if status_result.exit_code == 0 else 'unknown'
+                    
+                    # Build detailed error message like the bash version
+                    error_lines = []
+                    error_lines.append(f"ERROR: Container '{container_name}' is not running.")
+                    error_lines.append(f"Current status: {container_status}")
+                    error_lines.append("")
+                    
+                    # Handle specific container states with detailed info
+                    if container_status == "exited":
+                        exit_code_result = ssh.run(["docker", "inspect", container_name, "--format", "{{.State.ExitCode}}"])
+                        exit_code = exit_code_result.stdout.strip() if exit_code_result.exit_code == 0 else 'unknown'
+                        error_lines.append(f"Container exited with code: {exit_code}")
+                        error_lines.append("")
+                        error_lines.append("Recent container logs:")
+                        logs_result = ssh.run(["docker", "logs", "--tail=20", container_name])
+                        if logs_result.exit_code == 0 and logs_result.stdout.strip():
+                            for line in logs_result.stdout.splitlines():
+                                error_lines.append(f"  {line}")
+                        else:
+                            error_lines.append("  Could not get logs")
+                            
+                    elif container_status == "paused":
+                        error_lines.append(f"Container is paused. Try: docker unpause {container_name}")
+                        
+                    elif container_status == "restarting":
+                        restart_count_result = ssh.run(["docker", "inspect", container_name, "--format", "{{.RestartCount}}"])
+                        restart_count = restart_count_result.stdout.strip() if restart_count_result.exit_code == 0 else 'unknown'
+                        error_lines.append(f"Container is stuck restarting (restart count: {restart_count})")
+                        error_lines.append("")
+                        error_lines.append("Recent container logs:")
+                        logs_result = ssh.run(["docker", "logs", "--tail=20", container_name])
+                        if logs_result.exit_code == 0 and logs_result.stdout.strip():
+                            for line in logs_result.stdout.splitlines():
+                                error_lines.append(f"  {line}")
+                        else:
+                            error_lines.append("  Could not get logs")
+                            
+                    elif container_status == "dead":
+                        error_lines.append("Container is in a dead state. May need to remove and recreate.")
+                        error_lines.append("")
+                        error_lines.append("Recent container logs:")
+                        logs_result = ssh.run(["docker", "logs", "--tail=20", container_name])
+                        if logs_result.exit_code == 0 and logs_result.stdout.strip():
+                            for line in logs_result.stdout.splitlines():
+                                error_lines.append(f"  {line}")
+                        else:
+                            error_lines.append("  Could not get logs")
+                            
+                    elif container_status not in ["running", "unknown"]:
+                        error_lines.append(f"Unknown container status: {container_status}")
+                        error_lines.append("")
+                        error_lines.append("Container details:")
+                        state_result = ssh.run(["docker", "inspect", container_name, "--format", "{{json .State}}"])
+                        if state_result.exit_code == 0:
+                            for line in state_result.stdout.splitlines():
+                                error_lines.append(f"  {line}")
+                        else:
+                            error_lines.append("  Could not get container details")
+                    
+                    # Always add container overview at the end
+                    error_lines.append("")
+                    error_lines.append("Container overview:")
+                    ps_result = ssh.run(["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}"])
+                    if ps_result.exit_code == 0:
+                        for line in ps_result.stdout.splitlines():
+                            error_lines.append(line)
+                    else:
+                        error_lines.pop()
+                        error_lines.pop()
+                    
+                    # Add all error details to log_output
+                    log_output.extend(error_lines)
+                    raise RuntimeError("\n".join(log_output))
+
+                # Test shell availability (keep this as a separate health check)
+                shell_test_result = ssh.run(["docker", "exec", container_name, "echo", "test"])
+                if shell_test_result.exit_code != 0:
+                    log_output.append("Warning: Container is running but not responsive to commands")
+                    
+                    # Get more debugging info
+                    logs_result = ssh.run(["docker", "logs", "--tail=10", container_name])
+                    log_output.append(f"Recent container logs:\n{logs_result.stdout}")
+                    
                 else:
-                    console.print(f"[green]Image '{image}' found locally[/green]")
+                    log_output.append("Container is running and responsive")
 
-            # Build docker run command
-            docker_cmd = [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                container_name,
-                "--network",
-                "host",
-                "--entrypoint=''",
-            ]
-
-            # Add restart policy
-            docker_cmd.extend([f"--restart={restart_policy}"])
-
-            # Add port mappings if provided
-            if ports:
-                for host_port, container_port in ports.items():
-                    docker_cmd.extend(["-p", f"{host_port}:{container_port}"])
-
-            # Add volume mounts if provided
-            if volumes:
-                for volume in volumes:
-                    docker_cmd.extend(["-v", volume])
-
-            # Add environment variables if provided
-            if env:
-                for key, value in env.items():
-                    docker_cmd.extend(["-e", f"{key}={value}"])
-
-            # Add any additional docker run arguments
-            if container_args:
-                docker_cmd.extend(container_args)
-
-            # Add the final image name and command
-            docker_cmd.append(final_image_name)
-
-            docker_cmd.extend(["tail", "-f", "/dev/null"]) # Keep the container alive
-
-            # Run the docker container
-            console.print(
-                f"[blue]Starting container '{container_name}' from image '{final_image_name}'...[/blue]"
-            )
-            console.print(f"[blue]{docker_cmd=}[/blue]")
-            result = ssh.run(docker_cmd)
-            console.print(f"[blue]Docker run command executed: {result.stdout}[/blue]")
-            if result.exit_code != 0:
-                error_msg = f"Failed to start container: {result.stderr}"
-                console.print(f"[bold red]{error_msg}[/bold red]")
-                raise RuntimeError(error_msg)
-
-            console.print("[blue]Testing container status and connectivity...[/blue]")
-
-            # Check if container is running
-            status_result = ssh.run(["docker", "inspect", container_name, "--format", "{{.State.Status}}"])
-            if status_result.exit_code != 0 or status_result.stdout.strip() != "running":
-                # Get detailed container information
-                logs_result = ssh.run(["docker", "logs", "--tail=20", container_name])
-                ps_result = ssh.run(["docker", "ps", "-a", "--filter", f"name={container_name}"])
-                
-                error_msg = f"""Container '{container_name}' is not running properly.
-            Status: {status_result.stdout.strip() if status_result.exit_code == 0 else 'unknown'}
-
-            Container info:
-            {ps_result.stdout if ps_result.exit_code == 0 else 'Could not get container info'}
-
-            Recent logs:
-            {logs_result.stdout if logs_result.exit_code == 0 else 'Could not get logs'}"""
-                
-                console.print(f"[bold red]{error_msg}[/bold red]")
-                raise RuntimeError(f"Container '{container_name}' failed to start properly")
-
-            # Test shell availability
-            shell_test_result = ssh.run(["docker", "exec", container_name, "echo", "test"])
-            if shell_test_result.exit_code != 0:
-                console.print("[yellow]Warning: Container is running but not responsive to commands[/yellow]")
-                
-                # Get more debugging info
-                logs_result = ssh.run(["docker", "logs", "--tail=10", container_name])
-                console.print(f"[yellow]Recent container logs:\n{logs_result.stdout}[/yellow]")
-                
-            else:
-                console.print("[green]Container is running and responsive[/green]")
-
-            # Create improved container.sh script with TTY detection
-            container_script = (
-                f"""#!/bin/bash
-
-    # container.sh - Redirects SSH commands to the Docker container
-    CONTAINER_NAME={container_name}"""
-                + """
-
+                # Create improved container.sh script with TTY detection
+                container_script = (
+                    f"""#!/bin/bash
+        # container.sh - Redirects SSH commands to the Docker container
+        CONTAINER_NAME={container_name}"""
+                    + """
 # Function to check container status and provide detailed error information
 check_container_status() {
     # Check if container exists at all
@@ -2707,12 +2754,6 @@ check_container_status() {
 
 # Check container status before proceeding
 if ! check_container_status; then
-    echo "" >&2
-    echo "TROUBLESHOOTING TIPS:" >&2
-    echo "1. Check if the container image has issues: docker logs $CONTAINER_NAME" >&2
-    echo "2. Try restarting the container: docker restart $CONTAINER_NAME" >&2
-    echo "3. Check Docker daemon status: systemctl status docker" >&2
-    echo "4. Check available resources: df -h && free -h" >&2
     exit 1
 fi
 
@@ -2763,49 +2804,45 @@ else
         exec docker exec "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"
     fi
 fi"""
-            )
-
-            # Write the container.sh script to the instance
-            console.print("[blue]Installing container redirection script...[/blue]")
-            ssh.write_file("/root/container.sh", container_script, mode=0o755)
-
-            # Update SSH configuration to force commands through the script
-            console.print("[blue]Configuring SSH to redirect to container...[/blue]")
-
-            # Check if ForceCommand already exists in sshd_config
-            grep_result = ssh.run("grep -q '^ForceCommand' /etc/ssh/sshd_config")
-
-            if grep_result.returncode == 0:
-                # ForceCommand already exists, update it
-                ssh.run(
-                    "sed -i 's|^ForceCommand.*|ForceCommand /root/container.sh|' /etc/ssh/sshd_config"
-                )
-            else:
-                # Add ForceCommand to the end of sshd_config
-                ssh.run('echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config')
-
-            # Restart SSH service
-            console.print("[blue]Restarting SSH service...[/blue]")
-            ssh.run(["systemctl", "restart", "sshd"])
-
-            # Test the container setup
-            console.print("[blue]Testing ssh redirection...[/blue]")
-            test_result = ssh.run('echo "Container setup test"')
-            if test_result.returncode != 0:
-                console.print(
-                    "[yellow]Warning: Container setup test returned non-zero exit code. Check container configuration.[/yellow]"
                 )
 
-        console.print(
-            f"[bold green]✅ Instance now redirects all SSH sessions to the '{container_name}' container[/bold green]"
-        )
-        if dockerfile:
-            console.print(
-                f"[dim]Built custom image '{final_image_name}' from provided Dockerfile[/dim]"
-            )
-        console.print(
-            "[dim]Note: This change cannot be easily reversed. Consider creating a snapshot before using this method.[/dim]"
-        )
+                # Write the container.sh script to the instance
+                log_output.append("Installing container redirection script...")
+                ssh.write_file("/root/container.sh", container_script, mode=0o755)
+
+                # Update SSH configuration to force commands through the script
+                log_output.append("Configuring SSH to redirect to container...")
+
+                # Check if ForceCommand already exists in sshd_config
+                grep_result = ssh.run("grep -q '^ForceCommand' /etc/ssh/sshd_config")
+
+                if grep_result.returncode == 0:
+                    # ForceCommand already exists, update it
+                    ssh.run(
+                        "sed -i 's|^ForceCommand.*|ForceCommand /root/container.sh|' /etc/ssh/sshd_config"
+                    )
+                else:
+                    # Add ForceCommand to the end of sshd_config
+                    ssh.run('echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config')
+
+                # Restart SSH service
+                log_output.append("Restarting SSH service...")
+                ssh.run(["systemctl", "restart", "sshd"])
+
+                # Test the container setup
+                log_output.append("Testing ssh redirection...")
+                test_result = ssh.run('echo "Container setup test"')
+                if test_result.returncode != 0:
+                    log_output.append("Warning: Container setup test returned non-zero exit code. Check container configuration.")
+
+            # If we reach here, everything succeeded
+            log_output.append(f"✅ Instance now redirects all SSH sessions to the '{container_name}' container")
+            if dockerfile:
+                log_output.append(f"Built custom image '{final_image_name}' from provided Dockerfile")
+            log_output.append("Note: This change cannot be easily reversed. Consider creating a snapshot before using this method.")
+            
+        except Exception as e:
+            raise
 
     async def aas_container(
         self,
@@ -2880,7 +2917,7 @@ fi"""
         Parameters:
             ttl_seconds: New TTL in seconds
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
-                       If not provided, the current action will be maintained.
+                    If not provided, the current action will be maintained.
 
         Returns:
             None
@@ -2910,7 +2947,7 @@ fi"""
         Parameters:
             ttl_seconds: New TTL in seconds
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
-                       If not provided, the current action will be maintained.
+                    If not provided, the current action will be maintained.
 
         Returns:
             None
