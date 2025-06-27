@@ -295,6 +295,13 @@ class Snapshot:
                                        digest=name, metadata={"name": name})
         return cls(snap)
 
+    @classmethod
+    def from_snapshot_id(cls, snapshot_id: str) -> "Snapshot":
+        renderer.add_system_panel("🔍 Snapshot.from_snapshot_id()",
+                                  f"snapshot_id={snapshot_id}")
+        snap = client.snapshots.get(snapshot_id)
+        return cls(snap)
+
     @contextmanager
     def start(self):
         with client.instances.start(snapshot_id=self.snapshot.id, metadata=dict(root=self.snapshot.id)) as inst:
