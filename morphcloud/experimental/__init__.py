@@ -278,6 +278,11 @@ class Snapshot:
     def __init__(self, snapshot: _Snapshot):
         self.snapshot = snapshot
 
+    @property
+    def id(self) -> str:
+        """Return the ID of the inner snapshot."""
+        return self.snapshot.id
+
     @classmethod
     def create(cls, name: str, image_id: str = "morphvm-minimal",
                vcpus: int = 1, memory: int = 4096, disk_size: int = 8192,
