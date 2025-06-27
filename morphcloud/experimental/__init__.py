@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import typing
 import threading
 
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from typing import Iterator, Tuple, Union, Literal
 
 import paramiko
@@ -273,6 +274,32 @@ def instance_exec(
 client = MorphCloudClient()
 
 InvalidateFn = typing.Callable[["Snapshot"], bool]
+
+class _AgentLocal:
+    def __init__(self):
+        self.current_agent = None
+
+_agent_local = _AgentLocal()
+
+class Agent:
+    def __init__(self, tree_root):
+        self.tree_root = tree_root
+        self.running = False
+        self._last_verification_errors = []
+    
+    def _set_status(self, status: str, style: str):
+        pass
+    
+    def _append(self, panel):
+        pass
+    
+    def run(self, instance, instructions: str, verifier):
+        _agent_local.current_agent = self
+        try:
+            self.running = True
+            self.running = False
+        finally:
+            _agent_local.current_agent = None
 
 class Snapshot:
     def __init__(self, snapshot: _Snapshot):
@@ -545,5 +572,318 @@ class Snapshot:
     @contextmanager
     @staticmethod
     def pretty_build():
+        with renderer.start_live():
+            yield renderer
+
+
+# ──────────────────────────── AsyncSnapshot ─────────────────────────── #
+
+async def ainstance_exec(
+    instance,
+    command: str,
+    on_stdout: typing.Callable[[str], None],
+    on_stderr: typing.Callable[[str], None],
+) -> int:
+    """Async version of instance_exec using asyncio."""
+    return await asyncio.to_thread(instance_exec, instance, command, on_stdout, on_stderr)
+
+
+class AsyncSnapshot:
+    """Async version of the Snapshot class with all methods converted to async."""
+    
+    def __init__(self, snapshot: _Snapshot):
+        self.snapshot = snapshot
+
+    @classmethod
+    async def create(cls, name: str, image_id: str = "morphvm-minimal",
+                     vcpus: int = 1, memory: int = 4096, disk_size: int = 8192,
+                     invalidate: InvalidateFn | bool = False) -> "AsyncSnapshot":
+        """Async version of Snapshot.create()."""
+        renderer.add_system_panel("🖼  AsyncSnapshot.create()",
+                                  f"image_id={image_id}, vcpus={vcpus}, memory={memory}MB, disk={disk_size}MB")
+        if invalidate:
+            invalidate_fn = invalidate if isinstance(invalidate, typing.Callable) else lambda _: invalidate
+            snaps = await asyncio.to_thread(client.snapshots.list, digest=name)
+            for s in snaps:
+                if invalidate_fn(AsyncSnapshot(s)):
+                    await asyncio.to_thread(s.delete)
+        snap = await asyncio.to_thread(
+            client.snapshots.create,
+            image_id=image_id, vcpus=vcpus, memory=memory, disk_size=disk_size,
+            digest=name, metadata={"name": name}
+        )
+        return cls(snap)
+
+    @classmethod
+    async def from_snapshot_id(cls, snapshot_id: str) -> "AsyncSnapshot":
+        """Async version of Snapshot.from_snapshot_id()."""
+        renderer.add_system_panel("🔍 AsyncSnapshot.from_snapshot_id()",
+                                  f"snapshot_id={snapshot_id}")
+        snap = await asyncio.to_thread(client.snapshots.get, snapshot_id)
+        return cls(snap)
+
+    async def start(self):
+        """Async version of Snapshot.start()."""
+        return await asyncio.to_thread(
+            client.instances.start,
+            snapshot_id=self.snapshot.id,
+            metadata=dict(root=self.snapshot.id)
+        )
+
+    @asynccontextmanager
+    async def boot(
+        self,
+        vcpus: int | None = None,
+        memory: int | None = None,
+        disk_size: int | None = None,
+    ):
+        """Async version of Snapshot.boot()."""
+        renderer.add_system_panel(
+            "🔄 AsyncSnapshot.boot()",
+            f"vcpus={vcpus or self.snapshot.spec.vcpus}, memory={memory or self.snapshot.spec.memory}MB, disk={disk_size or self.snapshot.spec.disk_size}MB"
+        )
+        
+        # Use async context manager
+        boot_task = asyncio.to_thread(
+            client.instances.boot,
+            snapshot_id=self.snapshot.id,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
+        )
+        
+        async with await boot_task as inst:
+            yield inst
+
+    def key_to_digest(self, key: str) -> str:
+        """Same as sync version - no async needed."""
+        return (self.snapshot.digest or "") + self.snapshot.id + key
+
+    async def apply(
+        self,
+        func,
+        key: str | None = None,
+        start_fn: typing.Union[
+            typing.AsyncContextManager, 
+            typing.Callable[[], typing.AsyncContextManager], 
+            None
+        ] = None,
+        invalidate: InvalidateFn | bool = False,
+    ):
+        """Async version of Snapshot.apply()."""
+        invalidate_fn = invalidate if isinstance(invalidate, typing.Callable) else lambda _: invalidate
+        if key:
+            digest = self.key_to_digest(key)
+            snaps = await asyncio.to_thread(client.snapshots.list, digest=digest)
+            if invalidate:
+                valid = []
+                for s in snaps:
+                    if invalidate_fn(AsyncSnapshot(s)):
+                        await asyncio.to_thread(s.delete)
+                    else:
+                        valid.append(s)
+                snaps = valid
+            if snaps:
+                return AsyncSnapshot(snaps[0])
+
+        if start_fn is None:
+            context_manager = await self.start()
+        elif callable(start_fn):
+            context_manager = await start_fn()
+        else:
+            context_manager = start_fn
+
+        async with context_manager as inst:
+            res = await func(inst) if asyncio.iscoroutinefunction(func) else func(inst)
+            inst = inst if res is None else res
+            snapshot_result = await asyncio.to_thread(
+                inst.snapshot,
+                digest=self.key_to_digest(key) if key else None
+            )
+            return AsyncSnapshot(snapshot_result)
+
+    async def run(self, command: str, invalidate: InvalidateFn | bool = False):
+        """Async version of Snapshot.run()."""
+        renderer.add_system_panel("🚀 AsyncSnapshot.run()", command)
+
+        async def execute(instance):
+            header_tbl = Table.grid(padding=(0, 1))
+            header_tbl.add_column(justify="right", style=_colour("running"))
+            header_tbl.add_column()
+            header_tbl.add_row("CMD", command)
+
+            footer_tbl = Table.grid(padding=(0, 1))
+            footer_tbl.add_column(justify="right", style=_colour("running"))
+            footer_tbl.add_column()
+
+            out_text = Text()
+            grp = Group(Align.left(header_tbl), Align.left(out_text), Align.left(footer_tbl))
+            panel = Panel(grp, title="🖥  AsyncSnapshot.run()", border_style=_colour("accent"), style=f"on {PALETTE['bg']}")
+            renderer.add_panel(panel)
+
+            buf = deque()
+
+            def _out(c): _append_stream_chunk(buf, c, out_text); renderer.refresh()
+            def _err(c): _append_stream_chunk(buf, c, out_text, style=_colour("error")); renderer.refresh()
+
+            exit_code = await ainstance_exec(instance, command, _out, _err)
+            footer_tbl.add_row("RET", str(exit_code))
+            renderer.refresh()
+
+            if exit_code != 0:
+                raise Exception(f"Command execution failed: {command} exit={exit_code} stdout={out_text.plain} stderr={out_text.plain}")
+
+        return await self.apply(execute, key=command, invalidate=invalidate)
+
+    async def do(
+        self,
+        instructions: str,
+        verify=None,
+        invalidate: InvalidateFn | bool = False,
+    ):
+        """Async version of Snapshot.do()."""
+        verify_funcs = (
+            [verify] if isinstance(verify, typing.Callable) else verify or []
+        )
+        digest = self.key_to_digest(
+            instructions + ",".join(v.__name__ for v in verify_funcs)
+        )
+
+        tree_root = Tree("")
+        renderer.add_panel(
+            Panel(
+                tree_root,
+                title=instructions,
+                border_style=_colour("accent"),
+                style=f"on {PALETTE['bg']}",
+            )
+        )
+
+        agent_visual = Agent(tree_root)
+
+        snaps_exist = await asyncio.to_thread(client.snapshots.list, digest=digest)
+        if snaps_exist and not invalidate:
+            agent_visual._set_status("💾 Cached ✅", "success")
+            return AsyncSnapshot(snaps_exist[0])
+
+        async def verifier(inst):
+            if not verify_funcs:
+                return True
+            current_agent: Agent | None = getattr(_agent_local, "current_agent", None)
+            if current_agent is None:
+                return True
+
+            vpanel = VerificationPanel(verify_funcs)
+            current_agent._append(vpanel.panel)
+
+            all_ok = True
+            verification_errors = []
+
+            for func in verify_funcs:
+                try:
+                    if asyncio.iscoroutinefunction(func):
+                        await func(inst)
+                    else:
+                        func(inst)
+                    vpanel.update(func.__name__, "✅ passed")
+                except Exception as e:
+                    error_msg = str(e)
+                    vpanel.update(func.__name__, f"❌ failed ({error_msg})")
+                    verification_errors.append(f"{func.__name__}: {error_msg}")
+                    all_ok = False
+
+            # Store errors in the current agent for tool result retrieval
+            if current_agent:
+                current_agent._last_verification_errors = verification_errors
+
+            return all_ok
+
+        async def run_agent(instance):
+            await asyncio.to_thread(agent_visual.run, instance, instructions, verifier)
+            if agent_visual.running:
+                raise Exception("Agent execution did not complete successfully.")
+            return instance
+
+        new_snap = await self.apply(run_agent, key=digest, invalidate=invalidate)
+
+        if agent_visual.running:
+            agent_visual._set_status("💾 Cached ✅", "success")
+
+        return new_snap
+
+    async def resize(
+        self,
+        vcpus: int | None = None,
+        memory: int | None = None,
+        disk_size: int | None = None,
+        invalidate: bool = False,
+    ):
+        """Async version of Snapshot.resize()."""
+        renderer.add_system_panel(
+            "🔧 AsyncSnapshot.resize()",
+            f"vcpus={vcpus or self.snapshot.spec.vcpus}, memory={memory or self.snapshot.spec.memory}MB, disk={disk_size or self.snapshot.spec.disk_size}MB"
+        )
+
+        @asynccontextmanager
+        async def boot_snapshot():
+            async with self.boot(vcpus=vcpus, memory=memory, disk_size=disk_size) as instance:
+                await asyncio.sleep(10)
+                yield instance
+
+        return await self.apply(
+            lambda x: x,
+            key=f"resize-{vcpus}-{memory}-{disk_size}",
+            start_fn=boot_snapshot,
+            invalidate=invalidate,
+        )
+
+    @asynccontextmanager
+    async def deploy(
+        self,
+        name: str,
+        port: int,
+        min_replicas: int = 0,
+        max_replicas: int = 3,
+    ):
+        """Async version of Snapshot.deploy()."""
+        renderer.console.print(
+            Panel(
+                Text(
+                    f"name={name}\nport={port}\nreplicas=[{min_replicas},{max_replicas}]",
+                    justify="left",
+                ),
+                title="🌐 AsyncSnapshot.deploy()",
+                border_style=_colour("success"),
+                style=f"on {PALETTE['bg']}",
+            )
+        )
+        async with await self.start() as instance:
+            url = await asyncio.to_thread(instance.expose_http_service, name=name, port=port)
+            renderer.console.print(
+                f"[{_colour('success')}]Started service at {url}[/]"
+            )
+            yield instance, url
+
+    async def tag(self, tag: str):
+        """Async version of Snapshot.tag()."""
+        renderer.console.print(
+            Panel(
+                Text(f"tag={tag}", justify="left"),
+                title="🏷  AsyncSnapshot.tag()",
+                border_style=_colour("accent"),
+                style=f"on {PALETTE['bg']}",
+            )
+        )
+        meta = self.snapshot.metadata.copy()
+        meta.update({"tag": tag})
+        await asyncio.to_thread(self.snapshot.set_metadata, meta)
+        renderer.console.print(
+            f"[{_colour('success')}]Snapshot tagged successfully!"
+        )
+
+    @asynccontextmanager
+    @staticmethod
+    async def pretty_build():
+        """Async version of Snapshot.pretty_build()."""
         with renderer.start_live():
             yield renderer
