@@ -303,7 +303,16 @@ class Snapshot:
         return cls(snap)
 
     def start(self):
-        return client.instances.start(snapshot_id=self.snapshot.id, metadata=dict(root=self.snapshot.id))
+        instance = client.instances.start(snapshot_id=self.snapshot.id, metadata=dict(root=self.snapshot.id))
+        # Return a wrapper that disables context manager behavior
+        class InstanceWrapper:
+            def __init__(self, instance):
+                self._instance = instance
+            
+            def __getattr__(self, name):
+                return getattr(self._instance, name)
+        
+        return InstanceWrapper(instance)
 
     @contextmanager
     def boot(
@@ -519,12 +528,15 @@ class Snapshot:
                 style=f"on {PALETTE['bg']}",
             )
         )
-        with self.start() as instance:
+        instance = self.start()
+        try:
             url = instance.expose_http_service(name=name, port=port)
             renderer.console.print(
                 f"[{_colour('success')}]Started service at {url}[/]"
             )
             yield instance, url
+        finally:
+            instance.stop()
 
     def tag(self, tag: str):
         renderer.console.print(
