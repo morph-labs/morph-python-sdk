@@ -266,9 +266,52 @@ class Sandbox:
         self._ws_connections = ws_connections
         self._session_id = session_id
 
+    def _discover_existing_kernels(self) -> None:
+        """
+        Discover and reconnect to existing kernels on the Jupyter server.
+        This preserves kernel state when getting an existing sandbox instance.
+        """
+        try:
+            # Get list of existing kernels from Jupyter server
+            response = requests.get(f"{self.jupyter_url}/api/kernels", timeout=10.0)
+            response.raise_for_status()
+            existing_kernels = response.json()
+            
+            # Map kernel specs to our supported languages
+            kernel_to_language = {}
+            for language in LanguageSupport.get_supported_languages():
+                kernel_name = LanguageSupport.get_kernel_name(language)
+                kernel_to_language[kernel_name] = language
+            
+            # Connect to existing kernels that match our supported languages
+            for kernel_info in existing_kernels:
+                kernel_id = kernel_info.get("id")
+                kernel_spec = kernel_info.get("spec", {}).get("name")
+                
+                if kernel_spec in kernel_to_language:
+                    language = kernel_to_language[kernel_spec]
+                    # Only connect if we don't already have a kernel for this language
+                    if language not in self._kernel_ids:
+                        self._kernel_ids[language] = kernel_id
+                        # Connect WebSocket to existing kernel
+                        try:
+                            self._connect_websocket(kernel_id)
+                        except ConnectionError:
+                            # If we can't connect, remove from our tracking
+                            del self._kernel_ids[language]
+                            
+        except requests.RequestException:
+            # If we can't discover existing kernels, that's okay
+            # New kernels will be created as needed
+            pass
+        except Exception:
+            # Any other error during discovery should not prevent connection
+            pass
+
     def connect(self, timeout_seconds: int = 60) -> Sandbox:
         """Ensure Jupyter service is running and accessible"""
         self.wait_for_jupyter(timeout_seconds)
+        self._discover_existing_kernels()
         return self
 
     def wait_for_jupyter(self, timeout: int = 60) -> bool:
