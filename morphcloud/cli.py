@@ -464,6 +464,180 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
         handle_api_error(e)
 
 
+@snapshot.command("cleanup")
+@click.option(
+    "--name-pattern",
+    help="Comma-separated glob patterns to match snapshot IDs (e.g., 'snapshot_dev_*,snapshot_test_*')",
+)
+@click.option(
+    "--name-exclude-pattern",
+    help="Comma-separated glob patterns to exclude snapshot IDs",
+)
+@click.option(
+    "--metadata-pattern",
+    help="Metadata key-value pairs that snapshots must have to be deleted (format: key=value)",
+    multiple=True,
+)
+@click.option(
+    "--metadata-exclude-pattern",
+    help="Metadata key-value pairs that exclude snapshots from deletion (format: key=value)",
+    multiple=True,
+)
+@click.option(
+    "--digest-pattern",
+    help="Comma-separated glob patterns to match snapshot digests",
+)
+@click.option(
+    "--digest-exclude-pattern",
+    help="Comma-separated glob patterns to exclude snapshot digests",
+)
+@click.option(
+    "--older-than-days",
+    type=int,
+    help="Only delete snapshots older than this many days",
+)
+@click.option(
+    "--exclude-status",
+    help="Comma-separated list of snapshot statuses to exclude from cleanup (e.g., 'PENDING,DELETING')",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=10,
+    help="Maximum number of concurrent operations",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt and proceed immediately",
+)
+@click.option(
+    "--json",
+    "json_mode",
+    is_flag=True,
+    default=False,
+    help="Output results in JSON format",
+)
+def cleanup_snapshots(
+    name_pattern,
+    name_exclude_pattern,
+    metadata_pattern,
+    metadata_exclude_pattern,
+    digest_pattern,
+    digest_exclude_pattern,
+    older_than_days,
+    exclude_status,
+    max_workers,
+    yes,
+    json_mode,
+):
+    """
+    Clean up snapshots based on various filtering criteria.
+
+    All pattern options support comma-separated lists of glob patterns.
+
+    Examples:
+
+      # Delete all snapshots with dev in the name
+      morph snapshot cleanup --name-pattern "*dev*"
+
+      # Delete snapshots from multiple name patterns
+      morph snapshot cleanup --name-pattern "snapshot_dev_*,snapshot_test_*,snapshot_tmp_*"
+
+      # Delete snapshots with specific metadata
+      morph snapshot cleanup --metadata-pattern "env=dev" --metadata-pattern "type=temp"
+
+      # Delete snapshots older than 7 days
+      morph snapshot cleanup --older-than-days 7
+
+      # Delete test snapshots but exclude production snapshots
+      morph snapshot cleanup --name-pattern "snapshot_test_*" --name-exclude-pattern "snapshot_prod_*,snapshot_staging_*"
+
+      # Delete snapshots with specific digest patterns
+      morph snapshot cleanup --digest-pattern "temp_*,dev_*"
+
+      # Exclude snapshots with certain statuses
+      morph snapshot cleanup --name-pattern "snapshot_old_*" --exclude-status "PENDING,DELETING"
+
+      # Skip confirmation for automated scripts
+      morph snapshot cleanup --name-pattern "snapshot_temp_*" --yes
+    """
+    client = get_client()
+
+    try:
+        # Parse metadata patterns
+        metadata_pattern_dict = {}
+        for meta in metadata_pattern:
+            if "=" not in meta:
+                raise click.UsageError("Metadata pattern must be in key=value format.")
+            k, v = meta.split("=", 1)
+            metadata_pattern_dict[k] = v
+
+        metadata_exclude_pattern_dict = {}
+        for meta in metadata_exclude_pattern:
+            if "=" not in meta:
+                raise click.UsageError("Metadata exclude pattern must be in key=value format.")
+            k, v = meta.split("=", 1)
+            metadata_exclude_pattern_dict[k] = v
+
+        # Parse exclude status
+        exclude_status_list = None
+        if exclude_status:
+            exclude_status_list = [status.strip() for status in exclude_status.split(",")]
+
+        # Use confirmation unless --yes flag is provided
+        confirm = not yes
+
+        result = client.snapshots.cleanup(
+            name_pattern=name_pattern,
+            name_exclude_pattern=name_exclude_pattern,
+            metadata_pattern=metadata_pattern_dict if metadata_pattern_dict else None,
+            metadata_exclude_pattern=metadata_exclude_pattern_dict if metadata_exclude_pattern_dict else None,
+            digest_pattern=digest_pattern,
+            digest_exclude_pattern=digest_exclude_pattern,
+            older_than_days=older_than_days,
+            exclude_status=exclude_status_list,
+            max_workers=max_workers,
+            confirm=confirm,
+        )
+
+        if json_mode:
+            click.echo(json.dumps(result, indent=2))
+        else:
+            # Rich output is already handled by the cleanup method itself
+            # Just show a final summary
+            if result.get("success"):
+                if result.get("cancelled"):
+                    click.secho("Operation cancelled by user.", fg="cyan")
+                elif result["processed"] > 0:
+                    click.secho(
+                        f"✅ Successfully deleted {result['processed']} snapshots.",
+                        fg="green",
+                    )
+                else:
+                    click.secho("No snapshots needed cleanup.", fg="green")
+            else:
+                if "error" in result:
+                    click.secho(f"❌ Error: {result['error']}", fg="red", err=True)
+                else:
+                    click.secho(
+                        f"❌ {result['failed']} snapshots failed to delete.",
+                        fg="red",
+                        err=True,
+                    )
+                    sys.exit(1)
+
+    except api.ApiError as e:
+        click.echo(f"API Error (Status Code: {e.status_code})", err=True)
+        click.echo(f"Response Body: {e.response_body}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"An unexpected error occurred: {e}", err=True)
+        sys.exit(1)
+
+
 # ─────────────────────────────────────────────────────────────
 #  Instance Commands
 # ─────────────────────────────────────────────────────────────

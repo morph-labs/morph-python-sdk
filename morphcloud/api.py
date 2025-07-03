@@ -372,6 +372,286 @@ class SnapshotAPI:
         response = await self._client._async_http_client.get(f"/snapshot/{snapshot_id}")
         return Snapshot.model_validate(response.json())._set_api(self)
 
+    def cleanup(
+        self,
+        name_pattern: typing.Optional[str] = None,
+        name_exclude_pattern: typing.Optional[str] = None,
+        metadata_pattern: typing.Optional[typing.Dict[str, str]] = None,
+        metadata_exclude_pattern: typing.Optional[typing.Dict[str, str]] = None,
+        digest_pattern: typing.Optional[str] = None,
+        digest_exclude_pattern: typing.Optional[str] = None,
+        older_than_days: typing.Optional[int] = None,
+        exclude_status: typing.Optional[typing.List[str]] = None,
+        max_workers: int = 10,
+        confirm: bool = False,
+    ) -> typing.Dict[str, typing.Any]:
+        """
+        Clean up snapshots based on various filtering criteria.
+
+        Parameters:
+            name_pattern: Comma-separated glob patterns to match snapshot IDs for deletion
+            name_exclude_pattern: Comma-separated glob patterns to exclude snapshot IDs from deletion
+            metadata_pattern: Key-value pairs that snapshots must have to be deleted
+            metadata_exclude_pattern: Key-value pairs that exclude snapshots from deletion
+            digest_pattern: Comma-separated glob patterns to match snapshot digests for deletion
+            digest_exclude_pattern: Comma-separated glob patterns to exclude snapshot digests from deletion
+            older_than_days: Only delete snapshots older than this many days
+            exclude_status: List of snapshot statuses to exclude from cleanup (e.g., ['PENDING', 'DELETING'])
+            max_workers: Maximum number of concurrent operations
+            confirm: If True, ask for user confirmation before proceeding
+
+        Returns:
+            Dictionary with cleanup results including success/failure counts and details
+        """
+        import fnmatch
+        import concurrent.futures
+        import threading
+        from rich.console import Console
+        
+        console = Console()
+        
+        console.print(f"[bold blue]Starting MorphCloud Snapshot Cleanup[/bold blue]")
+        
+        # List all snapshots
+        try:
+            console.print("Fetching list of all snapshots...")
+            all_snapshots = self.list()
+            console.print(f"Found {len(all_snapshots)} total snapshots.")
+            
+            if not all_snapshots:
+                console.print("[green]No snapshots found. Nothing to clean up.[/green]")
+                return {
+                    "success": True,
+                    "total": 0,
+                    "processed": 0,
+                    "kept": 0,
+                    "errors": [],
+                }
+                
+        except Exception as e:
+            console.print(
+                f"[bold red]Error listing snapshots:[/bold red] {e}", style="error"
+            )
+            return {"success": False, "error": str(e)}
+        
+        # Filter snapshots
+        snapshots_to_process: typing.List[Snapshot] = []
+        snapshots_to_keep: typing.List[Snapshot] = []
+        
+        console.print("\n[bold]Filtering snapshots...[/bold]")
+        
+        # Helper function to check multiple patterns
+        def matches_any_pattern(value, pattern_list):
+            if not pattern_list:
+                return False
+            patterns = [p.strip() for p in pattern_list.split(",")]
+            return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
+        
+        # Helper function to check metadata patterns
+        def matches_metadata_pattern(snapshot_metadata, pattern_dict):
+            if not pattern_dict:
+                return False
+            for key, value in pattern_dict.items():
+                if key not in snapshot_metadata:
+                    return False
+                if not fnmatch.fnmatch(snapshot_metadata[key], value):
+                    return False
+            return True
+        
+        # Helper function to check age
+        def is_older_than_days(created_timestamp, days):
+            if days is None:
+                return True
+            import time
+            current_time = time.time()
+            age_seconds = current_time - created_timestamp
+            age_days = age_seconds / (24 * 60 * 60)
+            return age_days > days
+        
+        for snapshot in all_snapshots:
+            should_process = True
+            reasons_to_keep = []
+            reasons_to_process = []
+            
+            # Check status exclusions
+            if exclude_status and snapshot.status.value in exclude_status:
+                should_process = False
+                reasons_to_keep.append(f"status is {snapshot.status.value} (excluded)")
+            
+            # Check name patterns
+            snapshot_id = snapshot.id
+            
+            # Include name pattern check
+            if name_pattern and not matches_any_pattern(snapshot_id, name_pattern):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' doesn't match patterns '{name_pattern}'"
+                )
+            elif name_pattern and matches_any_pattern(snapshot_id, name_pattern):
+                reasons_to_process.append(
+                    f"snapshot ID matches patterns '{name_pattern}'"
+                )
+            
+            # Exclude name pattern check
+            if name_exclude_pattern and matches_any_pattern(snapshot_id, name_exclude_pattern):
+                should_process = False
+                reasons_to_keep.append(
+                    f"snapshot ID '{snapshot_id}' matches exclude patterns '{name_exclude_pattern}'"
+                )
+            
+            # Check digest patterns
+            if snapshot.digest:
+                # Include digest pattern check
+                if digest_pattern and not matches_any_pattern(snapshot.digest, digest_pattern):
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"digest '{snapshot.digest}' doesn't match patterns '{digest_pattern}'"
+                    )
+                elif digest_pattern and matches_any_pattern(snapshot.digest, digest_pattern):
+                    reasons_to_process.append(
+                        f"digest matches patterns '{digest_pattern}'"
+                    )
+                
+                # Exclude digest pattern check
+                if digest_exclude_pattern and matches_any_pattern(snapshot.digest, digest_exclude_pattern):
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"digest '{snapshot.digest}' matches exclude patterns '{digest_exclude_pattern}'"
+                    )
+            
+            # Check metadata patterns
+            if metadata_pattern and not matches_metadata_pattern(snapshot.metadata, metadata_pattern):
+                should_process = False
+                reasons_to_keep.append(
+                    f"metadata doesn't match required patterns"
+                )
+            elif metadata_pattern and matches_metadata_pattern(snapshot.metadata, metadata_pattern):
+                reasons_to_process.append(
+                    f"metadata matches required patterns"
+                )
+            
+            if metadata_exclude_pattern and matches_metadata_pattern(snapshot.metadata, metadata_exclude_pattern):
+                should_process = False
+                reasons_to_keep.append(
+                    f"metadata matches exclude patterns"
+                )
+            
+            # Check age
+            if older_than_days is not None:
+                if not is_older_than_days(snapshot.created, older_than_days):
+                    should_process = False
+                    reasons_to_keep.append(
+                        f"snapshot is not older than {older_than_days} days"
+                    )
+                else:
+                    reasons_to_process.append(
+                        f"snapshot is older than {older_than_days} days"
+                    )
+            
+            # Final decision
+            if should_process:
+                snapshots_to_process.append(snapshot)
+                console.print(
+                    f"  - [yellow]Will delete snapshot {snapshot.id}[/yellow]: "
+                    f"{', '.join(reasons_to_process) if reasons_to_process else 'meets criteria'}"
+                )
+            else:
+                snapshots_to_keep.append(snapshot)
+                console.print(
+                    f"  - [green]Keeping snapshot {snapshot.id}[/green]: "
+                    f"{', '.join(reasons_to_keep)}"
+                )
+        
+        # Summary
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  - Snapshots to keep: [green]{len(snapshots_to_keep)}[/green]")
+        console.print(f"  - Snapshots to delete: [yellow]{len(snapshots_to_process)}[/yellow]")
+        
+        if not snapshots_to_process:
+            console.print(f"\n[green]No snapshots marked for deletion.[/green]")
+            return {
+                "success": True,
+                "total": len(all_snapshots),
+                "processed": 0,
+                "kept": len(snapshots_to_keep),
+                "errors": [],
+            }
+        
+        # Confirmation
+        if confirm:
+            console.print(f"\n[bold yellow]WARNING:[/bold yellow] This will permanently delete {len(snapshots_to_process)} snapshots.")
+            console.print("[bold red]This action cannot be undone![/bold red]")
+            
+            try:
+                import click
+                if not click.confirm("Do you want to proceed?"):
+                    console.print("[cyan]Operation cancelled by user.[/cyan]")
+                    return {
+                        "success": True,
+                        "total": len(all_snapshots),
+                        "processed": 0,
+                        "kept": len(all_snapshots),
+                        "errors": [],
+                        "cancelled": True,
+                    }
+            except ImportError:
+                # Fallback for environments without click
+                response = input("Do you want to proceed? (y/N): ")
+                if response.lower() not in ["y", "yes"]:
+                    console.print("[cyan]Operation cancelled by user.[/cyan]")
+                    return {
+                        "success": True,
+                        "total": len(all_snapshots),
+                        "processed": 0,
+                        "kept": len(all_snapshots),
+                        "errors": [],
+                        "cancelled": True,
+                    }
+        
+        # Process snapshots
+        console.print(f"\n[bold]Deleting {len(snapshots_to_process)} snapshots...[/bold]")
+        
+        results = {"success": 0, "failed": 0, "errors": []}
+        progress_lock = threading.Lock()
+        
+        def delete_snapshot(snapshot):
+            try:
+                snapshot.delete()
+                with progress_lock:
+                    results["success"] += 1
+                    console.print(f"  ✅ Deleted snapshot {snapshot.id}")
+                return {"success": True, "snapshot_id": snapshot.id}
+            except Exception as e:
+                with progress_lock:
+                    results["failed"] += 1
+                    results["errors"].append(f"Failed to delete {snapshot.id}: {str(e)}")
+                    console.print(f"  ❌ Failed to delete snapshot {snapshot.id}: {str(e)}")
+                return {"success": False, "snapshot_id": snapshot.id, "error": str(e)}
+        
+        # Use ThreadPoolExecutor for concurrent deletion
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(delete_snapshot, snapshot) for snapshot in snapshots_to_process]
+            concurrent.futures.wait(futures)
+        
+        # Final summary
+        console.print(f"\n[bold]Final Results:[/bold]")
+        console.print(f"  - Successfully deleted: [green]{results['success']}[/green]")
+        console.print(f"  - Failed to delete: [red]{results['failed']}[/red]")
+        
+        if results["errors"]:
+            console.print(f"\n[bold red]Errors encountered:[/bold red]")
+            for error in results["errors"]:
+                console.print(f"  - {error}")
+        
+        return {
+            "success": results["failed"] == 0,
+            "total": len(all_snapshots),
+            "processed": results["success"],
+            "kept": len(snapshots_to_keep),
+            "failed": results["failed"],
+            "errors": results["errors"],
+        }
+
 
 class Snapshot(BaseModel):
     id: str = Field(
