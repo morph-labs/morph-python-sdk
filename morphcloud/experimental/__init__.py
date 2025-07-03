@@ -519,12 +519,10 @@ class Snapshot:
             instructions + ",".join(v.__name__ for v in verify_funcs)
         )
 
-        logger.info("🤖 Snapshot.do() - Starting agent execution", extra={
+        logger.info("🔍 Snapshot.do() - Starting verification", extra={
             "instructions": instructions,
             "verify_funcs": [v.__name__ for v in verify_funcs]
         })
-
-        agent_visual = Agent()
 
         snaps_exist = client.snapshots.list(digest=digest)
         if snaps_exist and not invalidate:
@@ -555,16 +553,16 @@ class Snapshot:
 
             return all_ok
 
-        def run_agent(instance):
-            logger.info("🤖 Agent - Starting execution", extra={"instructions": instructions})
-            agent_visual.run(instance, instructions, verifier)
-            if agent_visual.running:
-                raise Exception("Agent execution did not complete successfully.")
+        def run_verification(instance):
+            logger.info("🔍 Starting verification", extra={"instructions": instructions})
+            success = verifier(instance)
+            if not success:
+                raise Exception("Verification failed.")
             return instance
 
-        new_snap = self.apply(run_agent, key=digest, invalidate=invalidate)
+        new_snap = self.apply(run_verification, key=digest, invalidate=invalidate)
 
-        logger.info("🤖 Agent - Execution completed successfully")
+        logger.info("🔍 Verification completed successfully")
         return new_snap
 
     def resize(
@@ -626,37 +624,3 @@ class Snapshot:
             yield renderer
 
 
-# Simple Agent class for compatibility
-class Agent:
-    def __init__(self):
-        self.running = False
-        self._last_verification_errors = []
-
-    def run(self, instance, instructions, verifier):
-        """Simple agent execution with logging."""
-        logger.info("🤖 Agent.run() - Executing instructions", extra={"instructions": instructions})
-        
-        # For now, just run the verifier to maintain compatibility
-        # In a real implementation, this would execute the instructions
-        try:
-            success = verifier(instance)
-            if success:
-                logger.info("🤖 Agent.run() - Instructions executed successfully")
-                self.running = False
-            else:
-                logger.error("🤖 Agent.run() - Instructions failed verification")
-                self.running = True
-        except Exception as e:
-            logger.error("🤖 Agent.run() - Instructions failed with exception", extra={"error": str(e)})
-            self.running = True
-
-    def _set_status(self, status: str, level: str):
-        """Set agent status."""
-        if level == "success":
-            logger.info(f"🤖 Agent - {status}")
-        else:
-            logger.error(f"🤖 Agent - {status}")
-
-    def _append(self, panel):
-        """Append panel content for compatibility."""
-        logger.info(f"🤖 Agent - {panel}")
