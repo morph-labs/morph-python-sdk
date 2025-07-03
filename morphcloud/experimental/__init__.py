@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import stat
 import time
 import typing
 import threading
-import logging
 
+from pathlib import Path
 from collections import deque
 from contextlib import contextmanager
 from typing import Iterator, Tuple, Union, Literal
 
 import paramiko
+import logging
 
 from morphcloud.api import MorphCloudClient, Instance, Snapshot as _Snapshot
 
@@ -74,10 +76,11 @@ renderer = LoggingSystem()
 
 # ───────────────────────────── Helpers ──────────────────────────── #
 
+
 STREAM_MAX_LINES = 24
 ELLIPSIS = "⋯ [output truncated] ⋯\n"
 
-# Simple line buffer for logging
+# each deque element: (line_text, style_or_None)
 Line = tuple[str, str | None]
 
 
@@ -104,6 +107,8 @@ def _append_stream_chunk(
 
     if len(buf) == max_lines:
         logger.info(ELLIPSIS.strip())
+
+
 
 
 # ───────────────────────── Verification System ──────────────────────── #
@@ -159,7 +164,11 @@ def ssh_stream(
             data = chan.recv_stderr(chunk_size)
             if data:
                 yield ("stdin", data.decode(encoding, errors="replace"))
-        if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+        if (
+            chan.exit_status_ready()
+            and not chan.recv_ready()
+            and not chan.recv_stderr_ready()
+        ):
             break
         time.sleep(poll)
 
@@ -190,18 +199,26 @@ client = MorphCloudClient()
 
 InvalidateFn = typing.Callable[["Snapshot"], bool]
 
+
 class Snapshot:
     def __init__(self, snapshot: _Snapshot):
         self.snapshot = snapshot
-    
+
     @property
     def id(self) -> str:
-        """Return snapshot ID for compatibility."""
+        """Return the ID of the inner snapshot."""
         return self.snapshot.id
 
     @classmethod
-    def create(cls, name: str, image_id: str = "morphvm-minimal",
-               vcpus: int = 1, memory: int = 4096, disk_size: int = 8192):
+    def create(
+        cls,
+        name: str,
+        image_id: str = "morphvm-minimal",
+        vcpus: int = 1,
+        memory: int = 4096,
+        disk_size: int = 8192,
+        invalidate: InvalidateFn | bool = False,
+    ) -> "Snapshot":
         logger.info("🖼  Snapshot.create()", extra={
             "image_id": image_id,
             "vcpus": vcpus,
@@ -209,15 +226,59 @@ class Snapshot:
             "disk_size": disk_size,
             "snapshot_name": name
         })
-        snap = client.snapshots.create(image_id=image_id, vcpus=vcpus,
-                                       memory=memory, disk_size=disk_size,
-                                       digest=name, metadata={"name": name})
+        if invalidate:
+            invalidate_fn = (
+                invalidate
+                if isinstance(invalidate, typing.Callable)
+                else lambda _: invalidate
+            )
+            snaps = client.snapshots.list(digest=name)
+            for s in snaps:
+                if invalidate_fn(Snapshot(s)):
+                    s.delete()
+        snap = client.snapshots.create(
+            image_id=image_id,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
+            digest=name,
+            metadata={"name": name},
+        )
         return cls(snap)
 
-    @contextmanager
-    def start(self):
-        with client.instances.start(snapshot_id=self.snapshot.id, metadata=dict(root=self.snapshot.id)) as inst:
-            yield inst
+    @classmethod
+    def from_snapshot_id(cls, snapshot_id: str) -> "Snapshot":
+        logger.info("🔍 Snapshot.from_snapshot_id()", extra={"snapshot_id": snapshot_id})
+        snap = client.snapshots.get(snapshot_id)
+        return cls(snap)
+
+    @classmethod
+    def from_tag(cls, tag: str) -> typing.Optional["Snapshot"]:
+        logger.info("🏷️  Snapshot.from_tag()", extra={"tag": tag})
+        snapshots = client.snapshots.list(metadata={"tag": tag})
+        if not snapshots:
+            return None
+        # Return the most recent snapshot (assuming list is ordered by creation time)
+        # The first item in the list is the most recently created
+        return cls(snapshots[0])
+
+    def start(
+        self,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ):
+        # Merge default metadata with any provided metadata
+        default_metadata = dict(root=self.snapshot.id)
+        if metadata:
+            default_metadata.update(metadata)
+
+        return client.instances.start(
+            snapshot_id=self.snapshot.id,
+            metadata=default_metadata,
+            ttl_seconds=ttl_seconds,
+            ttl_action=ttl_action,
+        )
 
     @contextmanager
     def boot(
@@ -239,7 +300,6 @@ class Snapshot:
         ) as inst:
             yield inst
 
-
     def key_to_digest(self, key: str) -> str:
         return (self.snapshot.digest or "") + self.snapshot.id + key
 
@@ -248,13 +308,17 @@ class Snapshot:
         func,
         key: str | None = None,
         start_fn: typing.Union[
-            typing.ContextManager[Instance], 
-            typing.Callable[[], typing.ContextManager[Instance]], 
-            None
+            typing.ContextManager[Instance],
+            typing.Callable[[], typing.ContextManager[Instance]],
+            None,
         ] = None,
         invalidate: InvalidateFn | bool = False,
     ):
-        invalidate_fn = invalidate if isinstance(invalidate, typing.Callable) else lambda _: invalidate
+        invalidate_fn = (
+            invalidate
+            if isinstance(invalidate, typing.Callable)
+            else lambda _: invalidate
+        )
         if key:
             digest = self.key_to_digest(key)
             snaps = client.snapshots.list(digest=digest)
@@ -279,7 +343,9 @@ class Snapshot:
         with context_manager as inst:
             res = func(inst)
             inst = inst if res is None else res
-            return Snapshot(inst.snapshot(digest=self.key_to_digest(key) if key else None))
+            return Snapshot(
+                inst.snapshot(digest=self.key_to_digest(key) if key else None)
+            )
 
     # -------------- run with stream between CMD/RET -------------- #
     def run(self, command: str, invalidate: InvalidateFn | bool = False):
@@ -303,6 +369,142 @@ class Snapshot:
 
         return self.apply(execute, key=command, invalidate=invalidate)
 
+    def copy_(self, src: str, dest: str, invalidate: InvalidateFn | bool = False):
+        """
+        Copy files/directories to the instance via SSH, similar to Docker COPY.
+
+        Args:
+            src: Source path on local machine (file or directory)
+            dest: Destination path on remote instance
+            invalidate: Whether to invalidate existing cached snapshots
+
+        Returns:
+            New Snapshot with the copied files
+        """
+        logger.info("📁 Snapshot.copy_()", extra={"src": src, "dest": dest})
+
+        def execute_copy(instance):
+            logger.info("📋 File Copy Progress - Starting copy operation")
+
+            def update_progress(message: str, style: str | None = None):
+                if style == "error":
+                    logger.error(f"Copy Progress: {message}")
+                else:
+                    logger.info(f"Copy Progress: {message}")
+
+            try:
+                with instance.ssh() as ssh:
+                    ssh_client = ssh._client
+                    sftp = ssh_client.open_sftp()
+
+                    src_path = Path(src)
+
+                    # Check if source exists
+                    if not src_path.exists():
+                        update_progress(f"❌ Source not found: {src}", "error")
+                        raise FileNotFoundError(f"Source path does not exist: {src}")
+
+                    update_progress(f"📂 Copying {src} to {dest}")
+
+                    # Helper function to create remote directories
+                    def ensure_remote_dir(remote_path: str):
+                        try:
+                            sftp.stat(remote_path)
+                        except FileNotFoundError:
+                            # Directory doesn't exist, create it
+                            parent = str(Path(remote_path).parent)
+                            if parent != remote_path and parent != "/":
+                                ensure_remote_dir(parent)
+                            sftp.mkdir(remote_path)
+                            update_progress(f"📁 Created directory: {remote_path}")
+
+                    # Helper function to copy a single file
+                    def copy_file(local_file: Path, remote_file: str):
+                        # Ensure the remote directory exists
+                        remote_dir = str(Path(remote_file).parent)
+                        if remote_dir != remote_file:
+                            ensure_remote_dir(remote_dir)
+
+                        # Copy the file
+                        sftp.put(str(local_file), remote_file)
+                        update_progress(f"📄 Copied file: {local_file.name}")
+
+                        # Try to preserve permissions
+                        try:
+                            local_stat = local_file.stat()
+                            sftp.chmod(remote_file, local_stat.st_mode)
+                        except (OSError, AttributeError):
+                            # Permissions may not be preservable, continue anyway
+                            pass
+
+                    # Helper function to copy directory recursively
+                    def copy_directory(local_dir: Path, remote_dir: str):
+                        ensure_remote_dir(remote_dir)
+
+                        for item in local_dir.iterdir():
+                            remote_item = f"{remote_dir}/{item.name}"
+
+                            if item.is_file():
+                                copy_file(item, remote_item)
+                            elif item.is_dir():
+                                copy_directory(item, remote_item)
+
+                    # Main copy logic
+                    if src_path.is_file():
+                        # Copying a single file
+                        if dest.endswith("/"):
+                            # Destination is a directory, copy file into it
+                            remote_file = f"{dest.rstrip('/')}/{src_path.name}"
+                        else:
+                            # Check if destination is an existing directory
+                            try:
+                                dest_stat = sftp.stat(dest)
+                                if stat.S_ISDIR(dest_stat.st_mode):
+                                    remote_file = f"{dest}/{src_path.name}"
+                                else:
+                                    remote_file = dest
+                            except FileNotFoundError:
+                                # Destination doesn't exist, treat as file
+                                remote_file = dest
+
+                        copy_file(src_path, remote_file)
+
+                    elif src_path.is_dir():
+                        # Copying a directory
+                        if dest.endswith("/"):
+                            # Copy directory contents into destination
+                            remote_base = dest.rstrip("/")
+                            copy_directory(src_path, f"{remote_base}/{src_path.name}")
+                        else:
+                            # Check if destination exists and is a directory
+                            try:
+                                dest_stat = sftp.stat(dest)
+                                if stat.S_ISDIR(dest_stat.st_mode):
+                                    copy_directory(src_path, f"{dest}/{src_path.name}")
+                                else:
+                                    # Destination exists but is not a directory
+                                    update_progress(
+                                        f"❌ Destination exists and is not a directory: {dest}",
+                                        "error",
+                                    )
+                                    raise ValueError(
+                                        f"Cannot copy directory to non-directory: {dest}"
+                                    )
+                            except FileNotFoundError:
+                                # Destination doesn't exist, create it
+                                copy_directory(src_path, dest)
+
+                    sftp.close()
+                    update_progress(
+                        "✅ Copy completed successfully"
+                    )
+
+            except Exception as e:
+                update_progress(f"❌ Copy failed: {str(e)}", "error")
+                raise
+
+        return self.apply(execute_copy, key=f"copy-{src}-{dest}", invalidate=invalidate)
+
     # ------------------------------------------------------------------ #
     # Remaining Snapshot methods unchanged                               #
     # ------------------------------------------------------------------ #
@@ -312,9 +514,7 @@ class Snapshot:
         verify=None,
         invalidate: InvalidateFn | bool = False,
     ):
-        verify_funcs = (
-            [verify] if isinstance(verify, typing.Callable) else verify or []
-        )
+        verify_funcs = [verify] if isinstance(verify, typing.Callable) else verify or []
         digest = self.key_to_digest(
             instructions + ",".join(v.__name__ for v in verify_funcs)
         )
@@ -334,9 +534,8 @@ class Snapshot:
         def verifier(inst):
             if not verify_funcs:
                 return True
-
             vpanel = VerificationPanel(verify_funcs)
-            
+
             all_ok = True
             verification_errors = []
 
@@ -394,7 +593,6 @@ class Snapshot:
             invalidate=invalidate,
         )
 
-
     @contextmanager
     def deploy(
         self,
@@ -420,7 +618,6 @@ class Snapshot:
         meta.update({"tag": tag})
         self.snapshot.set_metadata(meta)
         logger.info("Snapshot tagged successfully!")
-        
 
     @contextmanager
     @staticmethod

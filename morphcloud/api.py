@@ -3153,6 +3153,48 @@ fi"""
 
         return InstanceSshKey.model_validate(key_data)
 
+    def ssh_key_rotate(self) -> InstanceSshKey:
+        """
+        Rotate the SSH key for this instance.
+
+        This generates a new ephemeral SSH key for establishing connections.
+
+        Returns:
+            InstanceSshKey: The new SSH key details including private key, public key, and password.
+
+        Raises:
+            ApiError: If the instance is not found or other API errors occur.
+        """
+        if not self._api:
+            raise ValueError("Instance object is not associated with an API client")
+
+        response = self._api._client._http_client.post(f"/instance/{self.id}/ssh/key")
+        key_data = response.json()
+
+        return InstanceSshKey.model_validate(key_data)
+
+    async def assh_key_rotate(self) -> InstanceSshKey:
+        """
+        Asynchronously rotate the SSH key for this instance.
+
+        This generates a new ephemeral SSH key for establishing connections.
+
+        Returns:
+            InstanceSshKey: The new SSH key details including private key, public key, and password.
+
+        Raises:
+            ApiError: If the instance is not found or other API errors occur.
+        """
+        if not self._api:
+            raise ValueError("Instance object is not associated with an API client")
+
+        response = await self._api._client._async_http_client.post(
+            f"/instance/{self.id}/ssh/key"
+        )
+        key_data = response.json()
+
+        return InstanceSshKey.model_validate(key_data)
+
 
 # Helper functions
 import click
