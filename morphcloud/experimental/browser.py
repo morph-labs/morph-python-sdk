@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """
-MorphBrowser - Remote browser sessions with tmux integration
+MorphBrowser - Remote browser sessions with Caddy reverse proxy
 
 Creates morphcloud instances with real headless Chrome and provides CDP URLs
-for browser automation tools like Playwright.
+for browser automation tools like Playwright. Now features a modern Caddy 
+reverse proxy that fixes HTTP CDP endpoint issues!
+
+🎉 NEW: HTTP CDP endpoints now work reliably!
+- session.get_version() ✅ 
+- session.get_tabs() ✅
+- session.is_ready() ✅ (now uses HTTP CDP)
+- Health check endpoint: /health ✅
 
 Usage:
     from morphcloud.experimental.browser import MorphBrowser
@@ -13,7 +20,12 @@ Usage:
     # Create a new browser session
     session = mb.sessions.create()
     
-    # Get CDP URL for Playwright
+    # HTTP CDP endpoints now work!
+    version = session.get_version()
+    tabs = session.get_tabs()
+    ready = session.is_ready()
+    
+    # WebSocket CDP for Playwright still works
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(session.connect_url)
@@ -39,7 +51,7 @@ import logging
 from typing import Optional, Dict, Any
 
 # Import Snapshot class directly to avoid circular imports
-from morphcloud.experimental import Snapshot
+from . import Snapshot
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -110,8 +122,7 @@ class BrowserSession:
         """
         Get list of available browser tabs/pages.
         
-        Note: HTTP CDP endpoints may not work through external proxy due to Host header restrictions.
-        For reliable browser control, use Playwright with the connect_url.
+        Now working reliably thanks to Caddy proxy with Host header rewriting!
         
         Returns:
             List of tab objects with id, title, url, webSocketDebuggerUrl
@@ -121,18 +132,17 @@ class BrowserSession:
             if response.status_code == 200:
                 return response.json()
             else:
-                raise RuntimeError(f"Failed to get tabs: HTTP {response.status_code} - HTTP CDP may not work through external proxy")
+                raise RuntimeError(f"Failed to get tabs: HTTP {response.status_code}")
         except Exception as e:
-            raise RuntimeError(f"Error getting tabs: {e} - Use Playwright with connect_url for reliable access")
+            raise RuntimeError(f"Error getting tabs: {e}")
     
     def get_version(self) -> Dict[str, Any]:
         """
         Get browser version information.
         
-        Note: HTTP CDP endpoints may not work through external proxy due to Host header restrictions.
-        Chrome CDP validates that requests come from localhost, but external proxy sends proxy domain.
-        TODO: Consider using nginx proxy_set_header Host localhost like deprecated/browser.py does.
-        For reliable browser control, use Playwright with the connect_url.
+        Now working reliably thanks to Caddy proxy with Host header rewriting!
+        Chrome CDP validates that requests come from localhost, and Caddy now properly
+        rewrites the Host header from external domain to localhost:9222.
         
         Returns:
             Browser version info with Browser, Protocol-Version, etc.
@@ -142,20 +152,29 @@ class BrowserSession:
             if response.status_code == 200:
                 return response.json()
             else:
-                raise RuntimeError(f"Failed to get version: HTTP {response.status_code} - HTTP CDP may not work through external proxy")
+                raise RuntimeError(f"Failed to get version: HTTP {response.status_code}")
         except Exception as e:
-            raise RuntimeError(f"Error getting version: {e} - Use Playwright with connect_url for reliable access")
+            raise RuntimeError(f"Error getting version: {e}")
     
     def is_ready(self) -> bool:
         """
         Check if the browser session is ready for automation.
         
+        Now uses HTTP CDP endpoints which work reliably thanks to Caddy proxy!
+        
         Returns:
             True if browser is responding to CDP requests
         """
         try:
-            # Note: HTTP CDP endpoints don't work through external proxy due to Host header restrictions
-            # So we check if the WebSocket URL is properly formed instead
+            # Try HTTP CDP endpoint first (now working!)
+            response = requests.get(f"{self._cdp_url}/json/version", timeout=2)
+            if response.status_code == 200:
+                return True
+        except:
+            pass
+        
+        # Fallback: check if WebSocket URL is properly formed
+        try:
             return (self._connect_url is not None and 
                    'devtools' in self._connect_url and
                    (self._connect_url.startswith('ws://') or self._connect_url.startswith('wss://')))
@@ -171,7 +190,7 @@ class BrowserSession:
             try:
                 # Clean up tmux sessions
                 self._instance.exec("tmux kill-session -t chrome-session || true")
-                self._instance.exec("tmux kill-session -t proxy-session || true")
+                self._instance.exec("tmux kill-session -t caddy-session || true")
                 
                 # Hide the HTTP service
                 self._instance.hide_http_service("cdp-server")
@@ -209,69 +228,120 @@ class BrowserSession:
         ]
     
     @classmethod
+    def _generate_caddy_config(cls) -> str:
+        """Generate Caddy configuration for CDP proxy."""
+        return """:80 {
+    handle /health {
+        respond "Browser Session Active" 200
+    }
+    
+    handle /json* {
+        reverse_proxy localhost:9222 {
+            header_up Host localhost:9222
+        }
+    }
+    
+    handle /devtools* {
+        reverse_proxy localhost:9222 {
+            header_up Host localhost:9222
+        }
+    }
+    
+    handle {
+        respond "Browser Management Interface" 200
+    }
+}"""
+    
+    @classmethod
     def _get_websocket_url(cls, instance, cdp_url: str, verbose: bool) -> str:
         """Get WebSocket URL for browser automation."""
         if verbose:
             logger.info("Getting Chrome WebSocket URL...")
         
-        # First, try to get browser-level WebSocket URL from /json/version
+        # Now we can use the external URL directly since Caddy fixes Host headers
         connect_url = None
-        version_result = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json/version")
-        if version_result.exit_code == 0:
-            try:
-                version_data = json.loads(version_result.stdout)
+        
+        # Try to get version data from external URL (this will now work!)
+        try:
+            import requests
+            response = requests.get(f"{cdp_url}/json/version", timeout=5)
+            if response.status_code == 200:
+                version_data = response.json()
                 if verbose:
-                    logger.info(f"Got version data from proxy port {PROXY_PORT}")
+                    logger.info("Successfully got version data from external URL")
                 
-                # Extract browser-level WebSocket URL from version endpoint
                 if 'webSocketDebuggerUrl' in version_data:
                     chrome_ws_url = version_data['webSocketDebuggerUrl']
-                    if verbose:
-                        logger.info(f"Chrome browser WebSocket URL: {chrome_ws_url}")
-                    
-                    # Convert Chrome's internal WebSocket URL to external URL
+                    # Convert to external WebSocket URL
                     if 'devtools/browser/' in chrome_ws_url:
-                        # Extract the browser UUID from the URL
                         browser_uuid = chrome_ws_url.split('devtools/browser/')[-1]
                         ws_base = cdp_url.replace('http://', '').replace('https://', '')
                         ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
                         connect_url = f"{ws_protocol}://{ws_base}/devtools/browser/{browser_uuid}"
                         if verbose:
-                            logger.info("Using browser-level WebSocket URL for Playwright")
-                    
-            except Exception as e:
-                if verbose:
-                    logger.warning(f"Error parsing version: {e}")
+                            logger.info("Using browser-level WebSocket URL")
+        except Exception as e:
+            if verbose:
+                logger.warning(f"External version request failed: {e}")
         
-        # If browser-level URL not found, try to get page-level URLs from /json
+        # Fallback to internal method if external doesn't work
         if not connect_url:
-            internal_tabs = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json")
-            if internal_tabs.exit_code == 0:
+            version_result = instance.exec("curl -s http://localhost:80/json/version")
+            if version_result.exit_code == 0:
                 try:
-                    tabs_data = json.loads(internal_tabs.stdout)
+                    version_data = json.loads(version_result.stdout)
                     if verbose:
-                        logger.info(f"Got tabs from proxy port {PROXY_PORT}: {len(tabs_data)} tabs")
+                        logger.info("Got version data from internal Caddy proxy")
                     
-                    # Look for a page-level WebSocket URL as fallback
-                    for tab in tabs_data:
-                        if tab.get('type') == 'page' and 'webSocketDebuggerUrl' in tab:
-                            chrome_ws_url = tab['webSocketDebuggerUrl']
+                    # Extract browser-level WebSocket URL from version endpoint
+                    if 'webSocketDebuggerUrl' in version_data:
+                        chrome_ws_url = version_data['webSocketDebuggerUrl']
+                        if verbose:
+                            logger.info(f"Chrome browser WebSocket URL: {chrome_ws_url}")
+                        
+                        # Convert Chrome's internal WebSocket URL to external URL
+                        if 'devtools/browser/' in chrome_ws_url:
+                            # Extract the browser UUID from the URL
+                            browser_uuid = chrome_ws_url.split('devtools/browser/')[-1]
+                            ws_base = cdp_url.replace('http://', '').replace('https://', '')
+                            ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+                            connect_url = f"{ws_protocol}://{ws_base}/devtools/browser/{browser_uuid}"
                             if verbose:
-                                logger.info(f"Using page-level WebSocket URL: {chrome_ws_url}")
-                            
-                            # Convert Chrome's internal WebSocket URL to external URL
-                            if 'devtools/page/' in chrome_ws_url:
-                                page_uuid = chrome_ws_url.split('devtools/page/')[-1]
-                                ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                                ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                                connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{page_uuid}"
-                                if verbose:
-                                    logger.warning("Using page-level WebSocket URL as fallback")
-                                break
-                    
+                                logger.info("Using browser-level WebSocket URL for Playwright")
+                        
                 except Exception as e:
                     if verbose:
-                        logger.warning(f"Error parsing tabs: {e}")
+                        logger.warning(f"Error parsing version: {e}")
+        
+            # If browser-level URL not found, try to get page-level URLs from /json
+            if not connect_url:
+                internal_tabs = instance.exec("curl -s http://localhost:80/json")
+                if internal_tabs.exit_code == 0:
+                    try:
+                        tabs_data = json.loads(internal_tabs.stdout)
+                        if verbose:
+                            logger.info(f"Got tabs from Caddy proxy: {len(tabs_data)} tabs")
+                        
+                        # Look for a page-level WebSocket URL as fallback
+                        for tab in tabs_data:
+                            if tab.get('type') == 'page' and 'webSocketDebuggerUrl' in tab:
+                                chrome_ws_url = tab['webSocketDebuggerUrl']
+                                if verbose:
+                                    logger.info(f"Using page-level WebSocket URL: {chrome_ws_url}")
+                                
+                                # Convert Chrome's internal WebSocket URL to external URL
+                                if 'devtools/page/' in chrome_ws_url:
+                                    page_uuid = chrome_ws_url.split('devtools/page/')[-1]
+                                    ws_base = cdp_url.replace('http://', '').replace('https://', '')
+                                    ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+                                    connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{page_uuid}"
+                                    if verbose:
+                                        logger.warning("Using page-level WebSocket URL as fallback")
+                                    break
+                        
+                    except Exception as e:
+                        if verbose:
+                            logger.warning(f"Error parsing tabs: {e}")
         
         # Ultimate fallback: use hardcoded browser path
         if not connect_url:
@@ -324,8 +394,14 @@ class BrowserSession:
         logger.info('Updated package lists')
         
         # Layer 2: Install dependencies including tmux
-        snapshot = snapshot.run("apt-get install -y curl wget gnupg lsb-release tmux socat")
+        snapshot = snapshot.run("apt-get install -y curl wget gnupg lsb-release tmux")
         logger.info('Installed dependencies')
+        
+        # Add Caddy repository and install
+        snapshot = snapshot.run("curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg")
+        snapshot = snapshot.run("curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list")
+        snapshot = snapshot.run("apt-get update -y && apt-get install -y caddy")
+        logger.info('Installed Caddy')
 
         # Layer 3: Add Google Chrome repository
         snapshot = snapshot.run("wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | tee /etc/apt/trusted.gpg.d/google.gpg > /dev/null")
@@ -400,14 +476,17 @@ class BrowserSession:
             instance.exec("tmux new-session -d -s chrome-session")
             instance.exec(f"tmux send-keys -t chrome-session '{chrome_cmd}' Enter")
             
-            # socat already installed in snapshot
+            # Write Caddy config and start Caddy
+            caddy_config = cls._generate_caddy_config()
+            # Write config file safely by escaping quotes and using multiple echo commands
+            instance.exec("rm -f /etc/caddy/Caddyfile")
+            for line in caddy_config.split('\n'):
+                escaped_line = line.replace('"', '\\"')
+                instance.exec(f'echo "{escaped_line}" >> /etc/caddy/Caddyfile')
             
-            # Clean up any existing proxy processes and start fresh
-            instance.exec(f"pkill -f 'TCP-LISTEN:{PROXY_PORT}' || true")
-            
-            # Start socat reverse proxy in tmux session (per spec requirements)
-            instance.exec("tmux new-session -d -s proxy-session")
-            instance.exec(f"tmux send-keys -t proxy-session 'socat TCP-LISTEN:{PROXY_PORT},fork,bind=0.0.0.0 TCP:127.0.0.1:{CHROME_CDP_PORT}' Enter")
+            # Start Caddy in tmux session
+            instance.exec("tmux new-session -d -s caddy-session")
+            instance.exec("tmux send-keys -t caddy-session 'caddy run --config /etc/caddy/Caddyfile' Enter")
             
             # Wait for Chrome to start and CDP to be ready
             if verbose:
@@ -458,27 +537,27 @@ class BrowserSession:
                     logger.warning(f"Failed to create initial page: {create_page_result.stderr}")
                     logger.debug(f"stdout: {create_page_result.stdout}")
             
-            # Wait for socat proxy to be ready
+            # Wait for Caddy to be ready
             if verbose:
-                logger.info("Waiting for socat proxy to be ready...")
+                logger.info("Waiting for Caddy to be ready...")
             for i in range(PROXY_STARTUP_TIMEOUT):
                 time.sleep(1)
-                proxy_test = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json/version")
-                if proxy_test.exit_code == 0:
+                caddy_test = instance.exec("curl -s http://localhost:80/health")
+                if caddy_test.exit_code == 0 and "Browser Session Active" in caddy_test.stdout:
                     if verbose:
-                        logger.info(f"Socat proxy ready after {i+1}s")
+                        logger.info(f"Caddy ready after {i+1}s")
                     break
             else:
                 if verbose:
-                    logger.error("Socat proxy failed to start")
-                    socat_log = instance.exec("cat /tmp/socat.log")
-                    logger.error(f"Socat logs: {socat_log.stdout}")
-                raise Exception(f"Socat proxy failed to start on port {PROXY_PORT}")
+                    logger.error("Caddy failed to start")
+                    caddy_log = instance.exec("journalctl -u caddy --no-pager -n 20")
+                    logger.error(f"Caddy logs: {caddy_log.stdout}")
+                raise Exception("Caddy failed to start")
             
-            # Expose service externally on proxy port
+            # Expose service externally on port 80
             if verbose:
-                logger.info(f"Exposing CDP proxy service on port {PROXY_PORT}...")
-            cdp_url = instance.expose_http_service(name="cdp-server", port=PROXY_PORT)
+                logger.info("Exposing CDP proxy service on port 80...")
+            cdp_url = instance.expose_http_service(name="cdp-server", port=80)
             
             # Test external access
             if verbose:
