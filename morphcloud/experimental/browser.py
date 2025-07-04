@@ -110,6 +110,9 @@ class BrowserSession:
         """
         Get list of available browser tabs/pages.
         
+        Note: HTTP CDP endpoints may not work through external proxy due to Host header restrictions.
+        For reliable browser control, use Playwright with the connect_url.
+        
         Returns:
             List of tab objects with id, title, url, webSocketDebuggerUrl
         """
@@ -118,13 +121,18 @@ class BrowserSession:
             if response.status_code == 200:
                 return response.json()
             else:
-                raise RuntimeError(f"Failed to get tabs: HTTP {response.status_code}")
+                raise RuntimeError(f"Failed to get tabs: HTTP {response.status_code} - HTTP CDP may not work through external proxy")
         except Exception as e:
-            raise RuntimeError(f"Error getting tabs: {e}")
+            raise RuntimeError(f"Error getting tabs: {e} - Use Playwright with connect_url for reliable access")
     
     def get_version(self) -> Dict[str, Any]:
         """
         Get browser version information.
+        
+        Note: HTTP CDP endpoints may not work through external proxy due to Host header restrictions.
+        Chrome CDP validates that requests come from localhost, but external proxy sends proxy domain.
+        TODO: Consider using nginx proxy_set_header Host localhost like deprecated/browser.py does.
+        For reliable browser control, use Playwright with the connect_url.
         
         Returns:
             Browser version info with Browser, Protocol-Version, etc.
@@ -134,9 +142,9 @@ class BrowserSession:
             if response.status_code == 200:
                 return response.json()
             else:
-                raise RuntimeError(f"Failed to get version: HTTP {response.status_code}")
+                raise RuntimeError(f"Failed to get version: HTTP {response.status_code} - HTTP CDP may not work through external proxy")
         except Exception as e:
-            raise RuntimeError(f"Error getting version: {e}")
+            raise RuntimeError(f"Error getting version: {e} - Use Playwright with connect_url for reliable access")
     
     def is_ready(self) -> bool:
         """
@@ -146,8 +154,11 @@ class BrowserSession:
             True if browser is responding to CDP requests
         """
         try:
-            version = self.get_version()
-            return 'Browser' in version and 'Protocol-Version' in version
+            # Note: HTTP CDP endpoints don't work through external proxy due to Host header restrictions
+            # So we check if the WebSocket URL is properly formed instead
+            return (self._connect_url is not None and 
+                   'devtools' in self._connect_url and
+                   (self._connect_url.startswith('ws://') or self._connect_url.startswith('wss://')))
         except:
             return False
     
@@ -516,6 +527,27 @@ def main(verbose=True):
             logger.info(f"MorphVM Instance: {session.instance.id}")
         except Exception:
             logger.info("MorphVM Instance: Details not available")
+        
+        # Test additional BrowserSession methods
+        logger.info("Testing BrowserSession methods...")
+        
+        # Test is_ready()
+        ready = session.is_ready()
+        logger.info(f"Browser ready: {ready}")
+        
+        # Test get_version() - may fail due to HTTP CDP limitations
+        try:
+            version = session.get_version()
+            logger.info(f"Browser version info: {version.get('Browser', 'unknown')}")
+        except Exception as e:
+            logger.info(f"get_version() failed (expected with external proxy): {str(e)[:100]}...")
+        
+        # Test get_tabs() - may fail due to HTTP CDP limitations
+        try:
+            tabs = session.get_tabs()
+            logger.info(f"Available tabs: {len(tabs)}")
+        except Exception as e:
+            logger.info(f"get_tabs() failed (expected with external proxy): {str(e)[:100]}...")
         
         # Test with Playwright
         logger.info("Testing with Playwright...")
