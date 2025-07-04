@@ -199,6 +199,8 @@ client = MorphCloudClient()
 
 InvalidateFn = typing.Callable[["Snapshot"], bool]
 
+# MorphBrowser is available via: from morphcloud.experimental.browser import MorphBrowser
+
 
 class Snapshot:
     def __init__(self, snapshot: _Snapshot):

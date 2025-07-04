@@ -164,7 +164,12 @@ class BrowserSession:
             client = MorphCloudClient()
             existing_snapshots = client.snapshots.list(digest=base_snapshot_name)
             if existing_snapshots and not invalidate:
+                snapshot_info = existing_snapshots[0]
                 print(f'using existing chrome snapshot: {base_snapshot_name}')
+                print(f'  snapshot id: {snapshot_info.get("id", "unknown")}')
+                print(f'  created: {snapshot_info.get("created_at", "unknown")}')
+                if verbose:
+                    print(f'  to force rebuild, use invalidate=True')
                 snapshot = Snapshot(existing_snapshots[0])
                 return snapshot
         except:
@@ -285,15 +290,13 @@ class BrowserSession:
                 "--disable-plugins",
                 "--allow-running-insecure-content",
                 "--disable-web-security",
-                "--remote-allow-origins=*",
-                "--disable-features=VizDisplayCompositor",
-                "--host-resolver-rules=MAP * 127.0.0.1"
+                "--remote-allow-origins=*"
             ]
             
             # Create user data directory
             instance.exec("mkdir -p /tmp/chrome-user-data /tmp/chrome-data /tmp/chrome-cache")
             
-            # Start Chrome in tmux session
+            # Start Chrome in tmux session (per spec requirements)
             chrome_cmd = " ".join(chrome_command)
             instance.exec("tmux new-session -d -s chrome-session")
             instance.exec(f"tmux send-keys -t chrome-session '{chrome_cmd}' Enter")
@@ -303,16 +306,13 @@ class BrowserSession:
             # Clean up any existing proxy processes and start fresh
             instance.exec("pkill -f 'TCP-LISTEN:9223' || true")  # Kill any socat on our proxy port
             
-            # Start socat reverse proxy in tmux session with reuseaddr
+            # Start socat reverse proxy in tmux session (per spec requirements)
             instance.exec("tmux new-session -d -s proxy-session")
-            instance.exec("tmux send-keys -t proxy-session 'socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:localhost:9222' Enter")
+            instance.exec("tmux send-keys -t proxy-session 'socat TCP-LISTEN:9223,fork,bind=0.0.0.0 TCP:127.0.0.1:9222' Enter")
             
             # Wait for Chrome to start and CDP to be ready
             if verbose:
                 print("⏳ Waiting for Chrome CDP to be ready...")
-                # Check tmux session status
-                tmux_status = instance.exec("tmux list-sessions | grep chrome-session")
-                print(f"   Tmux sessions: {tmux_status.stdout}")
                 
             for i in range(30):
                 time.sleep(1)
@@ -331,26 +331,12 @@ class BrowserSession:
                 if i % 5 == 0 and verbose:
                     print(f"   Starting Chrome... {i+1}/30")
             else:
-                # Show Chrome logs and tmux status for debugging
+                # Show Chrome logs for debugging
                 if verbose:
-                    print("❌ Chrome failed to start, debugging...")
-                    
-                    # Check tmux session
-                    tmux_list = instance.exec("tmux list-sessions")
-                    print(f"   All tmux sessions: {tmux_list.stdout}")
-                    
-                    # Check chrome tmux session specifically
-                    tmux_chrome = instance.exec("tmux capture-pane -t chrome-session -p || echo 'Chrome session not found'")
-                    print(f"   Chrome tmux output: {tmux_chrome.stdout}")
-                    
-                    # Check processes
+                    log_result = instance.exec("cat /tmp/chrome.log 2>/dev/null || echo 'No Chrome logs'")
+                    print(f"Chrome logs: {log_result.stdout}")
                     ps_result = instance.exec("ps aux | grep chrome | head -5")
-                    print(f"   Chrome processes: {ps_result.stdout}")
-                    
-                    # Check ports
-                    port_check = instance.exec("netstat -tuln | grep 9222")
-                    print(f"   Port 9222 status: {port_check.stdout}")
-                    
+                    print(f"Chrome processes: {ps_result.stdout}")
                 raise Exception("Chrome failed to start within 30 seconds")
             
             # Create an initial page via CDP (since Chrome starts with no pages)
@@ -390,41 +376,6 @@ class BrowserSession:
                     print(f"📋 Socat logs: {socat_log.stdout}")
                 raise Exception("Socat proxy failed to start on port 9223")
             
-            # 🔧 REAL-TIME PROXY DEBUGGING
-            if verbose:
-                print("🔧 Testing proxy configurations...")
-                # Test direct Chrome
-                direct_test = instance.exec("curl -s -w 'HTTP_CODE:%{http_code}' http://localhost:9222/json")
-                print(f"   Direct Chrome (9222): Exit={direct_test.exit_code}, Response={direct_test.stdout[:200]}")
-                
-                # Test socat proxy with different bindings
-                proxy_localhost = instance.exec("curl -s -w 'HTTP_CODE:%{http_code}' http://localhost:9223/json")
-                print(f"   Proxy localhost (9223): Exit={proxy_localhost.exit_code}, Response={proxy_localhost.stdout[:200]}")
-                
-                proxy_zero = instance.exec("curl -s -w 'HTTP_CODE:%{http_code}' http://0.0.0.0:9223/json")
-                print(f"   Proxy 0.0.0.0 (9223): Exit={proxy_zero.exit_code}, Response={proxy_zero.stdout[:200]}")
-                
-                # Check socat process and logs
-                socat_ps = instance.exec("ps aux | grep socat | grep -v grep")
-                print(f"   Socat process: {socat_ps.stdout}")
-                
-                # Check if ports are listening
-                netstat_check = instance.exec("netstat -tuln | grep ':922'")
-                print(f"   Listening ports: {netstat_check.stdout}")
-                
-                # If external still fails, try alternative proxy
-                if proxy_localhost.exit_code == 0 and proxy_zero.exit_code == 0:
-                    print("🔧 Internal proxy works, testing nc alternative...")
-                    instance.exec("tmux kill-session -t proxy-session || true")
-                    instance.exec("pkill socat || true")
-                    time.sleep(1)
-                    # Try nc instead of socat
-                    instance.exec("tmux new-session -d -s nc-proxy-session")
-                    instance.exec("tmux send-keys -t nc-proxy-session 'while true; do nc -l -p 9223 -c \"nc localhost 9222\"; done' Enter")
-                    time.sleep(2)
-                    nc_test = instance.exec("curl -s -w 'HTTP_CODE:%{http_code}' http://0.0.0.0:9223/json")
-                    print(f"   NC proxy test: Exit={nc_test.exit_code}, Response={nc_test.stdout[:100]}")
-            
             # Expose service externally on proxy port 9223
             if verbose:
                 print("🌐 Exposing CDP proxy service on port 9223...")
@@ -438,55 +389,73 @@ class BrowserSession:
             # Get WebSocket URL from Chrome response (use internal proxy)
             if verbose:
                 print("🔗 Getting Chrome WebSocket URL...")
-            internal_tabs = instance.exec("curl -s http://0.0.0.0:9223/json")
-            if internal_tabs.exit_code == 0:
+            
+            # First, try to get browser-level WebSocket URL from /json/version
+            connect_url = None
+            version_result = instance.exec("curl -s http://0.0.0.0:9223/json/version")
+            if version_result.exit_code == 0:
                 try:
-                    tabs_data = json.loads(internal_tabs.stdout)
+                    version_data = json.loads(version_result.stdout)
                     if verbose:
-                        print(f"   ✅ Got tabs from proxy port 9223: {len(tabs_data)} tabs")
+                        print(f"   ✅ Got version data from proxy port 9223")
                     
-                    # Generate WebSocket URL with proper external domain mapping
-                    connect_url = None
-                    if tabs_data and len(tabs_data) > 0:
-                        # Look for browser WebSocket URL in tabs
+                    # Extract browser-level WebSocket URL from version endpoint
+                    if 'webSocketDebuggerUrl' in version_data:
+                        chrome_ws_url = version_data['webSocketDebuggerUrl']
+                        if verbose:
+                            print(f"   📋 Chrome browser WebSocket URL: {chrome_ws_url}")
+                        
+                        # Convert Chrome's internal WebSocket URL to external URL
+                        if 'devtools/browser/' in chrome_ws_url:
+                            # Extract the browser UUID from the URL
+                            browser_uuid = chrome_ws_url.split('devtools/browser/')[-1]
+                            ws_base = cdp_url.replace('http://', '').replace('https://', '')
+                            ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+                            connect_url = f"{ws_protocol}://{ws_base}/devtools/browser/{browser_uuid}"
+                            if verbose:
+                                print(f"   🔗 Using browser-level WebSocket URL for Playwright")
+                        
+                except Exception as e:
+                    if verbose:
+                        print(f"   ⚠️  Error parsing version: {e}")
+            
+            # If browser-level URL not found, try to get page-level URLs from /json
+            if not connect_url:
+                internal_tabs = instance.exec("curl -s http://0.0.0.0:9223/json")
+                if internal_tabs.exit_code == 0:
+                    try:
+                        tabs_data = json.loads(internal_tabs.stdout)
+                        if verbose:
+                            print(f"   ✅ Got tabs from proxy port 9223: {len(tabs_data)} tabs")
+                        
+                        # Look for a page-level WebSocket URL as fallback
                         for tab in tabs_data:
                             if tab.get('type') == 'page' and 'webSocketDebuggerUrl' in tab:
                                 chrome_ws_url = tab['webSocketDebuggerUrl']
                                 if verbose:
-                                    print(f"   📋 Chrome WebSocket URL: {chrome_ws_url}")
+                                    print(f"   📋 Using page-level WebSocket URL: {chrome_ws_url}")
                                 
-                                # Fix Chrome's WebSocket URL to use external domain
+                                # Convert Chrome's internal WebSocket URL to external URL
                                 if 'devtools/page/' in chrome_ws_url:
-                                    # Extract the path part
-                                    path_match = chrome_ws_url.split('devtools/page/')[-1]
+                                    page_uuid = chrome_ws_url.split('devtools/page/')[-1]
                                     ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                                    # Use wss:// for https:// URLs, ws:// for http://
                                     ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                                    connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{path_match}"
+                                    connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{page_uuid}"
+                                    if verbose:
+                                        print(f"   ⚠️  Using page-level WebSocket URL as fallback")
                                     break
-                    
-                    if not connect_url:
-                        # Fallback: use browser-level WebSocket
-                        ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                        ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                        connect_url = f"{ws_protocol}://{ws_base}/devtools/browser"
-                        if verbose:
-                            print(f"   ⚠️  Using fallback WebSocket URL")
                         
-                except Exception as e:
-                    if verbose:
-                        print(f"   ⚠️  Error parsing tabs: {e}")
-                    # Ultimate fallback
-                    ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                    ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                    connect_url = f"{ws_protocol}://{ws_base}/devtools/browser"
-            else:
-                # Ultimate fallback
+                    except Exception as e:
+                        if verbose:
+                            print(f"   ⚠️  Error parsing tabs: {e}")
+            
+            # Ultimate fallback: use hardcoded browser path (this will likely fail)
+            if not connect_url:
                 ws_base = cdp_url.replace('http://', '').replace('https://', '')
                 ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
                 connect_url = f"{ws_protocol}://{ws_base}/devtools/browser"
                 if verbose:
-                    print(f"   ⚠️  Using fallback WebSocket URL")
+                    print(f"   ⚠️  Using hardcoded browser WebSocket URL as final fallback")
             
             if verbose:
                 print(f"   🔗 Final WebSocket URL: {connect_url}")
