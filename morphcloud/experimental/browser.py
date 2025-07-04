@@ -35,9 +35,24 @@ Environment Variables:
 import json
 import time
 import requests
+import logging
+from typing import Optional, Dict, Any
 
 # Import Snapshot class directly to avoid circular imports
 from morphcloud.experimental import Snapshot
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Constants
+CHROME_CDP_PORT = 9222
+PROXY_PORT = 9223
+CHROME_STARTUP_TIMEOUT = 30
+PROXY_STARTUP_TIMEOUT = 10
+HTTP_TIMEOUT = 10
+DEFAULT_VCPUS = 1
+DEFAULT_MEMORY = 4 * 1024  # 4GB
+DEFAULT_DISK_SIZE = 16 * 1024  # 16GB
 
 
 class BrowserSession:
@@ -91,44 +106,44 @@ class BrowserSession:
         """
         return self._instance
     
-    def get_tabs(self):
+    def get_tabs(self) -> list:
         """
         Get list of available browser tabs/pages.
         
         Returns:
-            list: List of tab objects with id, title, url, webSocketDebuggerUrl
+            List of tab objects with id, title, url, webSocketDebuggerUrl
         """
         try:
-            response = requests.get(f"{self._cdp_url}/json", timeout=10)
+            response = requests.get(f"{self._cdp_url}/json", timeout=HTTP_TIMEOUT)
             if response.status_code == 200:
                 return response.json()
             else:
-                raise Exception(f"Failed to get tabs: HTTP {response.status_code}")
+                raise RuntimeError(f"Failed to get tabs: HTTP {response.status_code}")
         except Exception as e:
-            raise Exception(f"Error getting tabs: {e}")
+            raise RuntimeError(f"Error getting tabs: {e}")
     
-    def get_version(self):
+    def get_version(self) -> Dict[str, Any]:
         """
         Get browser version information.
         
         Returns:
-            dict: Browser version info with Browser, Protocol-Version, etc.
+            Browser version info with Browser, Protocol-Version, etc.
         """
         try:
-            response = requests.get(f"{self._cdp_url}/json/version", timeout=10)
+            response = requests.get(f"{self._cdp_url}/json/version", timeout=HTTP_TIMEOUT)
             if response.status_code == 200:
                 return response.json()
             else:
-                raise Exception(f"Failed to get version: HTTP {response.status_code}")
+                raise RuntimeError(f"Failed to get version: HTTP {response.status_code}")
         except Exception as e:
-            raise Exception(f"Error getting version: {e}")
+            raise RuntimeError(f"Error getting version: {e}")
     
-    def is_ready(self):
+    def is_ready(self) -> bool:
         """
         Check if the browser session is ready for automation.
         
         Returns:
-            bool: True if browser is responding to CDP requests
+            True if browser is responding to CDP requests
         """
         try:
             version = self.get_version()
@@ -153,6 +168,114 @@ class BrowserSession:
                 pass  # Service might already be hidden or instance stopped
     
     @classmethod
+    def _get_chrome_command(cls) -> list:
+        """Get Chrome command line arguments."""
+        return [
+            "google-chrome",
+            "--headless=new",
+            "--no-sandbox", 
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=TranslateUI,VizDisplayCompositor",
+            "--enable-features=NetworkService",
+            "--remote-debugging-address=0.0.0.0",
+            f"--remote-debugging-port={CHROME_CDP_PORT}",
+            "--user-data-dir=/tmp/chrome-user-data",
+            "--data-path=/tmp/chrome-data",
+            "--disk-cache-dir=/tmp/chrome-cache",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-plugins",
+            "--allow-running-insecure-content",
+            "--disable-web-security",
+            "--remote-allow-origins=*"
+        ]
+    
+    @classmethod
+    def _get_websocket_url(cls, instance, cdp_url: str, verbose: bool) -> str:
+        """Get WebSocket URL for browser automation."""
+        if verbose:
+            logger.info("Getting Chrome WebSocket URL...")
+        
+        # First, try to get browser-level WebSocket URL from /json/version
+        connect_url = None
+        version_result = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json/version")
+        if version_result.exit_code == 0:
+            try:
+                version_data = json.loads(version_result.stdout)
+                if verbose:
+                    logger.info(f"Got version data from proxy port {PROXY_PORT}")
+                
+                # Extract browser-level WebSocket URL from version endpoint
+                if 'webSocketDebuggerUrl' in version_data:
+                    chrome_ws_url = version_data['webSocketDebuggerUrl']
+                    if verbose:
+                        logger.info(f"Chrome browser WebSocket URL: {chrome_ws_url}")
+                    
+                    # Convert Chrome's internal WebSocket URL to external URL
+                    if 'devtools/browser/' in chrome_ws_url:
+                        # Extract the browser UUID from the URL
+                        browser_uuid = chrome_ws_url.split('devtools/browser/')[-1]
+                        ws_base = cdp_url.replace('http://', '').replace('https://', '')
+                        ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+                        connect_url = f"{ws_protocol}://{ws_base}/devtools/browser/{browser_uuid}"
+                        if verbose:
+                            logger.info("Using browser-level WebSocket URL for Playwright")
+                    
+            except Exception as e:
+                if verbose:
+                    logger.warning(f"Error parsing version: {e}")
+        
+        # If browser-level URL not found, try to get page-level URLs from /json
+        if not connect_url:
+            internal_tabs = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json")
+            if internal_tabs.exit_code == 0:
+                try:
+                    tabs_data = json.loads(internal_tabs.stdout)
+                    if verbose:
+                        logger.info(f"Got tabs from proxy port {PROXY_PORT}: {len(tabs_data)} tabs")
+                    
+                    # Look for a page-level WebSocket URL as fallback
+                    for tab in tabs_data:
+                        if tab.get('type') == 'page' and 'webSocketDebuggerUrl' in tab:
+                            chrome_ws_url = tab['webSocketDebuggerUrl']
+                            if verbose:
+                                logger.info(f"Using page-level WebSocket URL: {chrome_ws_url}")
+                            
+                            # Convert Chrome's internal WebSocket URL to external URL
+                            if 'devtools/page/' in chrome_ws_url:
+                                page_uuid = chrome_ws_url.split('devtools/page/')[-1]
+                                ws_base = cdp_url.replace('http://', '').replace('https://', '')
+                                ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+                                connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{page_uuid}"
+                                if verbose:
+                                    logger.warning("Using page-level WebSocket URL as fallback")
+                                break
+                    
+                except Exception as e:
+                    if verbose:
+                        logger.warning(f"Error parsing tabs: {e}")
+        
+        # Ultimate fallback: use hardcoded browser path
+        if not connect_url:
+            ws_base = cdp_url.replace('http://', '').replace('https://', '')
+            ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
+            connect_url = f"{ws_protocol}://{ws_base}/devtools/browser"
+            if verbose:
+                logger.warning("Using hardcoded browser WebSocket URL as final fallback")
+        
+        if verbose:
+            logger.info(f"Final WebSocket URL: {connect_url}")
+        
+        return connect_url
+    
+    @classmethod
     def _create_snapshot(cls, name, vcpus, memory, disk_size, verbose, invalidate=False):
         """Helper method to create and configure the snapshot."""
         # Use a consistent base name for caching (regardless of instance name)
@@ -165,17 +288,17 @@ class BrowserSession:
             existing_snapshots = client.snapshots.list(digest=base_snapshot_name)
             if existing_snapshots and not invalidate:
                 snapshot_info = existing_snapshots[0]
-                print(f'using existing chrome snapshot: {base_snapshot_name}')
-                print(f'  snapshot id: {snapshot_info.get("id", "unknown")}')
-                print(f'  created: {snapshot_info.get("created_at", "unknown")}')
+                logger.info(f'Using existing chrome snapshot: {base_snapshot_name}')
                 if verbose:
-                    print(f'  to force rebuild, use invalidate=True')
+                    logger.info(f'  Snapshot ID: {snapshot_info.get("id", "unknown")}')
+                    logger.info(f'  Created: {snapshot_info.get("created_at", "unknown")}')
+                    logger.info(f'  To force rebuild, use invalidate=True')
                 snapshot = Snapshot(existing_snapshots[0])
                 return snapshot
         except:
             pass  # Fall through to create new snapshot
             
-        print('creating snapshot...')
+        logger.info('Creating Chrome snapshot...')
         snapshot = Snapshot.create(
             base_snapshot_name,
             image_id="morphvm-minimal",
@@ -184,46 +307,43 @@ class BrowserSession:
             disk_size=disk_size,
             invalidate=invalidate
         )
-        print('snapshot created')
         
         # Layer 1: Update package lists
         snapshot = snapshot.run("apt-get update -y")
-        print('updated package lists')
+        logger.info('Updated package lists')
         
         # Layer 2: Install dependencies including tmux
         snapshot = snapshot.run("apt-get install -y curl wget gnupg lsb-release tmux socat")
-        print('installed deps')
+        logger.info('Installed dependencies')
 
         # Layer 3: Add Google Chrome repository
         snapshot = snapshot.run("wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | tee /etc/apt/trusted.gpg.d/google.gpg > /dev/null")
         snapshot = snapshot.run('echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list')
+        logger.info('Added Google Chrome repository')
         
-        print('added google chrome repo')
         # Layer 4: Update and install Chrome
-        print('updating package lists for chrome...')
         snapshot = snapshot.run("apt-get update -y")
-        print('installing chrome...')
         snapshot = snapshot.run("apt-get install -y google-chrome-stable")
-        print('chrome installed')
+        logger.info('Installed Chrome')
         
         # Layer 5: Install additional Chrome dependencies
-        print('installing chrome dependencies...')
         snapshot = snapshot.run("apt-get install -y fonts-liberation libasound2 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libnss3")
-        print('all dependencies installed')
+        logger.info('Installed Chrome dependencies')
         
         return snapshot
     
     @classmethod
-    def create(cls, name=None, vcpus=1, memory=4 * 1024, disk_size=16 * 1024, verbose=False, invalidate=False):
+    def create(cls, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False):
         """
         Create a new browser session with headless Chrome.
         
         Args:
-            name (str, optional): Name for the browser instance
-            vcpus (int): Number of virtual CPUs (default: 2 for Chrome)
-            memory (int): Memory in MB (default: 8192 = 8GB for Chrome)
-            disk_size (int): Disk size in MB (default: 20480 = 20GB for Chrome)
-            verbose (bool): Enable verbose output (default: False)
+            name: Name for the browser instance
+            vcpus: Number of virtual CPUs
+            memory: Memory in MB
+            disk_size: Disk size in MB
+            verbose: Enable verbose output
+            invalidate: Force fresh snapshot creation
             
         Returns:
             BrowserSession: Ready browser session with CDP access
@@ -236,62 +356,30 @@ class BrowserSession:
             name = f"browser-{str(uuid.uuid4())[:8]}"
         
         if verbose:
-            print(f"🚀 Creating browser session '{name}' with real Chrome...")
+            logger.info(f"Creating browser session '{name}' with Chrome...")
         
         try:
-            # Only use pretty_build if verbose
-            context_manager = None # Snapshot.pretty_build() if verbose else None
-            
-            if context_manager:
-                with context_manager:
-                    snapshot = cls._create_snapshot(name, vcpus, memory, disk_size, verbose, invalidate)
-            else:
-                snapshot = cls._create_snapshot(name, vcpus, memory, disk_size, verbose, invalidate)
+            snapshot = cls._create_snapshot(name, vcpus, memory, disk_size, verbose, invalidate)
                 
             if verbose:
-                print(f"✅ Snapshot created, starting instance...")
+                logger.info("Snapshot created, starting instance...")
                 
             # Start instance (don't use context manager to keep it running)
-            instance = snapshot.start()
+            instance = snapshot.start(metadata={"name": name})
             
             # Verify Chrome installation
             if verbose:
-                print("🔍 Verifying Chrome installation...")
+                logger.info("Verifying Chrome installation...")
             result = instance.exec("google-chrome --version")
             if result.exit_code != 0:
                 raise Exception(f"Chrome not properly installed: {result.stderr}")
             if verbose:
-                print(f"✅ Chrome installed: {result.stdout.strip()}")
+                logger.info(f"Chrome installed: {result.stdout.strip()}")
             
             # Start headless Chrome with CDP
             if verbose:
-                print("🌐 Starting headless Chrome...")
-            chrome_command = [
-                "google-chrome",
-                "--headless=new",
-                "--no-sandbox", 
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-features=TranslateUI,VizDisplayCompositor",
-                "--enable-features=NetworkService",
-                "--remote-debugging-address=0.0.0.0",
-                "--remote-debugging-port=9222",
-                "--user-data-dir=/tmp/chrome-user-data",
-                "--data-path=/tmp/chrome-data",
-                "--disk-cache-dir=/tmp/chrome-cache",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--disable-plugins",
-                "--allow-running-insecure-content",
-                "--disable-web-security",
-                "--remote-allow-origins=*"
-            ]
+                logger.info("Starting headless Chrome...")
+            chrome_command = cls._get_chrome_command()
             
             # Create user data directory
             instance.exec("mkdir -p /tmp/chrome-user-data /tmp/chrome-data /tmp/chrome-cache")
@@ -304,333 +392,195 @@ class BrowserSession:
             # socat already installed in snapshot
             
             # Clean up any existing proxy processes and start fresh
-            instance.exec("pkill -f 'TCP-LISTEN:9223' || true")  # Kill any socat on our proxy port
+            instance.exec(f"pkill -f 'TCP-LISTEN:{PROXY_PORT}' || true")
             
             # Start socat reverse proxy in tmux session (per spec requirements)
             instance.exec("tmux new-session -d -s proxy-session")
-            instance.exec("tmux send-keys -t proxy-session 'socat TCP-LISTEN:9223,fork,bind=0.0.0.0 TCP:127.0.0.1:9222' Enter")
+            instance.exec(f"tmux send-keys -t proxy-session 'socat TCP-LISTEN:{PROXY_PORT},fork,bind=0.0.0.0 TCP:127.0.0.1:{CHROME_CDP_PORT}' Enter")
             
             # Wait for Chrome to start and CDP to be ready
             if verbose:
-                print("⏳ Waiting for Chrome CDP to be ready...")
+                logger.info("Waiting for Chrome CDP to be ready...")
                 
-            for i in range(30):
+            for i in range(CHROME_STARTUP_TIMEOUT):
                 time.sleep(1)
-                result = instance.exec("curl -s http://localhost:9222/json/version 2>/dev/null")
+                result = instance.exec(f"curl -s http://localhost:{CHROME_CDP_PORT}/json/version 2>/dev/null")
                 if result.exit_code == 0:
                     try:
                         version_data = json.loads(result.stdout)
                         if "Browser" in version_data:
                             if verbose:
-                                print(f"✅ Chrome CDP ready after {i+1}s")
-                                print(f"🌐 Browser: {version_data.get('Browser')}")
-                                print(f"📋 Protocol: {version_data.get('Protocol-Version')}")
+                                logger.info(f"Chrome CDP ready after {i+1}s")
+                                logger.info(f"Browser: {version_data.get('Browser')}")
+                                logger.info(f"Protocol: {version_data.get('Protocol-Version')}")
                             break
                     except:
                         pass
                 if i % 5 == 0 and verbose:
-                    print(f"   Starting Chrome... {i+1}/30")
+                    logger.info(f"Starting Chrome... {i+1}/{CHROME_STARTUP_TIMEOUT}")
             else:
                 # Show Chrome logs for debugging
                 if verbose:
                     log_result = instance.exec("cat /tmp/chrome.log 2>/dev/null || echo 'No Chrome logs'")
-                    print(f"Chrome logs: {log_result.stdout}")
+                    logger.error(f"Chrome logs: {log_result.stdout}")
                     ps_result = instance.exec("ps aux | grep chrome | head -5")
-                    print(f"Chrome processes: {ps_result.stdout}")
-                raise Exception("Chrome failed to start within 30 seconds")
+                    logger.error(f"Chrome processes: {ps_result.stdout}")
+                raise Exception(f"Chrome failed to start within {CHROME_STARTUP_TIMEOUT} seconds")
             
             # Create an initial page via CDP (since Chrome starts with no pages)
             if verbose:
-                print("📄 Creating initial page via CDP...")
-            create_page_result = instance.exec('curl -s -X PUT "http://localhost:9222/json/new?about:blank"')
+                logger.info("Creating initial page via CDP...")
+            create_page_result = instance.exec(f'curl -s -X PUT "http://localhost:{CHROME_CDP_PORT}/json/new?about:blank"')
             if create_page_result.exit_code == 0:
                 if verbose:
-                    print("✅ Initial page created successfully")
-                    print(f"   Response: {create_page_result.stdout}")
+                    logger.info("Initial page created successfully")
+                    logger.debug(f"Response: {create_page_result.stdout}")
                     
                 # Verify the page was created by checking CDP targets
-                targets_result = instance.exec('curl -s http://localhost:9222/json')
+                targets_result = instance.exec(f'curl -s http://localhost:{CHROME_CDP_PORT}/json')
                 if targets_result.exit_code == 0:
-                    print(f"   Current CDP targets: {targets_result.stdout}")
+                    logger.debug(f"Current CDP targets: {targets_result.stdout}")
                 else:
-                    print(f"   ⚠️ Failed to check CDP targets: {targets_result.stderr}")
+                    logger.warning(f"Failed to check CDP targets: {targets_result.stderr}")
             else:
                 if verbose:
-                    print(f"⚠️ Failed to create initial page: {create_page_result.stderr}")
-                    print(f"   stdout: {create_page_result.stdout}")
+                    logger.warning(f"Failed to create initial page: {create_page_result.stderr}")
+                    logger.debug(f"stdout: {create_page_result.stdout}")
             
-            # Wait for socat proxy to be ready on port 9223
+            # Wait for socat proxy to be ready
             if verbose:
-                print("⏳ Waiting for socat proxy to be ready...")
-            for i in range(10):
+                logger.info("Waiting for socat proxy to be ready...")
+            for i in range(PROXY_STARTUP_TIMEOUT):
                 time.sleep(1)
-                proxy_test = instance.exec("curl -s http://0.0.0.0:9223/json/version")
+                proxy_test = instance.exec(f"curl -s http://0.0.0.0:{PROXY_PORT}/json/version")
                 if proxy_test.exit_code == 0:
                     if verbose:
-                        print(f"✅ Socat proxy ready after {i+1}s")
+                        logger.info(f"Socat proxy ready after {i+1}s")
                     break
             else:
                 if verbose:
-                    print("❌ Socat proxy failed to start")
+                    logger.error("Socat proxy failed to start")
                     socat_log = instance.exec("cat /tmp/socat.log")
-                    print(f"📋 Socat logs: {socat_log.stdout}")
-                raise Exception("Socat proxy failed to start on port 9223")
+                    logger.error(f"Socat logs: {socat_log.stdout}")
+                raise Exception(f"Socat proxy failed to start on port {PROXY_PORT}")
             
-            # Expose service externally on proxy port 9223
+            # Expose service externally on proxy port
             if verbose:
-                print("🌐 Exposing CDP proxy service on port 9223...")
-            cdp_url = instance.expose_http_service(name="cdp-server", port=9223)
+                logger.info(f"Exposing CDP proxy service on port {PROXY_PORT}...")
+            cdp_url = instance.expose_http_service(name="cdp-server", port=PROXY_PORT)
             
             # Test external access
             if verbose:
-                print("🔗 Testing external access...")
-                print(f"   CDP URL: {cdp_url}")
+                logger.info("Testing external access...")
+                logger.info(f"CDP URL: {cdp_url}")
             
-            # Get WebSocket URL from Chrome response (use internal proxy)
-            if verbose:
-                print("🔗 Getting Chrome WebSocket URL...")
-            
-            # First, try to get browser-level WebSocket URL from /json/version
-            connect_url = None
-            version_result = instance.exec("curl -s http://0.0.0.0:9223/json/version")
-            if version_result.exit_code == 0:
-                try:
-                    version_data = json.loads(version_result.stdout)
-                    if verbose:
-                        print(f"   ✅ Got version data from proxy port 9223")
-                    
-                    # Extract browser-level WebSocket URL from version endpoint
-                    if 'webSocketDebuggerUrl' in version_data:
-                        chrome_ws_url = version_data['webSocketDebuggerUrl']
-                        if verbose:
-                            print(f"   📋 Chrome browser WebSocket URL: {chrome_ws_url}")
-                        
-                        # Convert Chrome's internal WebSocket URL to external URL
-                        if 'devtools/browser/' in chrome_ws_url:
-                            # Extract the browser UUID from the URL
-                            browser_uuid = chrome_ws_url.split('devtools/browser/')[-1]
-                            ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                            ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                            connect_url = f"{ws_protocol}://{ws_base}/devtools/browser/{browser_uuid}"
-                            if verbose:
-                                print(f"   🔗 Using browser-level WebSocket URL for Playwright")
-                        
-                except Exception as e:
-                    if verbose:
-                        print(f"   ⚠️  Error parsing version: {e}")
-            
-            # If browser-level URL not found, try to get page-level URLs from /json
-            if not connect_url:
-                internal_tabs = instance.exec("curl -s http://0.0.0.0:9223/json")
-                if internal_tabs.exit_code == 0:
-                    try:
-                        tabs_data = json.loads(internal_tabs.stdout)
-                        if verbose:
-                            print(f"   ✅ Got tabs from proxy port 9223: {len(tabs_data)} tabs")
-                        
-                        # Look for a page-level WebSocket URL as fallback
-                        for tab in tabs_data:
-                            if tab.get('type') == 'page' and 'webSocketDebuggerUrl' in tab:
-                                chrome_ws_url = tab['webSocketDebuggerUrl']
-                                if verbose:
-                                    print(f"   📋 Using page-level WebSocket URL: {chrome_ws_url}")
-                                
-                                # Convert Chrome's internal WebSocket URL to external URL
-                                if 'devtools/page/' in chrome_ws_url:
-                                    page_uuid = chrome_ws_url.split('devtools/page/')[-1]
-                                    ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                                    ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                                    connect_url = f"{ws_protocol}://{ws_base}/devtools/page/{page_uuid}"
-                                    if verbose:
-                                        print(f"   ⚠️  Using page-level WebSocket URL as fallback")
-                                    break
-                        
-                    except Exception as e:
-                        if verbose:
-                            print(f"   ⚠️  Error parsing tabs: {e}")
-            
-            # Ultimate fallback: use hardcoded browser path (this will likely fail)
-            if not connect_url:
-                ws_base = cdp_url.replace('http://', '').replace('https://', '')
-                ws_protocol = 'wss' if cdp_url.startswith('https://') else 'ws'
-                connect_url = f"{ws_protocol}://{ws_base}/devtools/browser"
-                if verbose:
-                    print(f"   ⚠️  Using hardcoded browser WebSocket URL as final fallback")
-            
-            if verbose:
-                print(f"   🔗 Final WebSocket URL: {connect_url}")
+            # Get WebSocket URL from Chrome response
+            connect_url = cls._get_websocket_url(instance, cdp_url, verbose)
             
             # Create and return session
             session = cls(instance, cdp_url, connect_url)
             if verbose:
-                print(f"🎉 Browser session ready!")
-                print(f"   CDP URL: {cdp_url}")
-                print(f"   Connect URL: {connect_url}")
+                logger.info("Browser session ready!")
+                logger.info(f"CDP URL: {cdp_url}")
+                logger.info(f"Connect URL: {connect_url}")
+                
+                # Log instance details
+                try:
+                    logger.info(f"MorphVM Instance: {instance.id}")
+                    logger.info(f"Instance status: {instance.status}")
+                    logger.info(f"Resources: {instance.spec.vcpus} vCPUs, {instance.spec.memory}MB RAM, {instance.spec.disk_size}MB disk")
+                except Exception as e:
+                    logger.debug(f"Could not get instance details: {e}")
             
             return session
                     
         except Exception as e:
-            raise Exception(f"Failed to create browser session: {e}")
+            raise RuntimeError(f"Failed to create browser session: {e}")
 
 
 def main(verbose=True):
     """Example usage of BrowserSession with real Chrome and Playwright."""
-    if verbose:
-        print("🏗️  BrowserSession - Remote Chrome Browser")
-        print("=" * 50)
+    logger.info("BrowserSession - Remote Chrome Browser Demo")
     
     session = None
     try:
-        # Create a browser session with real Chrome
-        if verbose:
-            print("\n🚀 Creating browser session with real Chrome...")
+        logger.info("Creating browser session with real Chrome...")
         session = BrowserSession.create(name="demo-browser", verbose=verbose)
         
-        if verbose:
-            print(f"\n✅ Chrome session ready!")
-            print(f"🔗 Connect URL: {session.connect_url}")
-            print(f"📡 CDP URL: {session.cdp_url}")
+        logger.info("Chrome session ready!")
+        logger.info(f"Connect URL: {session.connect_url}")
+        logger.info(f"CDP URL: {session.cdp_url}")
         
-        # Skip external CDP endpoint test (we know it fails due to Host header issue)
-        # We'll test connectivity via Playwright WebSocket connection instead
-        
-        # Test with Playwright - install if needed
-        if verbose:
-            print(f"\n🎭 Testing with Playwright...")
-        playwright_success = False
+        # Log instance information
         try:
-            # Try to import playwright
-            from playwright.sync_api import sync_playwright
-            if verbose:
-                print("   ✅ Playwright already installed")
-        except ImportError:
-            if verbose:
-                print("   📦 Installing Playwright...")
-            import subprocess
-            import sys
-            
-            # Install playwright (handle externally managed environment)
-            result = subprocess.run([sys.executable, "-m", "pip", "install", "playwright", "--break-system-packages"], 
-                                 capture_output=True, text=True)
-            if result.returncode == 0:
-                if verbose:
-                    print("   ✅ Playwright installed successfully")
-                
-                # Install browser binaries
-                if verbose:
-                    print("   📦 Installing Chromium browser...")
-                result = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], 
-                                     capture_output=True, text=True)
-                if result.returncode == 0:
-                    if verbose:
-                        print("   ✅ Chromium browser installed")
-                else:
-                    if verbose:
-                        print(f"   ⚠️  Browser install failed: {result.stderr}")
-                    
-                # Import after installation
-                from playwright.sync_api import sync_playwright
-            else:
-                if verbose:
-                    print(f"   ❌ Playwright install failed: {result.stderr}")
-                raise ImportError("Failed to install Playwright")
+            logger.info(f"MorphVM Instance: {session.instance.id}")
+        except Exception:
+            logger.info("MorphVM Instance: Details not available")
         
-        # Actually test the CDP connection
+        # Test with Playwright
+        logger.info("Testing with Playwright...")
+        try:
+            from playwright.sync_api import sync_playwright
+            logger.info("Playwright already installed")
+        except ImportError:
+            logger.info("Playwright not found, skipping test")
+            return False
+        
+        # Test the CDP connection
         try:
             with sync_playwright() as p:
-                if verbose:
-                    print("   🔌 Connecting to remote Chrome via CDP...")
-                    print(f"      WebSocket URL: {session.connect_url}")
-                
-                # This is the critical test - can we connect?
+                logger.info("Connecting to remote Chrome via CDP...")
                 browser = p.chromium.connect_over_cdp(session.connect_url)
-                if verbose:
-                    print("   ✅ Successfully connected to remote Chrome!")
+                logger.info("Successfully connected to remote Chrome!")
                 
-                # Get browser info to prove connection works
-                if verbose:
-                    print("   🔍 Getting browser information...")
                 version = browser.version
-                if verbose:
-                    print(f"   🌐 Browser version: {version}")
+                logger.info(f"Browser version: {version}")
                 
-                # Check if we can get contexts
                 contexts = browser.contexts
-                if verbose:
-                    print(f"   📋 Available contexts: {len(contexts)}")
-                
-                # For now, just verify we can communicate with the browser
-                # This proves the WebSocket connection and CDP protocol are working
-                if verbose:
-                    print("   🎉 PLAYWRIGHT CDP CONNECTION SUCCESSFUL!")
-                    print("   ✅ WebSocket connection established")
-                    print("   ✅ CDP protocol communication working")
-                    print("   ✅ Browser instance accessible from local Playwright")
+                logger.info(f"Available contexts: {len(contexts)}")
                 
                 browser.close()
-                if verbose:
-                    print("   ✅ Browser connection closed successfully")
-                
-                if verbose:
-                    print("   🎉 PLAYWRIGHT TEST PASSED!")
+                logger.info("Browser connection closed successfully")
                 playwright_success = True
                 
         except Exception as e:
-            if verbose:
-                print(f"   ❌ Playwright connection failed: {e}")
-            if verbose:
-                import traceback
-                traceback.print_exc()
+            logger.error(f"Playwright connection failed: {e}")
             playwright_success = False
         
-        if verbose:
-            if playwright_success:
-                print("\n🎉 ALL TESTS PASSED!")
-                print("🚀 Remote Chrome browser working perfectly!")
-                print("   ✅ Playwright can connect to remote Chrome")
-                print("   ✅ Web automation working end-to-end")
-                print("   ✅ Ready for production use")
-            else:
-                print("\n⚠️  Basic setup works but Playwright test failed")
-                print("   Check WebSocket connectivity or Chrome Host header issues")
+        if playwright_success:
+            logger.info("ALL TESTS PASSED! Remote Chrome browser working perfectly!")
+        else:
+            logger.warning("Basic setup works but Playwright test failed")
         
         return playwright_success
         
     except Exception as e:
-        if verbose:
-            print(f"❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+        logger.error(f"Error: {e}")
         return False
     
     finally:
         if session:
-            if verbose:
-                print(f"\n🧹 Cleaning up session...")
+            logger.info("Cleaning up session...")
             try:
                 session.close()
-                if verbose:
-                    print("   ✅ Session closed")
+                logger.info("Session closed")
             except Exception as e:
-                if verbose:
-                    print(f"   ⚠️  Error closing session: {e}")
+                logger.warning(f"Error closing session: {e}")
 
 
 def simple_example():
     """Simple example showing the clean API"""
-    # Create browser session (quiet by default)
     session = BrowserSession.create()
     
-    # Use with Playwright
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(session.connect_url)
-            print(f"✅ Connected to {browser.version}")
+            logger.info(f"Connected to {browser.version}")
             browser.close()
         return True
     except Exception as e:
-        print(f"❌ Failed: {e}")
+        logger.error(f"Failed: {e}")
         return False
     finally:
         session.close()
@@ -639,20 +589,20 @@ def simple_example():
 class SessionManager:
     """Manages browser sessions for MorphBrowser."""
     
-    def create(self, name=None, vcpus=1, memory=4 * 1024, disk_size=16 * 1024, verbose=False, invalidate=False):
+    def create(self, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False) -> 'BrowserSession':
         """
         Create a new browser session.
         
         Args:
-            name (str, optional): Name for the browser instance
-            vcpus (int): Number of virtual CPUs (default: 1)
-            memory (int): Memory in MB (default: 4096)
-            disk_size (int): Disk size in MB (default: 16384)
-            verbose (bool): Enable verbose output (default: False)
-            invalidate (bool): Force fresh snapshot creation (default: False)
+            name: Name for the browser instance
+            vcpus: Number of virtual CPUs
+            memory: Memory in MB
+            disk_size: Disk size in MB
+            verbose: Enable verbose output
+            invalidate: Force fresh snapshot creation
             
         Returns:
-            BrowserSession: Ready browser session with CDP access
+            Ready browser session with CDP access
         """
         return BrowserSession.create(name=name, vcpus=vcpus, memory=memory, disk_size=disk_size, verbose=verbose, invalidate=invalidate)
 
