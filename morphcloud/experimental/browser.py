@@ -4,44 +4,36 @@ MorphBrowser - Remote browser sessions with Caddy reverse proxy
 
 Creates morphcloud instances with real headless Chrome and provides CDP URLs
 for browser automation tools like Playwright. Now features a modern Caddy 
-reverse proxy that fixes HTTP CDP endpoint issues!
-
-🎉 NEW: HTTP CDP endpoints now work reliably!
-- session.get_version() ✅ 
-- session.get_tabs() ✅
-- session.is_ready() ✅ (now uses HTTP CDP)
-- Health check endpoint: /health ✅
+reverse proxy that fixes HTTP CDP endpoint issues.
 
 Usage:
-    from morphcloud.experimental.browser import MorphBrowser
-    
-    mb = MorphBrowser()
-    
-    # Create a new browser session
-    session = mb.sessions.create()
-    
-    # HTTP CDP endpoints now work!
-    version = session.get_version()
-    tabs = session.get_tabs()
-    ready = session.is_ready()
-    
-    # WebSocket CDP for Playwright still works
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(session.connect_url)
-        page = browser.new_page()
-        page.goto('https://example.com')
-        print(page.title())
-        browser.close()
-    
-    # Clean up when done
-    session.close()
+    from morphcloud.experimental.browser import MorphBrowser, ensure_playwright
+    import fire
+    import logging
 
-Environment Variables:
-    MORPH_API_KEY - MorphCloud API key
-    MORPH_BASE_URL - MorphCloud API base URL  
-    MORPH_API_HOST - MorphCloud API host
-    MORPH_SSH_HOSTNAME - MorphCloud SSH hostname
+    def _main():
+        ensure_playwright()
+        mb = MorphBrowser()
+        print("created browser")
+        print("creating session")
+        session = mb.sessions.create(
+            ttl_seconds=3600, # self-destruct after 1 hour always
+            verbose=True # see build / setup progress
+        )
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(session.connect_url)
+            page = browser.new_page()
+            page.goto('https://google.com')
+            print(page.title())
+
+            input("Press any key to continue")
+
+            browser.close()
+        session.close()
+
+    if __name__ == "__main__":
+        fire.Fire(_main)
 """
 
 import json
@@ -188,12 +180,13 @@ class BrowserSession:
         """
         if self._instance:
             try:
-                # Clean up tmux sessions
-                self._instance.exec("tmux kill-session -t chrome-session || true")
-                self._instance.exec("tmux kill-session -t caddy-session || true")
+                self._instance.stop()
+                # # Clean up tmux sessions
+                # self._instance.exec("tmux kill-session -t chrome-session || true")
+                # self._instance.exec("tmux kill-session -t caddy-session || true")
                 
-                # Hide the HTTP service
-                self._instance.hide_http_service("cdp-server")
+                # # Hide the HTTP service
+                # self._instance.hide_http_service("cdp-server")
             except:
                 pass  # Service might already be hidden or instance stopped
     
@@ -420,7 +413,7 @@ class BrowserSession:
         return snapshot
     
     @classmethod
-    def create(cls, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False):
+    def create(cls, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False, ttl_seconds: Optional[int] = None):
         """
         Create a new browser session with headless Chrome.
         
@@ -452,7 +445,7 @@ class BrowserSession:
                 logger.info("Snapshot created, starting instance...")
                 
             # Start instance (don't use context manager to keep it running)
-            instance = snapshot.start(metadata={"name": name})
+            instance = snapshot.start(metadata={"name": name}, ttl_seconds=ttl_seconds)
             
             # Verify Chrome installation
             if verbose:
@@ -700,7 +693,7 @@ def simple_example():
 class SessionManager:
     """Manages browser sessions for MorphBrowser."""
     
-    def create(self, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False) -> 'BrowserSession':
+    def create(self, name: Optional[str] = None, vcpus: int = DEFAULT_VCPUS, memory: int = DEFAULT_MEMORY, disk_size: int = DEFAULT_DISK_SIZE, verbose: bool = False, invalidate: bool = False, ttl_seconds: Optional[int] = None) -> 'BrowserSession':
         """
         Create a new browser session.
         
@@ -715,7 +708,7 @@ class SessionManager:
         Returns:
             Ready browser session with CDP access
         """
-        return BrowserSession.create(name=name, vcpus=vcpus, memory=memory, disk_size=disk_size, verbose=verbose, invalidate=invalidate)
+        return BrowserSession.create(name=name, vcpus=vcpus, memory=memory, disk_size=disk_size, verbose=verbose, invalidate=invalidate, ttl_seconds=ttl_seconds)
 
 
 class MorphBrowser:
@@ -731,6 +724,12 @@ class MorphBrowser:
     
     def __init__(self):
         self.sessions = SessionManager()
+
+def ensure_playwright():
+    try:
+        import playwright
+    except ImportError as e:
+        raise Exception(f"Caught {e}: Playwright is not installed.")
 
 
 if __name__ == "__main__":
