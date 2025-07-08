@@ -286,7 +286,7 @@ class Sandbox:
             # Connect to existing kernels that match our supported languages
             for kernel_info in existing_kernels:
                 kernel_id = kernel_info.get("id")
-                kernel_spec = kernel_info.get("spec", {}).get("name")
+                kernel_spec = kernel_info.get("name")
                 
                 if kernel_spec in kernel_to_language:
                     language = kernel_to_language[kernel_spec]
