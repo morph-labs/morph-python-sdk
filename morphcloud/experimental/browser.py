@@ -350,7 +350,7 @@ class BrowserSession:
         return connect_url
     
     @classmethod
-    def _create_snapshot(cls, name, vcpus, memory, disk_size, verbose, invalidate=False):
+    def create_snapshot(cls, name, vcpus, memory, disk_size, verbose, invalidate=False):
         """Helper method to create and configure the snapshot."""
         # Use a consistent base name for caching (regardless of instance name)
         base_snapshot_name = f"chrome-base-{vcpus}cpu-{memory}mb"
@@ -439,7 +439,7 @@ class BrowserSession:
             logger.info(f"Creating browser session '{name}' with Chrome...")
         
         try:
-            snapshot = cls._create_snapshot(name, vcpus, memory, disk_size, verbose, invalidate)
+            snapshot = cls.create_snapshot(name, vcpus, memory, disk_size, verbose, invalidate)
                 
             if verbose:
                 logger.info("Snapshot created, starting instance...")
