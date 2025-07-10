@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import stat
 import threading
@@ -312,7 +313,16 @@ class Snapshot:
             yield inst
 
     def key_to_digest(self, key: str) -> str:
-        return (self.snapshot.digest or "") + self.snapshot.id + key
+        """
+        Computes a digest hash based on the parent snapshot and operation key.
+        Follows the same pattern as api.py's compute_chain_hash method.
+        """
+        parent_content = (self.snapshot.digest or "") + self.snapshot.id
+        hasher = hashlib.sha256()
+        hasher.update(parent_content.encode("utf-8"))
+        hasher.update(b"\n")
+        hasher.update(key.encode("utf-8"))
+        return hasher.hexdigest()
 
     def apply(
         self,
@@ -324,6 +334,7 @@ class Snapshot:
             None,
         ] = None,
         invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
     ):
         invalidate_fn = (
             invalidate
@@ -354,12 +365,28 @@ class Snapshot:
         with context_manager as inst:
             res = func(inst)
             inst = inst if res is None else res
+
+            # Preserve parent metadata and merge with operation-specific metadata
+            parent_metadata = (
+                self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+            )
+            if metadata:
+                parent_metadata.update(metadata)
+
             return Snapshot(
-                inst.snapshot(digest=self.key_to_digest(key) if key else None)
+                inst.snapshot(
+                    digest=self.key_to_digest(key) if key else None,
+                    metadata=parent_metadata if parent_metadata else None,
+                )
             )
 
     # -------------- run with stream between CMD/RET -------------- #
-    def run(self, command: str, invalidate: InvalidateFn | bool = False):
+    def run(
+        self,
+        command: str,
+        invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ):
         logger.info("🚀 Snapshot.run()", extra={"command": command})
 
         def execute(instance):
@@ -389,9 +416,22 @@ class Snapshot:
                     f"Command execution failed: {command} exit={exit_code} recent_output={recent_output}"
                 )
 
-        return self.apply(execute, key=command, invalidate=invalidate)
+        # Add operation-specific metadata about the command
+        operation_metadata = {"last_command": command}
+        if metadata:
+            operation_metadata.update(metadata)
 
-    def copy_(self, src: str, dest: str, invalidate: InvalidateFn | bool = False):
+        return self.apply(
+            execute, key=command, invalidate=invalidate, metadata=operation_metadata
+        )
+
+    def copy_(
+        self,
+        src: str,
+        dest: str,
+        invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ):
         """
         Copy files/directories to the instance via SSH, similar to Docker COPY.
 
@@ -523,7 +563,17 @@ class Snapshot:
                 update_progress(f"❌ Copy failed: {str(e)}", "error")
                 raise
 
-        return self.apply(execute_copy, key=f"copy-{src}-{dest}", invalidate=invalidate)
+        # Add operation-specific metadata about the copy operation
+        operation_metadata = {"last_copy_src": src, "last_copy_dest": dest}
+        if metadata:
+            operation_metadata.update(metadata)
+
+        return self.apply(
+            execute_copy,
+            key=f"copy-{src}-{dest}",
+            invalidate=invalidate,
+            metadata=operation_metadata,
+        )
 
     # ------------------------------------------------------------------ #
     # Remaining Snapshot methods unchanged                               #
@@ -533,6 +583,7 @@ class Snapshot:
         instructions: str,
         verify=None,
         invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
     ):
         verify_funcs = [verify] if isinstance(verify, typing.Callable) else verify or []
         digest = self.key_to_digest(
@@ -587,7 +638,21 @@ class Snapshot:
                 raise Exception("Verification failed.")
             return instance
 
-        new_snap = self.apply(run_verification, key=digest, invalidate=invalidate)
+        # Add operation-specific metadata about the verification
+        operation_metadata = {"last_instructions": instructions}
+        if verify_funcs:
+            operation_metadata["verification_functions"] = ",".join(
+                v.__name__ for v in verify_funcs
+            )
+        if metadata:
+            operation_metadata.update(metadata)
+
+        new_snap = self.apply(
+            run_verification,
+            key=digest,
+            invalidate=invalidate,
+            metadata=operation_metadata,
+        )
 
         logger.info("🔍 Verification completed successfully")
         return new_snap
@@ -598,6 +663,7 @@ class Snapshot:
         memory: int | None = None,
         disk_size: int | None = None,
         invalidate: bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
     ):
         logger.info(
             "🔧 Snapshot.resize()",
@@ -614,11 +680,21 @@ class Snapshot:
                 time.sleep(10)
                 yield instance
 
+        # Add operation-specific metadata about the resize operation
+        operation_metadata = {
+            "resize_vcpus": str(vcpus or self.snapshot.spec.vcpus),
+            "resize_memory": str(memory or self.snapshot.spec.memory),
+            "resize_disk_size": str(disk_size or self.snapshot.spec.disk_size),
+        }
+        if metadata:
+            operation_metadata.update(metadata)
+
         return self.apply(
             lambda x: x,
             key=f"resize-{vcpus}-{memory}-{disk_size}",
             start_fn=boot_snapshot,
             invalidate=invalidate,
+            metadata=operation_metadata,
         )
 
     @contextmanager
