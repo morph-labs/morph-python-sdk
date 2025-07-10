@@ -365,23 +365,25 @@ class Snapshot:
         with context_manager as inst:
             res = func(inst)
             inst = inst if res is None else res
-            
+
             # Preserve parent metadata and merge with operation-specific metadata
-            parent_metadata = self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+            parent_metadata = (
+                self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+            )
             if metadata:
                 parent_metadata.update(metadata)
-            
+
             return Snapshot(
                 inst.snapshot(
                     digest=self.key_to_digest(key) if key else None,
-                    metadata=parent_metadata if parent_metadata else None
+                    metadata=parent_metadata if parent_metadata else None,
                 )
             )
 
     # -------------- run with stream between CMD/RET -------------- #
     def run(
-        self, 
-        command: str, 
+        self,
+        command: str,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ):
@@ -418,13 +420,15 @@ class Snapshot:
         operation_metadata = {"last_command": command}
         if metadata:
             operation_metadata.update(metadata)
-        
-        return self.apply(execute, key=command, invalidate=invalidate, metadata=operation_metadata)
+
+        return self.apply(
+            execute, key=command, invalidate=invalidate, metadata=operation_metadata
+        )
 
     def copy_(
-        self, 
-        src: str, 
-        dest: str, 
+        self,
+        src: str,
+        dest: str,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ):
@@ -563,8 +567,13 @@ class Snapshot:
         operation_metadata = {"last_copy_src": src, "last_copy_dest": dest}
         if metadata:
             operation_metadata.update(metadata)
-        
-        return self.apply(execute_copy, key=f"copy-{src}-{dest}", invalidate=invalidate, metadata=operation_metadata)
+
+        return self.apply(
+            execute_copy,
+            key=f"copy-{src}-{dest}",
+            invalidate=invalidate,
+            metadata=operation_metadata,
+        )
 
     # ------------------------------------------------------------------ #
     # Remaining Snapshot methods unchanged                               #
@@ -632,11 +641,18 @@ class Snapshot:
         # Add operation-specific metadata about the verification
         operation_metadata = {"last_instructions": instructions}
         if verify_funcs:
-            operation_metadata["verification_functions"] = ",".join(v.__name__ for v in verify_funcs)
+            operation_metadata["verification_functions"] = ",".join(
+                v.__name__ for v in verify_funcs
+            )
         if metadata:
             operation_metadata.update(metadata)
-        
-        new_snap = self.apply(run_verification, key=digest, invalidate=invalidate, metadata=operation_metadata)
+
+        new_snap = self.apply(
+            run_verification,
+            key=digest,
+            invalidate=invalidate,
+            metadata=operation_metadata,
+        )
 
         logger.info("🔍 Verification completed successfully")
         return new_snap
@@ -672,7 +688,7 @@ class Snapshot:
         }
         if metadata:
             operation_metadata.update(metadata)
-        
+
         return self.apply(
             lambda x: x,
             key=f"resize-{vcpus}-{memory}-{disk_size}",
