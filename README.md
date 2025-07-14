@@ -452,6 +452,49 @@ asyncio.run(main())
 - `MORPH_SSH_HOSTNAME`: Override the SSH hostname (defaults to "ssh.cloud.morph.so")
 - `MORPH_SSH_PORT`: Override the SSH port (defaults to 22)
 
+## Plugin System
+
+The morphcloud SDK supports a plugin system that allows extending functionality through Python entry points. This system enables:
+
+### Core + Plugins Architecture
+
+- **Core Package**: The public `morphcloud` package contains stable, production-ready APIs
+- **Plugin Packages**: Additional packages can extend the core functionality via entry points
+
+### Plugin Types
+
+1. **SDK Plugins**: Extend the `MorphCloudClient` class with additional properties and methods
+2. **CLI Plugins**: Add new commands to the morphcloud CLI
+
+### Example Usage
+
+When a plugin package is installed alongside the core package, its functionality becomes automatically available:
+
+```python
+from morphcloud.api import MorphCloudClient
+
+client = MorphCloudClient()
+# Plugin-provided properties/methods are now available
+# Example: client.computers (if computer plugin is installed)
+```
+
+CLI commands are similarly extended:
+
+```bash
+# Plugin-provided commands become available
+# Example: morph instance computer-mcp <instance_id>
+```
+
+### Plugin Development
+
+To create a plugin package, define entry points in your `pyproject.toml`:
+
+```toml
+[project.entry-points]
+"morphcloud.sdk_plugins" = { my_plugin = "my_package.plugins:apply_sdk_extensions" }
+"morphcloud.cli_plugins" = { my_plugin = "my_package.plugins:add_cli_commands" }
+```
+
 ## Support
 
 For issues, questions, or feature requests, please contact us at:
