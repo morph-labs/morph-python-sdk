@@ -464,78 +464,74 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
         handle_api_error(e)
 
 
+def _validate_cleanup_params(target, without_metadata, with_metadata, override_gc_protection):
+    """Validate cleanup parameters based on target type."""
+    errors = []
+    
+    # Parameter restrictions by target
+    restrictions = {
+        "unused": ["without_metadata", "with_metadata", "override_gc_protection"],
+        "inactive-branches": ["without_metadata", "with_metadata", "override_gc_protection"],
+        "metadata": []
+    }
+    
+    # Check restricted parameters
+    param_values = {
+        "without_metadata": without_metadata,
+        "with_metadata": with_metadata,
+        "override_gc_protection": override_gc_protection
+    }
+    
+    for param in restrictions.get(target, []):
+        if param_values.get(param):
+            errors.append(f"--{param.replace('_', '-')} can only be used with --target metadata")
+    
+    # Metadata target specific validation
+    if target == "metadata":
+        if not without_metadata and not with_metadata:
+            errors.append("--target metadata requires either --without-metadata or --with-metadata")
+        if without_metadata and with_metadata:
+            errors.append("--without-metadata and --with-metadata cannot be used together")
+    
+    return errors
+
+
+def _create_cleanup_table(snapshots_to_delete):
+    """Create a formatted table of snapshots to be deleted."""
+    from rich.table import Table
+    import datetime
+    
+    table = Table(show_header=True, header_style="bold red")
+    table.add_column("Snapshot ID")
+    table.add_column("Status")
+    table.add_column("Created")
+    table.add_column("Metadata")
+    
+    for snapshot in snapshots_to_delete:
+        metadata_str = ""
+        if snapshot.metadata:
+            metadata_items = [f"{k}={v}" for k, v in snapshot.metadata.items()]
+            metadata_str = ", ".join(metadata_items)
+        
+        created_date = datetime.datetime.fromtimestamp(snapshot.created).strftime('%Y-%m-%d %H:%M:%S')
+        
+        table.add_row(snapshot.id, snapshot.status.value, created_date, metadata_str)
+    
+    return table
+
+
 @snapshot.command("cleanup")
-@click.option(
-    "--target",
-    type=click.Choice(["unused", "inactive-branches", "metadata"]),
-    default="unused",
-    help="Type of snapshots to clean up: unused (default), inactive-branches, or metadata",
-)
-# Unused target parameters
-@click.option(
-    "--failed-days",
-    type=int,
-    default=7,
-    help="[unused] Delete failed snapshots older than N days (default: 7)",
-)
-@click.option(
-    "--stale-days",
-    type=int,
-    default=30,
-    help="[unused] Delete stale unreachable snapshots older than N days (default: 30)",
-)
-@click.option(
-    "--stuck-hours",
-    type=int,
-    default=24,
-    help="[unused] Delete snapshots stuck in PENDING/DELETING for N hours (default: 24)",
-)
-# Inactive branches target parameters
-@click.option(
-    "--inactive-days",
-    type=int,
-    default=7,
-    help="[inactive-branches] Delete branches with no activity for N days (default: 7)",
-)
-# Metadata target parameters
-@click.option(
-    "--without-metadata",
-    is_flag=True,
-    default=False,
-    help="[metadata] Delete snapshots that have no metadata",
-)
-@click.option(
-    "--with-metadata",
-    multiple=True,
-    help="[metadata] Delete snapshots matching metadata criteria (format: key=value or key for existence check)",
-)
-@click.option(
-    "--override-gc-protection",
-    is_flag=True,
-    default=False,
-    help="[metadata] Allow deletion of GC roots (active instances, tagged snapshots)",
-)
-# Global options
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Show what would be deleted without actually deleting",
-)
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    default=False,
-    help="Skip confirmation prompt and proceed immediately",
-)
-@click.option(
-    "--json",
-    "json_mode",
-    is_flag=True,
-    default=False,
-    help="Output results in JSON format",
-)
+@click.option("--target", type=click.Choice(["unused", "inactive-branches", "metadata"]), default="unused", help="Type of snapshots to clean up")
+@click.option("--failed-days", type=int, default=7, help="[unused] Delete failed snapshots older than N days (default: 7)")
+@click.option("--stale-days", type=int, default=30, help="[unused] Delete stale unreachable snapshots older than N days (default: 30)")
+@click.option("--stuck-hours", type=int, default=24, help="[unused] Delete snapshots stuck in PENDING/DELETING for N hours (default: 24)")
+@click.option("--inactive-days", type=int, default=7, help="[inactive-branches] Delete branches with no activity for N days (default: 7)")
+@click.option("--without-metadata", is_flag=True, default=False, help="[metadata] Delete snapshots that have no metadata")
+@click.option("--with-metadata", multiple=True, help="[metadata] Delete snapshots matching metadata criteria (format: key=value or key for existence check)")
+@click.option("--override-gc-protection", is_flag=True, default=False, help="[metadata] Allow deletion of GC roots (active instances, tagged snapshots)")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted without actually deleting")
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt and proceed immediately")
+@click.option("--json", "json_mode", is_flag=True, default=False, help="Output results in JSON format")
 def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_days, without_metadata, with_metadata, override_gc_protection, dry_run, yes, json_mode):
     """Clean up snapshots based on different cleanup strategies.
     
@@ -562,30 +558,12 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
         
         console = Console()
         
-        # Validate target-specific parameters
-        if target == "unused":
-            # For unused target, metadata options are not allowed
-            if without_metadata or with_metadata:
-                console.print(f"[red]Error: --without-metadata and --with-metadata can only be used with --target metadata[/red]")
-                return
-            if override_gc_protection:
-                console.print(f"[red]Error: --override-gc-protection can only be used with --target metadata[/red]")
-                return
-        elif target == "inactive-branches":
-            # For inactive-branches target, unused and metadata options are not allowed
-            if without_metadata or with_metadata:
-                console.print(f"[red]Error: --without-metadata and --with-metadata can only be used with --target metadata[/red]")
-                return
-            if override_gc_protection:
-                console.print(f"[red]Error: --override-gc-protection can only be used with --target metadata[/red]")
-                return
-        elif target == "metadata":
-            # For metadata target, must specify at least one metadata criteria
-            if not without_metadata and not with_metadata:
-                console.print(f"[red]Error: --target metadata requires either --without-metadata or --with-metadata[/red]")
-                return
-            if without_metadata and with_metadata:
-                console.print(f"[red]Error: --without-metadata and --with-metadata cannot be used together[/red]")
+        # Validate target-specific parameters using config
+        validation_errors = _validate_cleanup_params(target, without_metadata, with_metadata, override_gc_protection)
+        if validation_errors:
+            for error in validation_errors:
+                console.print(f"[red]Error: {error}[/red]")
+            return
                 return
         
         # Prepare metadata criteria for metadata target
@@ -658,42 +636,12 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
         # Show table of snapshots to be deleted
         console.print(f"\n[bold red]Snapshots to be deleted ({len(preview_result['deleted'])}):[/bold red]")
         
-        # Get detailed snapshot info for table
-        snapshots_to_delete = []
+        # Get detailed snapshot info and create table
         all_snapshots = client.snapshots.list()
         snapshot_lookup = {s.id: s for s in all_snapshots}
+        snapshots_to_delete = [snapshot_lookup[sid] for sid in preview_result['deleted'] if sid in snapshot_lookup]
         
-        for snapshot_id in preview_result['deleted']:
-            snapshot = snapshot_lookup.get(snapshot_id)
-            if snapshot:
-                snapshots_to_delete.append(snapshot)
-        
-        # Create table
-        table = Table(show_header=True, header_style="bold red")
-        table.add_column("Snapshot ID")
-        table.add_column("Status")
-        table.add_column("Created")
-        table.add_column("Metadata")
-        
-        for snapshot in snapshots_to_delete:
-            # Format metadata for display
-            metadata_str = ""
-            if snapshot.metadata:
-                metadata_items = [f"{k}={v}" for k, v in snapshot.metadata.items()]
-                metadata_str = ", ".join(metadata_items)
-            
-            # Format created date
-            import datetime
-            created_date = datetime.datetime.fromtimestamp(snapshot.created).strftime('%Y-%m-%d %H:%M:%S')
-            
-            table.add_row(
-                snapshot.id,
-                snapshot.status.value,
-                created_date,
-                metadata_str
-            )
-        
-        console.print(table)
+        console.print(_create_cleanup_table(snapshots_to_delete))
         
         # Handle dry run
         if dry_run:

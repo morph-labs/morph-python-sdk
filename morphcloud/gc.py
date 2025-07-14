@@ -220,54 +220,50 @@ def _get_unreachable_candidates(snapshots: List, instances: List) -> List[str]:
     return gc.get_cleanup_candidates(classification)
 
 
-def _get_failed_candidates(snapshots: List, failed_days: int, current_time: float) -> List[str]:
-    """Get failed snapshot candidates older than failed_days."""
+def _get_time_filtered_candidates(snapshots: List, time_filter: dict, current_time: float) -> List[str]:
+    """Get time-filtered snapshot candidates based on status and age criteria."""
     from morphcloud.api import SnapshotStatus
     
     candidates = []
-    cutoff_time = current_time - (failed_days * 24 * 60 * 60)  # Convert days to seconds
     
     for snapshot in snapshots:
-        if (snapshot.status == SnapshotStatus.FAILED and 
-            snapshot.created < cutoff_time and
-            not _is_protected_snapshot(snapshot)):
-            candidates.append(snapshot.id)
+        if _is_protected_snapshot(snapshot):
+            continue
+            
+        for filter_config in time_filter.get('filters', []):
+            status_match = snapshot.status in filter_config['statuses']
+            time_match = snapshot.created < (current_time - filter_config['seconds'])
+            
+            if status_match and time_match:
+                candidates.append(snapshot.id)
+                break  # Only add once per snapshot
     
     return candidates
 
 
-def _get_stale_candidates(snapshots: List, instances: List, stale_days: int, current_time: float) -> List[str]:
-    """Get stale unreachable snapshot candidates older than stale_days."""
-    # First get unreachable snapshots
-    unreachable = _get_unreachable_candidates(snapshots, instances)
-    
-    # Filter by age
-    cutoff_time = current_time - (stale_days * 24 * 60 * 60)
-    snapshot_lookup = {s.id: s for s in snapshots}
-    
-    stale_candidates = []
-    for snapshot_id in unreachable:
-        snapshot = snapshot_lookup.get(snapshot_id)
-        if snapshot and snapshot.created < cutoff_time:
-            stale_candidates.append(snapshot_id)
-    
-    return stale_candidates
+def _get_failed_candidates(snapshots: List, failed_days: int, current_time: float) -> List[str]:
+    """Get failed snapshot candidates older than failed_days."""
+    from morphcloud.api import SnapshotStatus
+    return _get_time_filtered_candidates(snapshots, {
+        'filters': [{'statuses': [SnapshotStatus.FAILED], 'seconds': failed_days * 24 * 60 * 60}]
+    }, current_time)
 
 
 def _get_stuck_candidates(snapshots: List, stuck_hours: int, current_time: float) -> List[str]:
     """Get snapshots stuck in PENDING/DELETING states for stuck_hours."""
     from morphcloud.api import SnapshotStatus
+    return _get_time_filtered_candidates(snapshots, {
+        'filters': [{'statuses': [SnapshotStatus.PENDING, SnapshotStatus.DELETING], 'seconds': stuck_hours * 60 * 60}]
+    }, current_time)
+
+
+def _get_stale_candidates(snapshots: List, instances: List, stale_days: int, current_time: float) -> List[str]:
+    """Get stale unreachable snapshot candidates older than stale_days."""
+    unreachable = _get_unreachable_candidates(snapshots, instances)
+    cutoff_time = current_time - (stale_days * 24 * 60 * 60)
+    snapshot_lookup = {s.id: s for s in snapshots}
     
-    candidates = []
-    cutoff_time = current_time - (stuck_hours * 60 * 60)  # Convert hours to seconds
-    
-    for snapshot in snapshots:
-        if (snapshot.status in [SnapshotStatus.PENDING, SnapshotStatus.DELETING] and 
-            snapshot.created < cutoff_time and
-            not _is_protected_snapshot(snapshot)):
-            candidates.append(snapshot.id)
-    
-    return candidates
+    return [sid for sid in unreachable if snapshot_lookup.get(sid) and snapshot_lookup[sid].created < cutoff_time]
 
 
 def _get_inactive_branch_candidates(snapshots: List, instances: List, inactive_days: int, current_time: float) -> List[str]:
@@ -317,7 +313,7 @@ def _get_inactive_branch_candidates(snapshots: List, instances: List, inactive_d
                 inactive_candidates.extend(_get_branch_descendants(child_id, children_map, snapshots))
     
     # Filter out protected snapshots
-    return [snap_id for snap_id in inactive_candidates if not _is_protected_snapshot_by_id(snap_id, snapshots)]
+    return [snap_id for snap_id in inactive_candidates if not _is_protected_snapshot(snap_id, snapshots)]
 
 
 def _branch_has_active_descendants(snapshot_id: str, children_map: Dict[str, List[str]], active_snapshots: Set[str]) -> bool:
@@ -345,38 +341,24 @@ def _get_branch_descendants(snapshot_id: str, children_map: Dict[str, List[str]]
     return descendants
 
 
-def _is_protected_snapshot(snapshot) -> bool:
+def _is_protected_snapshot(snapshot_or_id, snapshots: List = None) -> bool:
     """Check if a snapshot is protected from deletion."""
+    # Handle both snapshot object and ID
+    if isinstance(snapshot_or_id, str):
+        if not snapshots:
+            return False
+        snapshot = next((s for s in snapshots if s.id == snapshot_or_id), None)
+        if not snapshot:
+            return False
+    else:
+        snapshot = snapshot_or_id
+    
     if not snapshot.metadata:
         return False
     
     # Protected by tag or explicit protection
-    if snapshot.metadata.get("tag") or snapshot.metadata.get("gc_keep") == "true":
-        return True
-    
-    return False
+    return snapshot.metadata.get("tag") or snapshot.metadata.get("gc_keep") == "true"
 
-
-def _is_protected_snapshot_by_id(snapshot_id: str, snapshots: List) -> bool:
-    """Check if a snapshot is protected from deletion by ID."""
-    for snapshot in snapshots:
-        if snapshot.id == snapshot_id:
-            return _is_protected_snapshot(snapshot)
-    return False
-
-
-def _filter_by_age(candidates: List[str], older_than_days: int, current_time: float, snapshots: List) -> List[str]:
-    """Filter cleanup candidates to only include snapshots older than N days."""
-    cutoff_time = current_time - (older_than_days * 24 * 60 * 60)
-    snapshot_lookup = {s.id: s for s in snapshots}
-    
-    aged_candidates = []
-    for snapshot_id in candidates:
-        snapshot = snapshot_lookup.get(snapshot_id)
-        if snapshot and snapshot.created < cutoff_time:
-            aged_candidates.append(snapshot_id)
-    
-    return aged_candidates
 
 
 def _get_metadata_candidates(snapshots: List, instances: List, metadata_criteria: Dict, override_gc_protection: bool) -> List[str]:
@@ -416,43 +398,31 @@ def _snapshot_matches_metadata_criteria(snapshot, metadata_criteria: Dict) -> bo
     
     # Handle --without-metadata case
     if metadata_criteria.get("without_metadata", False):
-        return not snapshot.metadata or len(snapshot.metadata) == 0
+        return not snapshot.metadata
     
     # Handle --with-metadata cases
     with_metadata = metadata_criteria.get("with_metadata", [])
-    if not with_metadata:
-        return False
-    
-    # If no metadata on snapshot, it can't match any with_metadata criteria
-    if not snapshot.metadata:
+    if not with_metadata or not snapshot.metadata:
         return False
     
     # All criteria must match (AND logic)
     for criterion in with_metadata:
-        if not _matches_single_criterion(snapshot.metadata, criterion):
-            return False
+        if "=" in criterion:
+            key, value = criterion.split("=", 1)
+            if key not in snapshot.metadata:
+                return False
+            # Support pattern matching
+            if any(char in value for char in "*?["):
+                if not fnmatch.fnmatch(str(snapshot.metadata[key]), value):
+                    return False
+            elif str(snapshot.metadata[key]) != value:
+                return False
+        else:
+            # Key existence check
+            if criterion not in snapshot.metadata:
+                return False
     
     return True
-
-
-def _matches_single_criterion(metadata: Dict, criterion: str) -> bool:
-    """Check if metadata matches a single criterion (key=value or key)."""
-    import fnmatch
-    
-    if "=" in criterion:
-        # Key=value format
-        key, value = criterion.split("=", 1)
-        if key not in metadata:
-            return False
-        
-        # Support pattern matching
-        if "*" in value or "?" in value or "[" in value:
-            return fnmatch.fnmatch(str(metadata[key]), value)
-        else:
-            return str(metadata[key]) == value
-    else:
-        # Key existence check
-        return criterion in metadata
 
 
 def cleanup_snapshots(client, dry_run: bool = True) -> Dict[str, any]:
