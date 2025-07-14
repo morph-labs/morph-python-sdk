@@ -121,6 +121,32 @@ def cli():
 
 
 # ─────────────────────────────────────────────────────────────
+#  Plugin Loading
+# ─────────────────────────────────────────────────────────────
+
+
+def load_plugins():
+    """Load plugin subcommands from entry points"""
+    try:
+        from importlib.metadata import entry_points
+        
+        for ep in entry_points(group="morphcloud"):
+            try:
+                plugin_cmd = ep.load()
+                cli.add_command(plugin_cmd, name=ep.name)
+            except Exception as e:
+                # Show warning about failed plugin but continue
+                click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
+    except Exception as e:
+        # If entry_points fails entirely, silently continue
+        pass
+
+
+# Load plugins when module is imported
+load_plugins()
+
+
+# ─────────────────────────────────────────────────────────────
 #  Utilities
 # ─────────────────────────────────────────────────────────────
 
