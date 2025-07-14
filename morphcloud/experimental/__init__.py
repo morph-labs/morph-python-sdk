@@ -372,6 +372,8 @@ class Snapshot:
             )
             if metadata:
                 parent_metadata.update(metadata)
+            # Add parent snapshot ID for garbage collection tree traversal (non-overwritable)
+            parent_metadata["parent_snapshot_id"] = self.snapshot.id
 
             return Snapshot(
                 inst.snapshot(
