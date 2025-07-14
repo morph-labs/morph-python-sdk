@@ -464,6 +464,277 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
         handle_api_error(e)
 
 
+@snapshot.command("cleanup")
+@click.option(
+    "--target",
+    type=click.Choice(["unused", "inactive-branches", "metadata"]),
+    default="unused",
+    help="Type of snapshots to clean up: unused (default), inactive-branches, or metadata",
+)
+# Unused target parameters
+@click.option(
+    "--failed-days",
+    type=int,
+    default=7,
+    help="[unused] Delete failed snapshots older than N days (default: 7)",
+)
+@click.option(
+    "--stale-days",
+    type=int,
+    default=30,
+    help="[unused] Delete stale unreachable snapshots older than N days (default: 30)",
+)
+@click.option(
+    "--stuck-hours",
+    type=int,
+    default=24,
+    help="[unused] Delete snapshots stuck in PENDING/DELETING for N hours (default: 24)",
+)
+# Inactive branches target parameters
+@click.option(
+    "--inactive-days",
+    type=int,
+    default=7,
+    help="[inactive-branches] Delete branches with no activity for N days (default: 7)",
+)
+# Metadata target parameters
+@click.option(
+    "--without-metadata",
+    is_flag=True,
+    default=False,
+    help="[metadata] Delete snapshots that have no metadata",
+)
+@click.option(
+    "--with-metadata",
+    multiple=True,
+    help="[metadata] Delete snapshots matching metadata criteria (format: key=value or key for existence check)",
+)
+@click.option(
+    "--override-gc-protection",
+    is_flag=True,
+    default=False,
+    help="[metadata] Allow deletion of GC roots (active instances, tagged snapshots)",
+)
+# Global options
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be deleted without actually deleting",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt and proceed immediately",
+)
+@click.option(
+    "--json",
+    "json_mode",
+    is_flag=True,
+    default=False,
+    help="Output results in JSON format",
+)
+def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_days, without_metadata, with_metadata, override_gc_protection, dry_run, yes, json_mode):
+    """Clean up snapshots based on different cleanup strategies.
+    
+    Cleanup targets:
+    - unused: Clean unhealthy snapshots (unreachable, failed, stuck) with configurable thresholds
+    - inactive-branches: Clean dead branches with no recent activity
+    - metadata: Clean snapshots based on metadata criteria with pattern matching
+    
+    Each target has specific parameters. Use --help to see all options.
+    
+    Preserved snapshots (unless overridden):
+    - Active instances (READY, PAUSED, PENDING)
+    - Tagged snapshots (metadata["tag"] exists)
+    - Explicitly protected snapshots (metadata["gc_keep"] = "true")
+    - All ancestor snapshots in the parent chain
+    """
+    client = get_client()
+    
+    try:
+        from morphcloud.gc import cleanup_snapshots_by_target
+        from rich.console import Console
+        from rich.table import Table
+        import warnings
+        
+        console = Console()
+        
+        # Validate target-specific parameters
+        if target == "unused":
+            # For unused target, metadata options are not allowed
+            if without_metadata or with_metadata:
+                console.print(f"[red]Error: --without-metadata and --with-metadata can only be used with --target metadata[/red]")
+                return
+            if override_gc_protection:
+                console.print(f"[red]Error: --override-gc-protection can only be used with --target metadata[/red]")
+                return
+        elif target == "inactive-branches":
+            # For inactive-branches target, unused and metadata options are not allowed
+            if without_metadata or with_metadata:
+                console.print(f"[red]Error: --without-metadata and --with-metadata can only be used with --target metadata[/red]")
+                return
+            if override_gc_protection:
+                console.print(f"[red]Error: --override-gc-protection can only be used with --target metadata[/red]")
+                return
+        elif target == "metadata":
+            # For metadata target, must specify at least one metadata criteria
+            if not without_metadata and not with_metadata:
+                console.print(f"[red]Error: --target metadata requires either --without-metadata or --with-metadata[/red]")
+                return
+            if without_metadata and with_metadata:
+                console.print(f"[red]Error: --without-metadata and --with-metadata cannot be used together[/red]")
+                return
+        
+        # Prepare metadata criteria for metadata target
+        metadata_criteria = None
+        if target == "metadata":
+            metadata_criteria = {
+                "without_metadata": without_metadata,
+                "with_metadata": list(with_metadata) if with_metadata else []
+            }
+        
+        # Run cleanup with dry_run mode first to get candidates
+        preview_result = cleanup_snapshots_by_target(
+            client, 
+            target=target, 
+            failed_days=failed_days,
+            stale_days=stale_days, 
+            stuck_hours=stuck_hours, 
+            inactive_days=inactive_days,
+            metadata_criteria=metadata_criteria,
+            override_gc_protection=override_gc_protection,
+            dry_run=True
+        )
+        
+        if json_mode:
+            # In JSON mode, run actual cleanup if not dry_run
+            if not dry_run:
+                result = cleanup_snapshots_by_target(
+                    client, 
+                    target=target, 
+                    failed_days=failed_days,
+                    stale_days=stale_days, 
+                    stuck_hours=stuck_hours, 
+                    inactive_days=inactive_days,
+                    metadata_criteria=metadata_criteria,
+                    override_gc_protection=override_gc_protection,
+                    dry_run=False
+                )
+                click.echo(format_json(result))
+            else:
+                click.echo(format_json(preview_result))
+            return
+        
+        # Display summary
+        console.print(f"\n[bold]Snapshot Cleanup Analysis ({target})[/bold]")
+        console.print(f"Total snapshots: {preview_result['total_snapshots']}")
+        console.print(f"Cleanup candidates: {preview_result['candidates']}")
+        
+        # Show target-specific info
+        if target == "unused":
+            info_parts = [f"Unreachable, failed (>{failed_days}d), and stuck (>{stuck_hours}h) snapshots"]
+            if stale_days != 30:
+                info_parts.append(f"with stale filter: >{stale_days}d")
+            console.print(" ".join(info_parts))
+        elif target == "inactive-branches":
+            console.print(f"Inactive branches with no activity for {inactive_days} days")
+        elif target == "metadata":
+            if without_metadata:
+                console.print("Snapshots without metadata")
+            else:
+                criteria_str = ", ".join(with_metadata)
+                console.print(f"Snapshots matching metadata: {criteria_str}")
+                if override_gc_protection:
+                    console.print("[yellow]⚠️  GC protection overridden - will delete protected snapshots[/yellow]")
+        
+        # Check if there are any candidates
+        if not preview_result['deleted']:
+            console.print(f"\n[green]✅ No {target} snapshots found. Nothing to clean up![/green]")
+            return
+        
+        # Show table of snapshots to be deleted
+        console.print(f"\n[bold red]Snapshots to be deleted ({len(preview_result['deleted'])}):[/bold red]")
+        
+        # Get detailed snapshot info for table
+        snapshots_to_delete = []
+        all_snapshots = client.snapshots.list()
+        snapshot_lookup = {s.id: s for s in all_snapshots}
+        
+        for snapshot_id in preview_result['deleted']:
+            snapshot = snapshot_lookup.get(snapshot_id)
+            if snapshot:
+                snapshots_to_delete.append(snapshot)
+        
+        # Create table
+        table = Table(show_header=True, header_style="bold red")
+        table.add_column("Snapshot ID")
+        table.add_column("Status")
+        table.add_column("Created")
+        table.add_column("Metadata")
+        
+        for snapshot in snapshots_to_delete:
+            # Format metadata for display
+            metadata_str = ""
+            if snapshot.metadata:
+                metadata_items = [f"{k}={v}" for k, v in snapshot.metadata.items()]
+                metadata_str = ", ".join(metadata_items)
+            
+            # Format created date
+            import datetime
+            created_date = datetime.datetime.fromtimestamp(snapshot.created).strftime('%Y-%m-%d %H:%M:%S')
+            
+            table.add_row(
+                snapshot.id,
+                snapshot.status.value,
+                created_date,
+                metadata_str
+            )
+        
+        console.print(table)
+        
+        # Handle dry run
+        if dry_run:
+            console.print("\n[yellow]This is a dry run. No snapshots will be deleted.[/yellow]")
+            return
+        
+        # Handle confirmation
+        if not yes:
+            console.print(f"\n[bold yellow]Ready to delete {len(snapshots_to_delete)} snapshots.[/bold yellow]")
+            response = input(f"Do you want to proceed to delete {len(snapshots_to_delete)} snapshots? (y/N): ").lower().strip()
+            if response not in ["y", "yes"]:
+                console.print("[cyan]Operation cancelled by user.[/cyan]")
+                return
+        
+        # Perform actual cleanup
+        console.print("\n[bold]Deleting snapshots...[/bold]")
+        result = cleanup_snapshots_by_target(
+            client, 
+            target=target, 
+            failed_days=failed_days,
+            stale_days=stale_days, 
+            stuck_hours=stuck_hours, 
+            inactive_days=inactive_days,
+            metadata_criteria=metadata_criteria,
+            override_gc_protection=override_gc_protection,
+            dry_run=False
+        )
+        
+        # Display results
+        if result['deleted']:
+            console.print(f"\n[green]✅ Successfully deleted {len(result['deleted'])} snapshots[/green]")
+        
+        if result['errors']:
+            console.print(f"\n[red]❌ {len(result['errors'])} deletion errors:[/red]")
+            for error in result['errors']:
+                console.print(f"  {error['snapshot_id']}: {error['error']}")
+        
+    except Exception as e:
+        handle_api_error(e)
+
+
 # ─────────────────────────────────────────────────────────────
 #  Instance Commands
 # ─────────────────────────────────────────────────────────────

@@ -106,3 +106,432 @@ class SnapshotGarbageCollector:
     def get_cleanup_candidates(self, classification: SnapshotClassification) -> List[str]:
         """Get list of snapshot IDs that are safe to delete."""
         return list(classification.unreachable)
+
+
+def cleanup_snapshots_by_target(client, target: str, failed_days: int = 7, stale_days: int = 30, stuck_hours: int = 24, inactive_days: int = 7, metadata_criteria: Dict = None, override_gc_protection: bool = False, dry_run: bool = True) -> Dict[str, any]:
+    """
+    Run targeted snapshot cleanup based on cleanup strategy.
+    
+    Args:
+        client: MorphCloudClient instance
+        target: Cleanup target ("unused", "inactive-branches", "metadata")
+        failed_days: Delete failed snapshots older than N days
+        stale_days: Delete stale unreachable snapshots older than N days
+        stuck_hours: Delete stuck snapshots older than N hours
+        inactive_days: Delete inactive branches with no activity for N days
+        metadata_criteria: Dict with metadata matching criteria
+        override_gc_protection: Allow deletion of GC roots
+        dry_run: If True, only identifies candidates without deleting
+        
+    Returns:
+        Dict with cleanup results
+    """
+    import time
+    from morphcloud.api import ApiError, SnapshotStatus
+    
+    logger.info(f"Starting {target} cleanup (dry_run={dry_run})")
+    
+    # Fetch all snapshots and instances
+    snapshots = client.snapshots.list()
+    instances = client.instances.list()
+    
+    current_time = time.time()
+    candidates = []
+    
+    if target == "unused":
+        # Clean unhealthy snapshots: unreachable + failed + stuck
+        candidates = (
+            _get_unreachable_candidates(snapshots, instances) +
+            _get_failed_candidates(snapshots, failed_days, current_time) +
+            _get_stuck_candidates(snapshots, stuck_hours, current_time)
+        )
+        # Remove duplicates
+        candidates = list(set(candidates))
+        
+        # Apply stale filter to unreachable snapshots
+        if stale_days != 30:  # Only apply if user changed default
+            stale_candidates = _get_stale_candidates(snapshots, instances, stale_days, current_time)
+            unreachable_candidates = _get_unreachable_candidates(snapshots, instances)
+            # Replace unreachable with stale-filtered version
+            candidates = [c for c in candidates if c not in unreachable_candidates]
+            candidates.extend(stale_candidates)
+            candidates = list(set(candidates))
+            
+    elif target == "inactive-branches":
+        candidates = _get_inactive_branch_candidates(snapshots, instances, inactive_days, current_time)
+        
+    elif target == "metadata":
+        candidates = _get_metadata_candidates(snapshots, instances, metadata_criteria, override_gc_protection)
+        
+    else:
+        raise ValueError(f"Unknown target: {target}. Valid targets are: unused, inactive-branches, metadata")
+    
+    # Prepare results
+    results = {
+        "deleted": [],
+        "errors": [],
+        "dry_run": dry_run,
+        "target": target,
+        "total_snapshots": len(snapshots),
+        "candidates": len(candidates)
+    }
+    
+    # Process deletion candidates
+    for snapshot_id in candidates:
+        if dry_run:
+            results["deleted"].append(snapshot_id)
+            logger.info(f"[DRY RUN] Would delete snapshot: {snapshot_id}")
+        else:
+            try:
+                snapshot = client.snapshots.get(snapshot_id)
+                snapshot.delete()
+                results["deleted"].append(snapshot_id)
+                logger.info(f"Deleted snapshot: {snapshot_id}")
+            except ApiError as e:
+                error_info = {
+                    "snapshot_id": snapshot_id,
+                    "error": str(e),
+                    "status_code": getattr(e, 'status_code', None)
+                }
+                results["errors"].append(error_info)
+                logger.error(f"Failed to delete snapshot {snapshot_id}: {e}")
+            except Exception as e:
+                error_info = {
+                    "snapshot_id": snapshot_id,
+                    "error": str(e),
+                    "status_code": None
+                }
+                results["errors"].append(error_info)
+                logger.error(f"Unexpected error deleting snapshot {snapshot_id}: {e}")
+    
+    # Log summary
+    if dry_run:
+        logger.info(f"[DRY RUN] Would delete {len(results['deleted'])} {target} snapshots")
+    else:
+        logger.info(f"Deleted {len(results['deleted'])} {target} snapshots, {len(results['errors'])} errors")
+    
+    return results
+
+
+def _get_unreachable_candidates(snapshots: List, instances: List) -> List[str]:
+    """Get unreachable snapshot candidates using GC analysis."""
+    gc = SnapshotGarbageCollector()
+    classification = gc.classify_snapshots(snapshots, instances)
+    return gc.get_cleanup_candidates(classification)
+
+
+def _get_failed_candidates(snapshots: List, failed_days: int, current_time: float) -> List[str]:
+    """Get failed snapshot candidates older than failed_days."""
+    from morphcloud.api import SnapshotStatus
+    
+    candidates = []
+    cutoff_time = current_time - (failed_days * 24 * 60 * 60)  # Convert days to seconds
+    
+    for snapshot in snapshots:
+        if (snapshot.status == SnapshotStatus.FAILED and 
+            snapshot.created < cutoff_time and
+            not _is_protected_snapshot(snapshot)):
+            candidates.append(snapshot.id)
+    
+    return candidates
+
+
+def _get_stale_candidates(snapshots: List, instances: List, stale_days: int, current_time: float) -> List[str]:
+    """Get stale unreachable snapshot candidates older than stale_days."""
+    # First get unreachable snapshots
+    unreachable = _get_unreachable_candidates(snapshots, instances)
+    
+    # Filter by age
+    cutoff_time = current_time - (stale_days * 24 * 60 * 60)
+    snapshot_lookup = {s.id: s for s in snapshots}
+    
+    stale_candidates = []
+    for snapshot_id in unreachable:
+        snapshot = snapshot_lookup.get(snapshot_id)
+        if snapshot and snapshot.created < cutoff_time:
+            stale_candidates.append(snapshot_id)
+    
+    return stale_candidates
+
+
+def _get_stuck_candidates(snapshots: List, stuck_hours: int, current_time: float) -> List[str]:
+    """Get snapshots stuck in PENDING/DELETING states for stuck_hours."""
+    from morphcloud.api import SnapshotStatus
+    
+    candidates = []
+    cutoff_time = current_time - (stuck_hours * 60 * 60)  # Convert hours to seconds
+    
+    for snapshot in snapshots:
+        if (snapshot.status in [SnapshotStatus.PENDING, SnapshotStatus.DELETING] and 
+            snapshot.created < cutoff_time and
+            not _is_protected_snapshot(snapshot)):
+            candidates.append(snapshot.id)
+    
+    return candidates
+
+
+def _get_inactive_branch_candidates(snapshots: List, instances: List, inactive_days: int, current_time: float) -> List[str]:
+    """Get inactive branch candidates - branches with no activity for inactive_days."""
+    from morphcloud.api import InstanceStatus
+    
+    # Build parent-child relationship maps
+    children_map = {}  # parent_id -> [child_ids]
+    parent_map = {}    # child_id -> parent_id
+    
+    for snapshot in snapshots:
+        if snapshot.metadata and snapshot.metadata.get("parent_snapshot_id"):
+            parent_id = snapshot.metadata["parent_snapshot_id"]
+            parent_map[snapshot.id] = parent_id
+            
+            if parent_id not in children_map:
+                children_map[parent_id] = []
+            children_map[parent_id].append(snapshot.id)
+    
+    # Find active snapshots (recently accessed)
+    active_snapshots = set()
+    cutoff_time = current_time - (inactive_days * 24 * 60 * 60)
+    
+    # Mark snapshots with recent instances as active
+    for instance in instances:
+        if instance.status in [InstanceStatus.READY, InstanceStatus.PAUSED, InstanceStatus.PENDING]:
+            active_snapshots.add(instance.refs.snapshot_id)
+    
+    # Also mark recent snapshots as active (approximation of activity)
+    for snapshot in snapshots:
+        if snapshot.created > cutoff_time:
+            active_snapshots.add(snapshot.id)
+    
+    # Find branch points (snapshots with multiple children)
+    branch_points = {parent_id for parent_id, children in children_map.items() if len(children) > 1}
+    
+    inactive_candidates = []
+    
+    # For each branch point, check if any branches are inactive
+    for branch_point in branch_points:
+        children = children_map[branch_point]
+        
+        for child_id in children:
+            # Check if this branch has any active descendants
+            if not _branch_has_active_descendants(child_id, children_map, active_snapshots):
+                # This branch is inactive - add it and all its descendants
+                inactive_candidates.extend(_get_branch_descendants(child_id, children_map, snapshots))
+    
+    # Filter out protected snapshots
+    return [snap_id for snap_id in inactive_candidates if not _is_protected_snapshot_by_id(snap_id, snapshots)]
+
+
+def _branch_has_active_descendants(snapshot_id: str, children_map: Dict[str, List[str]], active_snapshots: Set[str]) -> bool:
+    """Check if a branch has any active descendants."""
+    if snapshot_id in active_snapshots:
+        return True
+    
+    # Check all descendants
+    children = children_map.get(snapshot_id, [])
+    for child_id in children:
+        if _branch_has_active_descendants(child_id, children_map, active_snapshots):
+            return True
+    
+    return False
+
+
+def _get_branch_descendants(snapshot_id: str, children_map: Dict[str, List[str]], snapshots: List) -> List[str]:
+    """Get all descendants of a snapshot (including itself)."""
+    descendants = [snapshot_id]
+    
+    children = children_map.get(snapshot_id, [])
+    for child_id in children:
+        descendants.extend(_get_branch_descendants(child_id, children_map, snapshots))
+    
+    return descendants
+
+
+def _is_protected_snapshot(snapshot) -> bool:
+    """Check if a snapshot is protected from deletion."""
+    if not snapshot.metadata:
+        return False
+    
+    # Protected by tag or explicit protection
+    if snapshot.metadata.get("tag") or snapshot.metadata.get("gc_keep") == "true":
+        return True
+    
+    return False
+
+
+def _is_protected_snapshot_by_id(snapshot_id: str, snapshots: List) -> bool:
+    """Check if a snapshot is protected from deletion by ID."""
+    for snapshot in snapshots:
+        if snapshot.id == snapshot_id:
+            return _is_protected_snapshot(snapshot)
+    return False
+
+
+def _filter_by_age(candidates: List[str], older_than_days: int, current_time: float, snapshots: List) -> List[str]:
+    """Filter cleanup candidates to only include snapshots older than N days."""
+    cutoff_time = current_time - (older_than_days * 24 * 60 * 60)
+    snapshot_lookup = {s.id: s for s in snapshots}
+    
+    aged_candidates = []
+    for snapshot_id in candidates:
+        snapshot = snapshot_lookup.get(snapshot_id)
+        if snapshot and snapshot.created < cutoff_time:
+            aged_candidates.append(snapshot_id)
+    
+    return aged_candidates
+
+
+def _get_metadata_candidates(snapshots: List, instances: List, metadata_criteria: Dict, override_gc_protection: bool) -> List[str]:
+    """Get snapshots matching metadata criteria."""
+    import fnmatch
+    
+    if not metadata_criteria:
+        return []
+    
+    candidates = []
+    gc_roots_skipped = []
+    
+    # Get GC roots for protection checking
+    gc = SnapshotGarbageCollector()
+    gc_roots = gc._find_gc_roots(snapshots, instances)
+    
+    for snapshot in snapshots:
+        # Check if snapshot matches metadata criteria
+        if _snapshot_matches_metadata_criteria(snapshot, metadata_criteria):
+            # Check GC protection
+            if snapshot.id in gc_roots and not override_gc_protection:
+                gc_roots_skipped.append(snapshot.id)
+                continue
+            
+            candidates.append(snapshot.id)
+    
+    # Log GC roots that were skipped
+    if gc_roots_skipped:
+        logger.warning(f"Skipped {len(gc_roots_skipped)} GC roots. Use --override-gc-protection to include them.")
+    
+    return candidates
+
+
+def _snapshot_matches_metadata_criteria(snapshot, metadata_criteria: Dict) -> bool:
+    """Check if a snapshot matches the given metadata criteria."""
+    import fnmatch
+    
+    # Handle --without-metadata case
+    if metadata_criteria.get("without_metadata", False):
+        return not snapshot.metadata or len(snapshot.metadata) == 0
+    
+    # Handle --with-metadata cases
+    with_metadata = metadata_criteria.get("with_metadata", [])
+    if not with_metadata:
+        return False
+    
+    # If no metadata on snapshot, it can't match any with_metadata criteria
+    if not snapshot.metadata:
+        return False
+    
+    # All criteria must match (AND logic)
+    for criterion in with_metadata:
+        if not _matches_single_criterion(snapshot.metadata, criterion):
+            return False
+    
+    return True
+
+
+def _matches_single_criterion(metadata: Dict, criterion: str) -> bool:
+    """Check if metadata matches a single criterion (key=value or key)."""
+    import fnmatch
+    
+    if "=" in criterion:
+        # Key=value format
+        key, value = criterion.split("=", 1)
+        if key not in metadata:
+            return False
+        
+        # Support pattern matching
+        if "*" in value or "?" in value or "[" in value:
+            return fnmatch.fnmatch(str(metadata[key]), value)
+        else:
+            return str(metadata[key]) == value
+    else:
+        # Key existence check
+        return criterion in metadata
+
+
+def cleanup_snapshots(client, dry_run: bool = True) -> Dict[str, any]:
+    """
+    Run snapshot garbage collection and cleanup unreachable snapshots.
+    
+    This function:
+    1. Lists all snapshots and instances from the API
+    2. Runs GC analysis to identify unreachable snapshots
+    3. Deletes unreachable snapshots (unless dry_run=True)
+    4. Returns results with deleted snapshots and any errors
+    
+    Args:
+        client: MorphCloudClient instance
+        dry_run: If True, only identifies candidates without deleting
+        
+    Returns:
+        Dict with cleanup results: {"deleted": [...], "errors": [...], "dry_run": bool}
+    """
+    from morphcloud.api import ApiError
+    
+    # Fetch all snapshots and instances
+    logger.info("Fetching snapshots and instances...")
+    snapshots = client.snapshots.list()
+    instances = client.instances.list()
+    
+    logger.info(f"Found {len(snapshots)} snapshots and {len(instances)} instances")
+    
+    # Run GC analysis
+    gc = SnapshotGarbageCollector()
+    classification = gc.classify_snapshots(snapshots, instances)
+    candidates = gc.get_cleanup_candidates(classification)
+    
+    logger.info(f"Found {len(candidates)} cleanup candidates")
+    
+    # Prepare results
+    results = {
+        "deleted": [],
+        "errors": [],
+        "dry_run": dry_run,
+        "total_snapshots": len(snapshots),
+        "gc_roots": len(classification.gc_roots),
+        "reachable": len(classification.reachable),
+        "unreachable": len(classification.unreachable)
+    }
+    
+    # Process deletion candidates
+    for snapshot_id in candidates:
+        if dry_run:
+            results["deleted"].append(snapshot_id)
+            logger.info(f"[DRY RUN] Would delete snapshot: {snapshot_id}")
+        else:
+            try:
+                # Get snapshot object and delete it
+                snapshot = client.snapshots.get(snapshot_id)
+                snapshot.delete()
+                results["deleted"].append(snapshot_id)
+                logger.info(f"Deleted snapshot: {snapshot_id}")
+            except ApiError as e:
+                error_info = {
+                    "snapshot_id": snapshot_id,
+                    "error": str(e),
+                    "status_code": getattr(e, 'status_code', None)
+                }
+                results["errors"].append(error_info)
+                logger.error(f"Failed to delete snapshot {snapshot_id}: {e}")
+            except Exception as e:
+                error_info = {
+                    "snapshot_id": snapshot_id,
+                    "error": str(e),
+                    "status_code": None
+                }
+                results["errors"].append(error_info)
+                logger.error(f"Unexpected error deleting snapshot {snapshot_id}: {e}")
+    
+    # Log summary
+    if dry_run:
+        logger.info(f"[DRY RUN] Would delete {len(results['deleted'])} snapshots")
+    else:
+        logger.info(f"Deleted {len(results['deleted'])} snapshots, {len(results['errors'])} errors")
+    
+    return results
