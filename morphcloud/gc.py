@@ -108,7 +108,58 @@ class SnapshotGarbageCollector:
         return list(classification.unreachable)
 
 
-def cleanup_snapshots_by_target(client, target: str, failed_days: int = 7, stale_days: int = 30, stuck_hours: int = 24, inactive_days: int = 7, metadata_criteria: Dict = None, override_gc_protection: bool = False, dry_run: bool = True) -> Dict[str, any]:
+def _delete_snapshot_worker(client, snapshot_id: str) -> tuple:
+    """Worker function to delete a single snapshot. Returns (snapshot_id, success, error_msg)."""
+    try:
+        snapshot = client.snapshots.get(snapshot_id)
+        snapshot.delete()
+        logger.info(f"Deleted snapshot: {snapshot_id}")
+        return snapshot_id, True, None
+    except Exception as e:
+        logger.error(f"Failed to delete snapshot {snapshot_id}: {e}")
+        return snapshot_id, False, str(e)
+
+
+def _delete_snapshots_concurrently(client, snapshot_ids: List[str], results: dict, max_workers: int = 10):
+    """Delete snapshots concurrently using ThreadPoolExecutor."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from morphcloud.api import ApiError
+    
+    if not snapshot_ids:
+        return
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Create futures mapping
+        future_to_snapshot = {
+            executor.submit(_delete_snapshot_worker, client, snapshot_id): snapshot_id
+            for snapshot_id in snapshot_ids
+        }
+        
+        # Process futures as they complete
+        for future in as_completed(future_to_snapshot):
+            snapshot_id = future_to_snapshot[future]
+            try:
+                result = future.result()  # (snapshot_id, success, error_msg)
+                if result[1]:  # success
+                    results["deleted"].append(result[0])
+                else:
+                    error_info = {
+                        "snapshot_id": result[0],
+                        "error": result[2],
+                        "status_code": None
+                    }
+                    results["errors"].append(error_info)
+            except Exception as exc:
+                logger.error(f"Critical error processing snapshot {snapshot_id}: {exc}")
+                error_info = {
+                    "snapshot_id": snapshot_id,
+                    "error": f"Critical error: {str(exc)}",
+                    "status_code": None
+                }
+                results["errors"].append(error_info)
+
+
+def cleanup_snapshots_by_target(client, target: str, failed_days: int = 7, stale_days: int = 30, stuck_hours: int = 24, inactive_days: int = 7, metadata_criteria: Dict = None, override_gc_protection: bool = False, dry_run: bool = True, max_workers: int = 10) -> Dict[str, any]:
     """
     Run targeted snapshot cleanup based on cleanup strategy.
     
@@ -122,6 +173,7 @@ def cleanup_snapshots_by_target(client, target: str, failed_days: int = 7, stale
         metadata_criteria: Dict with metadata matching criteria
         override_gc_protection: Allow deletion of GC roots
         dry_run: If True, only identifies candidates without deleting
+        max_workers: Maximum number of concurrent deletion threads (default: 10)
         
     Returns:
         Dict with cleanup results
@@ -177,32 +229,14 @@ def cleanup_snapshots_by_target(client, target: str, failed_days: int = 7, stale
     }
     
     # Process deletion candidates
-    for snapshot_id in candidates:
-        if dry_run:
+    if dry_run:
+        # Dry run - just log what would be deleted
+        for snapshot_id in candidates:
             results["deleted"].append(snapshot_id)
             logger.info(f"[DRY RUN] Would delete snapshot: {snapshot_id}")
-        else:
-            try:
-                snapshot = client.snapshots.get(snapshot_id)
-                snapshot.delete()
-                results["deleted"].append(snapshot_id)
-                logger.info(f"Deleted snapshot: {snapshot_id}")
-            except ApiError as e:
-                error_info = {
-                    "snapshot_id": snapshot_id,
-                    "error": str(e),
-                    "status_code": getattr(e, 'status_code', None)
-                }
-                results["errors"].append(error_info)
-                logger.error(f"Failed to delete snapshot {snapshot_id}: {e}")
-            except Exception as e:
-                error_info = {
-                    "snapshot_id": snapshot_id,
-                    "error": str(e),
-                    "status_code": None
-                }
-                results["errors"].append(error_info)
-                logger.error(f"Unexpected error deleting snapshot {snapshot_id}: {e}")
+    else:
+        # Concurrent deletion using ThreadPoolExecutor pattern
+        _delete_snapshots_concurrently(client, candidates, results, max_workers)
     
     # Log summary
     if dry_run:
@@ -425,7 +459,7 @@ def _snapshot_matches_metadata_criteria(snapshot, metadata_criteria: Dict) -> bo
     return True
 
 
-def cleanup_snapshots(client, dry_run: bool = True) -> Dict[str, any]:
+def cleanup_snapshots(client, dry_run: bool = True, max_workers: int = 10) -> Dict[str, any]:
     """
     Run snapshot garbage collection and cleanup unreachable snapshots.
     
@@ -438,6 +472,7 @@ def cleanup_snapshots(client, dry_run: bool = True) -> Dict[str, any]:
     Args:
         client: MorphCloudClient instance
         dry_run: If True, only identifies candidates without deleting
+        max_workers: Maximum number of concurrent deletion threads (default: 10)
         
     Returns:
         Dict with cleanup results: {"deleted": [...], "errors": [...], "dry_run": bool}
@@ -470,33 +505,14 @@ def cleanup_snapshots(client, dry_run: bool = True) -> Dict[str, any]:
     }
     
     # Process deletion candidates
-    for snapshot_id in candidates:
-        if dry_run:
+    if dry_run:
+        # Dry run - just log what would be deleted
+        for snapshot_id in candidates:
             results["deleted"].append(snapshot_id)
             logger.info(f"[DRY RUN] Would delete snapshot: {snapshot_id}")
-        else:
-            try:
-                # Get snapshot object and delete it
-                snapshot = client.snapshots.get(snapshot_id)
-                snapshot.delete()
-                results["deleted"].append(snapshot_id)
-                logger.info(f"Deleted snapshot: {snapshot_id}")
-            except ApiError as e:
-                error_info = {
-                    "snapshot_id": snapshot_id,
-                    "error": str(e),
-                    "status_code": getattr(e, 'status_code', None)
-                }
-                results["errors"].append(error_info)
-                logger.error(f"Failed to delete snapshot {snapshot_id}: {e}")
-            except Exception as e:
-                error_info = {
-                    "snapshot_id": snapshot_id,
-                    "error": str(e),
-                    "status_code": None
-                }
-                results["errors"].append(error_info)
-                logger.error(f"Unexpected error deleting snapshot {snapshot_id}: {e}")
+    else:
+        # Concurrent deletion
+        _delete_snapshots_concurrently(client, candidates, results, max_workers)
     
     # Log summary
     if dry_run:

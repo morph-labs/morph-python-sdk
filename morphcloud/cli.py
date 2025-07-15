@@ -464,37 +464,6 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
         handle_api_error(e)
 
 
-def _validate_cleanup_params(target, without_metadata, with_metadata, override_gc_protection):
-    """Validate cleanup parameters based on target type."""
-    errors = []
-    
-    # Parameter restrictions by target
-    restrictions = {
-        "unused": ["without_metadata", "with_metadata", "override_gc_protection"],
-        "inactive-branches": ["without_metadata", "with_metadata", "override_gc_protection"],
-        "metadata": []
-    }
-    
-    # Check restricted parameters
-    param_values = {
-        "without_metadata": without_metadata,
-        "with_metadata": with_metadata,
-        "override_gc_protection": override_gc_protection
-    }
-    
-    for param in restrictions.get(target, []):
-        if param_values.get(param):
-            errors.append(f"--{param.replace('_', '-')} can only be used with --target metadata")
-    
-    # Metadata target specific validation
-    if target == "metadata":
-        if not without_metadata and not with_metadata:
-            errors.append("--target metadata requires either --without-metadata or --with-metadata")
-        if without_metadata and with_metadata:
-            errors.append("--without-metadata and --with-metadata cannot be used together")
-    
-    return errors
-
 
 def _create_cleanup_table(snapshots_to_delete):
     """Create a formatted table of snapshots to be deleted."""
@@ -520,59 +489,104 @@ def _create_cleanup_table(snapshots_to_delete):
     return table
 
 
-@snapshot.command("cleanup")
-@click.option("--target", type=click.Choice(["unused", "inactive-branches", "metadata"]), default="unused", help="Type of snapshots to clean up")
-@click.option("--failed-days", type=int, default=7, help="[unused] Delete failed snapshots older than N days (default: 7)")
-@click.option("--stale-days", type=int, default=30, help="[unused] Delete stale unreachable snapshots older than N days (default: 30)")
-@click.option("--stuck-hours", type=int, default=24, help="[unused] Delete snapshots stuck in PENDING/DELETING for N hours (default: 24)")
-@click.option("--inactive-days", type=int, default=7, help="[inactive-branches] Delete branches with no activity for N days (default: 7)")
-@click.option("--without-metadata", is_flag=True, default=False, help="[metadata] Delete snapshots that have no metadata")
-@click.option("--with-metadata", multiple=True, help="[metadata] Delete snapshots matching metadata criteria (format: key=value or key for existence check)")
-@click.option("--override-gc-protection", is_flag=True, default=False, help="[metadata] Allow deletion of GC roots (active instances, tagged snapshots)")
-@click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted without actually deleting")
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt and proceed immediately")
-@click.option("--json", "json_mode", is_flag=True, default=False, help="Output results in JSON format")
-def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_days, without_metadata, with_metadata, override_gc_protection, dry_run, yes, json_mode):
-    """Clean up snapshots based on different cleanup strategies.
+@snapshot.group("cleanup")
+def cleanup():
+    """Clean up snapshots using different strategies."""
+    pass
+
+
+# Global options decorator for common cleanup options
+def common_cleanup_options(f):
+    f = click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted without actually deleting")(f)
+    f = click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt and proceed immediately")(f)
+    f = click.option("--json", "json_mode", is_flag=True, default=False, help="Output results in JSON format")(f)
+    f = click.option("--max-workers", type=int, default=10, help="Maximum number of concurrent deletion threads (default: 10)")(f)
+    return f
+
+
+@cleanup.command("unused")
+@click.option("--failed-days", type=int, default=7, help="Delete failed snapshots older than N days (default: 7)")
+@click.option("--stale-days", type=int, default=30, help="Delete stale unreachable snapshots older than N days (default: 30)")
+@click.option("--stuck-hours", type=int, default=24, help="Delete snapshots stuck in PENDING/DELETING for N hours (default: 24)")
+@common_cleanup_options
+def cleanup_unused(failed_days, stale_days, stuck_hours, dry_run, yes, json_mode, max_workers):
+    """Clean up unused snapshots (unreachable, failed, stuck).
     
-    Cleanup targets:
-    - unused: Clean unhealthy snapshots (unreachable, failed, stuck) with configurable thresholds
-    - inactive-branches: Clean dead branches with no recent activity
-    - metadata: Clean snapshots based on metadata criteria with pattern matching
+    This command removes:
+    - Unreachable snapshots (not in any active instance's parent chain)
+    - Failed snapshots older than --failed-days
+    - Snapshots stuck in PENDING/DELETING states for --stuck-hours
     
-    Each target has specific parameters. Use --help to see all options.
-    
-    Preserved snapshots (unless overridden):
+    Preserved snapshots:
     - Active instances (READY, PAUSED, PENDING)
     - Tagged snapshots (metadata["tag"] exists)
     - Explicitly protected snapshots (metadata["gc_keep"] = "true")
-    - All ancestor snapshots in the parent chain
+    - All ancestor snapshots in parent chains
     """
+    _run_cleanup("unused", failed_days=failed_days, stale_days=stale_days, stuck_hours=stuck_hours, 
+                 dry_run=dry_run, yes=yes, json_mode=json_mode, max_workers=max_workers)
+
+
+@cleanup.command("metadata")
+@click.option("--without-metadata", is_flag=True, default=False, help="Delete snapshots that have no metadata")
+@click.option("--with-metadata", multiple=True, help="Delete snapshots matching metadata criteria (format: key=value or key for existence check)")
+@click.option("--override-protection", is_flag=True, default=False, help="Allow deletion of GC roots (active instances, tagged snapshots)")
+@common_cleanup_options
+def cleanup_metadata(without_metadata, with_metadata, override_protection, dry_run, yes, json_mode, max_workers):
+    """Clean up snapshots based on metadata criteria.
+    
+    This command removes snapshots matching metadata patterns:
+    - --without-metadata: Delete snapshots with no metadata
+    - --with-metadata key=value: Delete snapshots where metadata[key] == value
+    - --with-metadata key: Delete snapshots where metadata[key] exists
+    - Pattern matching supported: --with-metadata env=dev*
+    
+    By default, GC roots (active instances, tagged snapshots) are protected.
+    Use --override-protection to delete them anyway.
+    """
+    if not without_metadata and not with_metadata:
+        click.echo("Error: Must specify either --without-metadata or --with-metadata")
+        raise click.Abort()
+    if without_metadata and with_metadata:
+        click.echo("Error: Cannot use --without-metadata and --with-metadata together")
+        raise click.Abort()
+    
+    metadata_criteria = {
+        "without_metadata": without_metadata,
+        "with_metadata": list(with_metadata) if with_metadata else []
+    }
+    _run_cleanup("metadata", metadata_criteria=metadata_criteria, override_gc_protection=override_protection,
+                 dry_run=dry_run, yes=yes, json_mode=json_mode, max_workers=max_workers)
+
+
+@cleanup.command("branches")
+@click.option("--inactive-days", type=int, default=7, help="Delete branches with no activity for N days (default: 7)")
+@common_cleanup_options
+def cleanup_branches(inactive_days, dry_run, yes, json_mode, max_workers):
+    """Clean up inactive branches with no recent activity.
+    
+    This command removes entire branches (snapshots and their descendants) that:
+    - Have no active instances for --inactive-days
+    - Are not part of active development (no recent snapshots)
+    - Are branch points with multiple children where some branches are unused
+    
+    Protected snapshots are never deleted regardless of activity.
+    """
+    _run_cleanup("inactive-branches", inactive_days=inactive_days,
+                 dry_run=dry_run, yes=yes, json_mode=json_mode, max_workers=max_workers)
+
+
+def _run_cleanup(target, failed_days=7, stale_days=30, stuck_hours=24, inactive_days=7, 
+                 metadata_criteria=None, override_gc_protection=False, dry_run=True, yes=False, 
+                 json_mode=False, max_workers=10):
+    """Run cleanup with the specified target and parameters."""
     client = get_client()
     
     try:
         from morphcloud.gc import cleanup_snapshots_by_target
         from rich.console import Console
-        from rich.table import Table
-        import warnings
         
         console = Console()
-        
-        # Validate target-specific parameters using config
-        validation_errors = _validate_cleanup_params(target, without_metadata, with_metadata, override_gc_protection)
-        if validation_errors:
-            for error in validation_errors:
-                console.print(f"[red]Error: {error}[/red]")
-            return
-                return
-        
-        # Prepare metadata criteria for metadata target
-        metadata_criteria = None
-        if target == "metadata":
-            metadata_criteria = {
-                "without_metadata": without_metadata,
-                "with_metadata": list(with_metadata) if with_metadata else []
-            }
         
         # Run cleanup with dry_run mode first to get candidates
         preview_result = cleanup_snapshots_by_target(
@@ -584,7 +598,8 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
             inactive_days=inactive_days,
             metadata_criteria=metadata_criteria,
             override_gc_protection=override_gc_protection,
-            dry_run=True
+            dry_run=True,
+            max_workers=max_workers
         )
         
         if json_mode:
@@ -599,7 +614,8 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
                     inactive_days=inactive_days,
                     metadata_criteria=metadata_criteria,
                     override_gc_protection=override_gc_protection,
-                    dry_run=False
+                    dry_run=False,
+                    max_workers=max_workers
                 )
                 click.echo(format_json(result))
             else:
@@ -620,13 +636,15 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
         elif target == "inactive-branches":
             console.print(f"Inactive branches with no activity for {inactive_days} days")
         elif target == "metadata":
-            if without_metadata:
+            if metadata_criteria and metadata_criteria.get("without_metadata"):
                 console.print("Snapshots without metadata")
-            else:
-                criteria_str = ", ".join(with_metadata)
+            elif metadata_criteria and metadata_criteria.get("with_metadata"):
+                criteria_str = ", ".join(metadata_criteria["with_metadata"])
                 console.print(f"Snapshots matching metadata: {criteria_str}")
                 if override_gc_protection:
                     console.print("[yellow]⚠️  GC protection overridden - will delete protected snapshots[/yellow]")
+            else:
+                console.print("Metadata-based cleanup")
         
         # Check if there are any candidates
         if not preview_result['deleted']:
@@ -667,7 +685,8 @@ def cleanup_snapshots(target, failed_days, stale_days, stuck_hours, inactive_day
             inactive_days=inactive_days,
             metadata_criteria=metadata_criteria,
             override_gc_protection=override_gc_protection,
-            dry_run=False
+            dry_run=False,
+            max_workers=max_workers
         )
         
         # Display results
