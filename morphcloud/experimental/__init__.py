@@ -353,7 +353,10 @@ class Snapshot:
                         valid.append(s)
                 snaps = valid
             if snaps:
+                logger.info("💾 Cache hit ✅ - Using existing snapshot", extra={"digest": digest})
                 return Snapshot(snaps[0])
+            else:
+                logger.info("🔄 Cache miss - Creating new snapshot", extra={"digest": digest})
 
         if start_fn is None:
             context_manager = self.start()
@@ -606,7 +609,6 @@ class Snapshot:
 
         snaps_exist = client.snapshots.list(digest=digest)
         if snaps_exist and not invalidate:
-            logger.info("💾 Cached ✅ - Using existing snapshot")
             return Snapshot(snaps_exist[0])
 
         def verifier(inst):
