@@ -223,6 +223,24 @@ class Snapshot:
         disk_size: int = 8192,
         invalidate: InvalidateFn | bool = False,
     ) -> "Snapshot":
+        """
+        Create a new snapshot from base image and specifications.
+        
+        The digest is automatically computed from the snapshot specifications
+        (image_id, vcpus, memory, disk_size) to ensure proper caching and
+        deduplication. The name parameter is stored in metadata for searchability.
+        
+        Args:
+            name: Human-readable name (stored in metadata)
+            image_id: Base image identifier
+            vcpus: Number of virtual CPUs
+            memory: Memory in MB
+            disk_size: Disk size in MB
+            invalidate: Whether to invalidate existing cached snapshots
+        
+        Returns:
+            New Snapshot instance
+        """
         logger.info(
             "🖼  Snapshot.create()",
             extra={
@@ -233,23 +251,32 @@ class Snapshot:
                 "snapshot_name": name,
             },
         )
+        
+        # Prepare metadata with name
+        full_metadata = {"name": name}
+        
+        # Compute digest from all specifications
+        base_digest = compute_base_digest(name, image_id, vcpus, memory, disk_size, full_metadata)
+        
+        # Update invalidation logic to use spec-based digest
         if invalidate:
             invalidate_fn = (
                 invalidate
                 if isinstance(invalidate, typing.Callable)
                 else lambda _: invalidate
             )
-            snaps = client.snapshots.list(digest=name)
+            snaps = client.snapshots.list(digest=base_digest)
             for s in snaps:
                 if invalidate_fn(Snapshot(s)):
                     s.delete()
+        
         snap = client.snapshots.create(
             image_id=image_id,
             vcpus=vcpus,
             memory=memory,
             disk_size=disk_size,
-            digest=name,
-            metadata={"name": name},
+            digest=base_digest,
+            metadata=full_metadata,
         )
         return cls(snap)
 
@@ -269,6 +296,24 @@ class Snapshot:
             return None
         # Return the most recent snapshot (assuming list is ordered by creation time)
         # The first item in the list is the most recently created
+        return cls(snapshots[0])
+
+    @classmethod
+    def from_name(cls, name: str) -> typing.Optional["Snapshot"]:
+        """
+        Find snapshot by name stored in metadata.
+        
+        Args:
+            name: The name to search for
+            
+        Returns:
+            Snapshot instance if found, None otherwise
+        """
+        logger.info("📝 Snapshot.from_name()", extra={"name": name})
+        snapshots = client.snapshots.list(metadata={"name": name})
+        if not snapshots:
+            return None
+        # Return the most recent snapshot
         return cls(snapshots[0])
 
     def start(
@@ -323,6 +368,50 @@ class Snapshot:
         hasher.update(b"\n")
         hasher.update(key.encode("utf-8"))
         return hasher.hexdigest()
+
+
+def compute_base_digest(
+    name: str, 
+    image_id: str, 
+    vcpus: int, 
+    memory: int, 
+    disk_size: int, 
+    metadata: typing.Optional[typing.Dict[str, str]] = None
+) -> str:
+    """
+    Compute a deterministic digest for complete snapshot specifications.
+    
+    Args:
+        name: Human-readable name
+        image_id: Base image identifier
+        vcpus: Number of virtual CPUs
+        memory: Memory in MB
+        disk_size: Disk size in MB
+        metadata: Additional metadata dictionary
+    
+    Returns:
+        SHA256 hash of all specification parameters
+    """
+    hasher = hashlib.sha256()
+    hasher.update(f"name={name}".encode("utf-8"))
+    hasher.update(b"\n")
+    hasher.update(f"image_id={image_id}".encode("utf-8"))
+    hasher.update(b"\n")
+    hasher.update(f"vcpus={vcpus}".encode("utf-8"))
+    hasher.update(b"\n")
+    hasher.update(f"memory={memory}".encode("utf-8"))
+    hasher.update(b"\n")
+    hasher.update(f"disk_size={disk_size}".encode("utf-8"))
+    hasher.update(b"\n")
+    
+    # Include metadata in a deterministic way
+    if metadata:
+        # Sort metadata keys for consistent ordering
+        for key in sorted(metadata.keys()):
+            hasher.update(f"metadata.{key}={metadata[key]}".encode("utf-8"))
+            hasher.update(b"\n")
+    
+    return hasher.hexdigest()
 
     def apply(
         self,
