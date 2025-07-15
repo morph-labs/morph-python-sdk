@@ -73,7 +73,10 @@ class SnapshotGarbageCollector:
         return gc_roots
     
     def _mark_reachable_chain(self, snapshot_id: str, reachable: Set[str]):
-        """Mark all snapshots in the parent chain as reachable."""
+        """Mark all snapshots in the parent chain as reachable.
+        
+        NOTE: Only traverses UP parent chain - children of tagged snapshots are NOT auto-protected.
+        """
         visited = set()  # Cycle detection
         current_id = snapshot_id
         

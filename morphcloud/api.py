@@ -408,6 +408,11 @@ class Snapshot(BaseModel):
         response.raise_for_status()
 
     def set_metadata(self, metadata: typing.Dict[str, str]) -> None:
+        """Set snapshot metadata. WARNING: Overwrites entire metadata dict.
+        
+        To preserve existing metadata: 
+        metadata = snapshot.metadata.copy(); metadata.update(new_fields); snapshot.set_metadata(metadata)
+        """
         response = self._api._client._http_client.post(
             f"/snapshot/{self.id}/metadata", json=metadata
         )

@@ -370,9 +370,13 @@ class Snapshot:
             parent_metadata = (
                 self.snapshot.metadata.copy() if self.snapshot.metadata else {}
             )
+            # Don't propagate "tag" metadata - tags should be unique per snapshot
+            if "tag" in parent_metadata:
+                del parent_metadata["tag"]
             if metadata:
                 parent_metadata.update(metadata)
             # Add parent snapshot ID for garbage collection tree traversal (non-overwritable)
+            # NOTE: set_metadata() overwrites entire dict - preserve existing metadata when adding fields
             parent_metadata["parent_snapshot_id"] = self.snapshot.id
 
             return Snapshot(
