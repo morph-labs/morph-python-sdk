@@ -252,8 +252,11 @@ class Snapshot:
             },
         )
         
-        # Compute digest from specifications
-        base_digest = compute_base_digest(image_id, vcpus, memory, disk_size)
+        # Prepare metadata with name
+        full_metadata = {"name": name}
+        
+        # Compute digest from all specifications
+        base_digest = compute_base_digest(name, image_id, vcpus, memory, disk_size, full_metadata)
         
         # Update invalidation logic to use spec-based digest
         if invalidate:
@@ -273,7 +276,7 @@ class Snapshot:
             memory=memory,
             disk_size=disk_size,
             digest=base_digest,
-            metadata={"name": name},
+            metadata=full_metadata,
         )
         return cls(snap)
 
@@ -367,20 +370,31 @@ class Snapshot:
         return hasher.hexdigest()
 
 
-def compute_base_digest(image_id: str, vcpus: int, memory: int, disk_size: int) -> str:
+def compute_base_digest(
+    name: str, 
+    image_id: str, 
+    vcpus: int, 
+    memory: int, 
+    disk_size: int, 
+    metadata: typing.Optional[typing.Dict[str, str]] = None
+) -> str:
     """
-    Compute a deterministic digest for base snapshot specifications.
+    Compute a deterministic digest for complete snapshot specifications.
     
     Args:
+        name: Human-readable name
         image_id: Base image identifier
         vcpus: Number of virtual CPUs
         memory: Memory in MB
         disk_size: Disk size in MB
+        metadata: Additional metadata dictionary
     
     Returns:
-        SHA256 hash of the specification parameters
+        SHA256 hash of all specification parameters
     """
     hasher = hashlib.sha256()
+    hasher.update(f"name={name}".encode("utf-8"))
+    hasher.update(b"\n")
     hasher.update(f"image_id={image_id}".encode("utf-8"))
     hasher.update(b"\n")
     hasher.update(f"vcpus={vcpus}".encode("utf-8"))
@@ -388,6 +402,15 @@ def compute_base_digest(image_id: str, vcpus: int, memory: int, disk_size: int) 
     hasher.update(f"memory={memory}".encode("utf-8"))
     hasher.update(b"\n")
     hasher.update(f"disk_size={disk_size}".encode("utf-8"))
+    hasher.update(b"\n")
+    
+    # Include metadata in a deterministic way
+    if metadata:
+        # Sort metadata keys for consistent ordering
+        for key in sorted(metadata.keys()):
+            hasher.update(f"metadata.{key}={metadata[key]}".encode("utf-8"))
+            hasher.update(b"\n")
+    
     return hasher.hexdigest()
 
     def apply(
