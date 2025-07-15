@@ -324,6 +324,8 @@ class Snapshot:
             None,
         ] = None,
         invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        cache_on_failure: bool = False,
     ):
         invalidate_fn = (
             invalidate
@@ -352,14 +354,58 @@ class Snapshot:
             context_manager = start_fn
 
         with context_manager as inst:
-            res = func(inst)
-            inst = inst if res is None else res
-            return Snapshot(
-                inst.snapshot(digest=self.key_to_digest(key) if key else None)
-            )
+            try:
+                res = func(inst)
+                inst = inst if res is None else res
+                
+                # Success path - process metadata
+                parent_metadata = (
+                    self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+                )
+                # Don't propagate "tag" metadata - tags should be unique per snapshot
+                if "tag" in parent_metadata:
+                    del parent_metadata["tag"]
+                if metadata:
+                    parent_metadata.update(metadata)
+                # Add parent snapshot ID for garbage collection tree traversal
+                parent_metadata["parent_snapshot_id"] = self.snapshot.id
+                
+                return Snapshot(
+                    inst.snapshot(
+                        digest=self.key_to_digest(key) if key else None,
+                        metadata=parent_metadata if parent_metadata else None,
+                    )
+                )
+            except Exception as e:
+                if cache_on_failure:
+                    # Failure caching - same metadata processing as success
+                    parent_metadata = (
+                        self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+                    )
+                    if "tag" in parent_metadata:
+                        del parent_metadata["tag"]
+                    if metadata:
+                        parent_metadata.update(metadata)
+                    parent_metadata["parent_snapshot_id"] = self.snapshot.id
+                    
+                    return Snapshot(
+                        inst.snapshot(
+                            digest=self.key_to_digest(key) if key else None,
+                            metadata=parent_metadata if parent_metadata else None,
+                        )
+                    )
+                else:
+                    # Default: re-raise without caching
+                    raise
 
     # -------------- run with stream between CMD/RET -------------- #
-    def run(self, command: str, invalidate: InvalidateFn | bool = False):
+    def run(
+        self,
+        command: str,
+        invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        cache_on_failure: bool = False,
+    ):
         logger.info("🚀 Snapshot.run()", extra={"command": command})
 
         def execute(instance):
@@ -389,9 +435,27 @@ class Snapshot:
                     f"Command execution failed: {command} exit={exit_code} recent_output={recent_output}"
                 )
 
-        return self.apply(execute, key=command, invalidate=invalidate)
+        # Add operation-specific metadata about the command
+        operation_metadata = {"last_command": command}
+        if metadata:
+            operation_metadata.update(metadata)
+        
+        return self.apply(
+            execute,
+            key=command,
+            invalidate=invalidate,
+            metadata=operation_metadata,
+            cache_on_failure=cache_on_failure,
+        )
 
-    def copy_(self, src: str, dest: str, invalidate: InvalidateFn | bool = False):
+    def copy_(
+        self,
+        src: str,
+        dest: str,
+        invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        cache_on_failure: bool = False,
+    ):
         """
         Copy files/directories to the instance via SSH, similar to Docker COPY.
 
@@ -523,7 +587,18 @@ class Snapshot:
                 update_progress(f"❌ Copy failed: {str(e)}", "error")
                 raise
 
-        return self.apply(execute_copy, key=f"copy-{src}-{dest}", invalidate=invalidate)
+        # Add operation-specific metadata about the copy operation
+        operation_metadata = {"last_copy_src": src, "last_copy_dest": dest}
+        if metadata:
+            operation_metadata.update(metadata)
+        
+        return self.apply(
+            execute_copy,
+            key=f"copy-{src}-{dest}",
+            invalidate=invalidate,
+            metadata=operation_metadata,
+            cache_on_failure=cache_on_failure,
+        )
 
     # ------------------------------------------------------------------ #
     # Remaining Snapshot methods unchanged                               #
@@ -533,6 +608,8 @@ class Snapshot:
         instructions: str,
         verify=None,
         invalidate: InvalidateFn | bool = False,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        cache_on_failure: bool = False,
     ):
         verify_funcs = [verify] if isinstance(verify, typing.Callable) else verify or []
         digest = self.key_to_digest(
@@ -587,7 +664,22 @@ class Snapshot:
                 raise Exception("Verification failed.")
             return instance
 
-        new_snap = self.apply(run_verification, key=digest, invalidate=invalidate)
+        # Add operation-specific metadata about the verification
+        operation_metadata = {"last_instructions": instructions}
+        if verify_funcs:
+            operation_metadata["verification_functions"] = ",".join(
+                v.__name__ for v in verify_funcs
+            )
+        if metadata:
+            operation_metadata.update(metadata)
+        
+        new_snap = self.apply(
+            run_verification,
+            key=digest,
+            invalidate=invalidate,
+            metadata=operation_metadata,
+            cache_on_failure=cache_on_failure,
+        )
 
         logger.info("🔍 Verification completed successfully")
         return new_snap
