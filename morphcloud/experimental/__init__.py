@@ -434,6 +434,64 @@ class Snapshot:
             execute, key=command, invalidate=invalidate, metadata=operation_metadata
         )
 
+    def _compute_content_hash(self, src: str) -> str:
+        """Compute a hash of the source file or directory content for cache key generation."""
+        src_path = Path(src)
+        
+        if not src_path.exists():
+            # If source doesn't exist, return a unique hash to prevent cache hits
+            return hashlib.sha256(f"nonexistent-{src}".encode()).hexdigest()[:16]
+        
+        hasher = hashlib.sha256()
+        
+        if src_path.is_file():
+            # For files, hash the content and modification time
+            try:
+                with open(src_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(65536)  # 64KB chunks
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                # Include modification time for additional change detection
+                mtime = src_path.stat().st_mtime
+                hasher.update(str(mtime).encode())
+            except (IOError, OSError):
+                # If we can't read the file, use path + timestamp
+                hasher.update(src.encode())
+                hasher.update(str(time.time()).encode())
+        else:
+            # For directories, hash all file contents recursively
+            try:
+                for file_path in sorted(src_path.rglob('*')):
+                    if file_path.is_file():
+                        # Add relative path to hash
+                        rel_path = file_path.relative_to(src_path)
+                        hasher.update(str(rel_path).encode())
+                        
+                        # Add file content
+                        try:
+                            with open(file_path, 'rb') as f:
+                                while True:
+                                    chunk = f.read(65536)
+                                    if not chunk:
+                                        break
+                                    hasher.update(chunk)
+                            # Add modification time
+                            mtime = file_path.stat().st_mtime
+                            hasher.update(str(mtime).encode())
+                        except (IOError, OSError):
+                            # If we can't read a file, include its path and current time
+                            hasher.update(str(file_path).encode())
+                            hasher.update(str(time.time()).encode())
+            except (IOError, OSError):
+                # If we can't traverse the directory, use path + timestamp
+                hasher.update(src.encode())
+                hasher.update(str(time.time()).encode())
+        
+        # Return first 16 characters of hash for concise cache keys
+        return hasher.hexdigest()[:16]
+
     def copy_(
         self,
         src: str,
@@ -577,9 +635,12 @@ class Snapshot:
         if metadata:
             operation_metadata.update(metadata)
 
+        # Generate content-aware cache key to detect file changes
+        content_hash = self._compute_content_hash(src)
+        
         return self.apply(
             execute_copy,
-            key=f"copy-{src}-{dest}",
+            key=f"copy-{src}-{dest}-{content_hash}",
             invalidate=invalidate,
             metadata=operation_metadata,
         )
