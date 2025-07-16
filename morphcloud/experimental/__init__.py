@@ -424,7 +424,6 @@ def compute_base_digest(
         ] = None,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
-        cache_on_failure: bool = False,
     ):
         invalidate_fn = (
             invalidate
@@ -456,49 +455,28 @@ def compute_base_digest(
             context_manager = start_fn
 
         with context_manager as inst:
-            try:
-                res = func(inst)
-                inst = inst if res is None else res
-                
-                # Success path - process metadata
-                parent_metadata = (
-                    self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+            res = func(inst)
+            inst = inst if res is None else res
+
+            # Preserve parent metadata and merge with operation-specific metadata
+            parent_metadata = (
+                self.snapshot.metadata.copy() if self.snapshot.metadata else {}
+            )
+            # Don't propagate "tag" metadata - tags should be unique per snapshot
+            if "tag" in parent_metadata:
+                del parent_metadata["tag"]
+            if metadata:
+                parent_metadata.update(metadata)
+            # Add parent snapshot ID for garbage collection tree traversal (non-overwritable)
+            # NOTE: set_metadata() overwrites entire dict - preserve existing metadata when adding fields
+            parent_metadata["parent_snapshot_id"] = self.snapshot.id
+
+            return Snapshot(
+                inst.snapshot(
+                    digest=self.key_to_digest(key) if key else None,
+                    metadata=parent_metadata if parent_metadata else None,
                 )
-                # Don't propagate "tag" metadata - tags should be unique per snapshot
-                if "tag" in parent_metadata:
-                    del parent_metadata["tag"]
-                if metadata:
-                    parent_metadata.update(metadata)
-                # Add parent snapshot ID for garbage collection tree traversal
-                parent_metadata["parent_snapshot_id"] = self.snapshot.id
-                
-                return Snapshot(
-                    inst.snapshot(
-                        digest=self.key_to_digest(key) if key else None,
-                        metadata=parent_metadata if parent_metadata else None,
-                    )
-                )
-            except Exception as e:
-                if cache_on_failure:
-                    # Failure caching - same metadata processing as success
-                    parent_metadata = (
-                        self.snapshot.metadata.copy() if self.snapshot.metadata else {}
-                    )
-                    if "tag" in parent_metadata:
-                        del parent_metadata["tag"]
-                    if metadata:
-                        parent_metadata.update(metadata)
-                    parent_metadata["parent_snapshot_id"] = self.snapshot.id
-                    
-                    return Snapshot(
-                        inst.snapshot(
-                            digest=self.key_to_digest(key) if key else None,
-                            metadata=parent_metadata if parent_metadata else None,
-                        )
-                    )
-                else:
-                    # Default: re-raise without caching
-                    raise
+            )
 
     # -------------- run with stream between CMD/RET -------------- #
     def run(
@@ -506,7 +484,6 @@ def compute_base_digest(
         command: str,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
-        cache_on_failure: bool = False,
     ):
         logger.info("🚀 Snapshot.run()", extra={"command": command})
 
@@ -547,7 +524,6 @@ def compute_base_digest(
             key=command,
             invalidate=invalidate,
             metadata=operation_metadata,
-            cache_on_failure=cache_on_failure,
         )
 
     def _compute_content_hash(self, src: str) -> str:
@@ -614,7 +590,6 @@ def compute_base_digest(
         dest: str,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
-        cache_on_failure: bool = False,
     ):
         """
         Copy files/directories to the instance via SSH, similar to Docker COPY.
@@ -760,7 +735,6 @@ def compute_base_digest(
             key=f"copy-{src}-{dest}-{content_hash}",
             invalidate=invalidate,
             metadata=operation_metadata,
-            cache_on_failure=cache_on_failure,
         )
 
     # ------------------------------------------------------------------ #
@@ -772,7 +746,6 @@ def compute_base_digest(
         verify=None,
         invalidate: InvalidateFn | bool = False,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
-        cache_on_failure: bool = False,
     ):
         verify_funcs = [verify] if isinstance(verify, typing.Callable) else verify or []
         digest = self.key_to_digest(
@@ -840,7 +813,6 @@ def compute_base_digest(
             key=digest,
             invalidate=invalidate,
             metadata=operation_metadata,
-            cache_on_failure=cache_on_failure,
         )
 
         logger.info("🔍 Verification completed successfully")
