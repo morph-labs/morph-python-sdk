@@ -97,19 +97,30 @@ def log_performance_metric(operation: str, duration: float, status: str, error: 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_create_snapshot_basic(client, base_image):
+async def test_create_snapshot_basic(client, base_image, machine_config=None):
     """Test POST /snapshot - Create snapshot from base image."""
-    logger.info("Testing basic snapshot creation")
+    
+    # Handle machine configuration for matrix testing
+    if machine_config is not None:
+        base_image_type, size_name, size_config = machine_config
+        # Get the appropriate base image for this configuration
+        from tests.api.conftest import get_image_by_type, adjust_config_for_image
+        base_image = await get_image_by_type(client, base_image_type)
+        config = adjust_config_for_image(base_image_type, size_config)
+        logger.info(f"Testing snapshot creation for {base_image_type}-{size_name}: {config}")
+    else:
+        # Use default configuration
+        config = {"vcpus": 1, "memory": 1024, "disk_size": 8*1024}
+        logger.info("Testing basic snapshot creation")
     
     try:
-        # Create snapshot with minimal configuration (timed)
+        # Create snapshot with specified configuration (timed)
+        operation_name = f"snapshot_create_{machine_config[1] if machine_config else 'basic'}"
         snapshot, create_duration = await timed_operation(
-            "snapshot_create_nano",
+            operation_name,
             lambda: client.snapshots.acreate(
                 image_id=base_image.id,
-                vcpus=1,
-                memory=1024,  # 1GB RAM
-                disk_size=8*1024  # 8GB disk
+                **config
             )
         )
         logger.info(f"Created snapshot: {snapshot.id}")

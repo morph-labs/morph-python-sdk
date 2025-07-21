@@ -171,3 +171,43 @@ def machine_sizes():
 def all_configs():
     """Provide all 12 machine configurations."""
     return ALL_CONFIGS
+
+
+def adjust_config_for_image(base_image_type: str, size_config: dict) -> dict:
+    """
+    Adjust configuration based on base image requirements.
+    
+    Args:
+        base_image_type: "minimal" or "sandbox" 
+        size_config: Base size configuration
+        
+    Returns:
+        Adjusted configuration with appropriate disk size
+    """
+    adjusted_config = size_config.copy()
+    
+    # Sandbox images need minimum 10GB disk space
+    if base_image_type == "sandbox":
+        min_sandbox_disk = 10 * 1024  # 10GB
+        if adjusted_config["disk_size"] < min_sandbox_disk:
+            adjusted_config["disk_size"] = min_sandbox_disk
+    
+    return adjusted_config
+
+
+async def get_image_by_type(client, image_type: str):
+    """Get base image by type (minimal or sandbox)."""
+    images = await client.images.alist()
+    
+    if image_type == "minimal":
+        image = next((img for img in images if "morphvm-minimal" in img.id.lower()), None)
+        if not image:
+            pytest.fail(f"morphvm-minimal image not available. Available: {[img.id for img in images]}")
+    elif image_type == "sandbox":
+        image = next((img for img in images if "morphvm-sandbox" in img.id.lower()), None)
+        if not image:
+            pytest.fail(f"morphvm-sandbox image not available. Available: {[img.id for img in images]}")
+    else:
+        pytest.fail(f"Unknown image type: {image_type}")
+    
+    return image
