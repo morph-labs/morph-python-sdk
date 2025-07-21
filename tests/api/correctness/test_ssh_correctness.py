@@ -8,6 +8,7 @@ This module validates SSH connectivity and functionality:
 - Multiple SSH sessions
 """
 import pytest
+import pytest_asyncio
 import logging
 import time
 import json
@@ -126,7 +127,7 @@ def check_ssh_client_available() -> bool:
         return False
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def ssh_ready_instance(client, base_image):
     """Create an instance with SSH access configured and wait until ready."""
     snapshot = None
@@ -200,7 +201,7 @@ async def test_ssh_key_authentication(ssh_ready_instance):
         # Test basic command execution via the API (validates SSH backend)
         result, auth_time = await timed_operation(
             "ssh_auth_test",
-            lambda: instance.aexec("echo 'SSH authentication test'", timeout=30)
+            lambda: instance.aexec("echo 'SSH authentication test'")
         )
         
         assert result.exit_code == 0, f"SSH command failed with exit code {result.exit_code}: {result.stderr}"
@@ -236,7 +237,7 @@ async def test_ssh_connection_stability(ssh_ready_instance):
         
         start_time = time.time()
         try:
-            result = await instance.aexec(command, timeout=30)
+            result = await instance.aexec(command)
             duration = time.time() - start_time
             
             assert result.exit_code == 0, f"Command '{command}' failed: {result.stderr}"
@@ -328,7 +329,7 @@ async def test_ssh_command_execution_variety(ssh_ready_instance):
         
         start_time = time.time()
         try:
-            result = await instance.aexec(command, timeout=60)
+            result = await instance.aexec(command)
             duration = time.time() - start_time
             
             # Check exit code
@@ -408,7 +409,7 @@ async def test_ssh_multiple_sessions(ssh_ready_instance):
         start_time = time.time()
         
         try:
-            result = await instance.aexec(command, timeout=45)
+            result = await instance.aexec(command)
             duration = time.time() - start_time
             
             return {

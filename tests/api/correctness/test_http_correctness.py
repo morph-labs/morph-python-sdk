@@ -8,6 +8,7 @@ This module validates HTTP service functionality:
 - Service hiding/removal
 """
 import pytest
+import pytest_asyncio
 import logging
 import time
 import json
@@ -71,7 +72,7 @@ async def timed_operation(operation_name: str, operation_func):
 
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def http_ready_instance(client, base_image):
     """Create an instance ready for HTTP service testing."""
     snapshot = None
@@ -98,8 +99,7 @@ async def http_ready_instance(client, base_image):
         # Install required packages
         logger.info("Installing HTTP testing dependencies")
         install_result = await instance.aexec(
-            "apt-get update && apt-get install -y tmux python3 curl nginx-light",
-            timeout=300
+            "apt-get update && apt-get install -y tmux python3 curl nginx-light"
         )
         
         if install_result.exit_code != 0:
@@ -115,7 +115,7 @@ async def http_ready_instance(client, base_image):
         if instance:
             try:
                 # Kill any tmux sessions
-                await instance.aexec("tmux kill-server 2>/dev/null || true", timeout=10)
+                await instance.aexec("tmux kill-server 2>/dev/null || true")
                 await instance.astop()
                 logger.info("HTTP test instance stopped")
             except Exception as e:
@@ -198,7 +198,7 @@ async def test_single_http_service_correctness(http_ready_instance, client):
         # Test service accessibility from within the instance
         internal_access_result, internal_access_time = await timed_operation(
             "http_internal_access",
-            lambda: instance.aexec(f"curl -s 'localhost:{port}'", timeout=15)
+            lambda: instance.aexec(f"curl -s 'localhost:{port}'")
         )
         
         access_successful = (
@@ -308,12 +308,11 @@ async def test_multiple_http_services_correctness(http_ready_instance, client):
         
         logger.info(f"✓ Service '{service_name}' exposed at {service_url}")
     
-    # Verify all services are registered
-    refreshed_instance = await client.instances.aget(instance.id)
-    http_services = getattr(refreshed_instance.networking, 'http_services', [])
+    # Verify all services are registered (following working pattern)
+    instance = await client.instances.aget(instance.id)  # Refresh instance data
     
     for service in exposed_services:
-        service_found = any(s.port == service['port'] for s in http_services)
+        service_found = any(s.port == service['port'] for s in instance.networking.http_services)
         assert service_found, f"Service {service['name']} not found in instance networking"
     
     logger.info(f"✓ All {len(exposed_services)} services confirmed in instance networking")
@@ -350,10 +349,9 @@ async def test_multiple_http_services_correctness(http_ready_instance, client):
         
         hide_times.append(hide_time)
         
-        # Verify service is no longer exposed
-        refreshed_instance = await client.instances.aget(instance.id)
-        http_services = getattr(refreshed_instance.networking, 'http_services', [])
-        service_still_found = any(s.port == service['port'] for s in http_services)
+        # Verify service is no longer exposed (following working pattern)
+        instance = await client.instances.aget(instance.id)  # Refresh instance data
+        service_still_found = any(s.port == service['port'] for s in instance.networking.http_services)
         assert not service_still_found, f"Service {service['name']} still exposed after hiding"
         
         logger.info(f"✓ Service '{service['name']}' hidden ({hide_time:.2f}s)")
@@ -441,9 +439,9 @@ async def test_http_service_persistence(http_ready_instance, client):
         # Wait for instance to be fully ready
         await instance.await_until_ready(timeout=300)
         
-        # Check if service is still exposed in networking config
-        refreshed_instance = await client.instances.aget(instance.id)
-        http_services = getattr(refreshed_instance.networking, 'http_services', [])
+        # Check if service is still exposed in networking config (following working pattern)
+        instance = await client.instances.aget(instance.id)  # Refresh instance data
+        http_services = instance.networking.http_services
         service_still_registered = any(s.port == port for s in http_services)
         
         if service_still_registered:

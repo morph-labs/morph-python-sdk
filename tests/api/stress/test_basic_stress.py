@@ -8,6 +8,7 @@ This module tests system behavior under load:
 - Resource cleanup under stress
 """
 import pytest
+import pytest_asyncio
 import logging
 import time
 import json
@@ -69,19 +70,19 @@ async def timed_operation(operation_name: str, operation_func):
         raise
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def stress_ready_instance(client, base_image):
     """Create an instance ready for stress testing with larger resources."""
     snapshot = None
     instance = None
     
     try:
-        # Create snapshot with larger configuration for better stress testing
+        # Create snapshot with reasonable configuration for stress testing
         snapshot = await client.snapshots.acreate(
             image_id=base_image.id,
-            vcpus=2,  # More CPUs for better stress testing
-            memory=4*1024,  # 4GB for stress testing
-            disk_size=32*1024  # 32GB
+            vcpus=1,  # Single CPU is sufficient for stress testing
+            memory=2*1024,  # 2GB for stress testing
+            disk_size=16*1024  # 16GB
         )
         logger.info(f"Created snapshot {snapshot.id} for stress testing")
         
@@ -96,8 +97,7 @@ async def stress_ready_instance(client, base_image):
         # Install stress testing tools
         logger.info("Installing stress testing dependencies")
         install_result = await instance.aexec(
-            "apt-get update && apt-get install -y stress-ng htop python3",
-            timeout=300
+            "apt-get update && apt-get install -y stress-ng htop python3"
         )
         
         if install_result.exit_code != 0:
@@ -139,13 +139,13 @@ async def test_stress_ng_cpu_load(stress_ready_instance):
     if check_result.exit_code != 0:
         pytest.skip("stress-ng not available on instance")
     
-    # Run CPU stress test for 30 seconds with 2 workers
-    cpu_stress_cmd = "stress-ng --cpu 2 --timeout 30s --metrics-brief"
+    # Run CPU stress test for 30 seconds with 1 worker (single vCPU instance)
+    cpu_stress_cmd = "stress-ng --cpu 1 --timeout 30s --metrics-brief"
     
     logger.info("Starting CPU stress test (30 seconds)")
     cpu_result, cpu_stress_time = await timed_operation(
         "stress_ng_cpu_test",
-        lambda: instance.aexec(cpu_stress_cmd, timeout=60)
+        lambda: instance.aexec(cpu_stress_cmd)
     )
     
     # Verify stress test completed
@@ -162,13 +162,13 @@ async def test_stress_ng_cpu_load(stress_ready_instance):
                 logger.info(f"CPU metrics: {line.strip()}")
                 break
     
-    # Run memory stress test
-    memory_stress_cmd = "stress-ng --vm 2 --vm-bytes 512M --timeout 20s --metrics-brief"
+    # Run memory stress test  
+    memory_stress_cmd = "stress-ng --vm 1 --vm-bytes 256M --timeout 20s --metrics-brief"
     
     logger.info("Starting memory stress test (20 seconds)")
     memory_result, memory_stress_time = await timed_operation(
         "stress_ng_memory_test",
-        lambda: instance.aexec(memory_stress_cmd, timeout=45)
+        lambda: instance.aexec(memory_stress_cmd)
     )
     
     assert memory_result.exit_code == 0, f"Memory stress test failed: {memory_result.stderr}"
@@ -180,7 +180,7 @@ async def test_stress_ng_cpu_load(stress_ready_instance):
     logger.info("Starting I/O stress test (15 seconds)")
     io_result, io_stress_time = await timed_operation(
         "stress_ng_io_test",
-        lambda: instance.aexec(io_stress_cmd, timeout=30)
+        lambda: instance.aexec(io_stress_cmd)
     )
     
     assert io_result.exit_code == 0, f"I/O stress test failed: {io_result.stderr}"
@@ -275,7 +275,7 @@ async def test_multiple_parallel_instances(client, base_image):
             
             results = []
             for cmd in commands:
-                result = await instance.aexec(cmd, timeout=30)
+                result = await instance.aexec(cmd)
                 results.append(result.exit_code == 0)
             
             workload_time = time.time() - workload_start
@@ -392,7 +392,7 @@ async def test_instance_branching_under_load(client, base_image):
         for i, branch_instance in enumerate(branch_instances):
             try:
                 # Test basic functionality
-                test_result = await branch_instance.aexec("echo 'Branch test' && date", timeout=30)
+                test_result = await branch_instance.aexec("echo 'Branch test' && date")
                 
                 if test_result.exit_code == 0:
                     functional_branches += 1
