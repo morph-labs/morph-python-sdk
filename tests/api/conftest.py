@@ -116,8 +116,12 @@ async def _select_image_by_type(client, image_type):
             pytest.fail("morphvm-sandbox image not available. Available images: " + 
                        ", ".join([img.id for img in images]))
     elif image_type == "auto":
-        # Original behavior: prefer ubuntu, fallback to first available
-        image = next((img for img in images if "ubuntu" in img.id.lower()), images[0])
+        # Default behavior: prefer minimal, fallback to sandbox, then first available
+        image = next((img for img in images if "morphvm-minimal" in img.id.lower()), None)
+        if not image:
+            image = next((img for img in images if "morphvm-sandbox" in img.id.lower()), None)
+        if not image:
+            image = images[0]
     else:
         pytest.fail(f"Unknown image type: {image_type}. Use 'minimal', 'sandbox', or 'auto'")
     
