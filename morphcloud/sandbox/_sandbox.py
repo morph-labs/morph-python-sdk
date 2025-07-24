@@ -14,6 +14,19 @@ import websocket
 from morphcloud.api import Instance, MorphCloudClient, Snapshot
 
 
+class KernelCrashedException(Exception):
+    """Exception raised when a Jupyter kernel crashes or dies during execution"""
+    
+    def __init__(self, message: str, kernel_id: str, language: str):
+        super().__init__(message)
+        self.kernel_id = kernel_id
+        self.language = language
+        self.message = message
+    
+    def __str__(self):
+        return f"Kernel {self.kernel_id} ({self.language}) crashed: {self.message}"
+
+
 class OutputType(Enum):
     """Types of output that can be produced by code execution"""
 
@@ -42,6 +55,7 @@ class ExecutionResult:
         error: Optional[str] = None,
         stdout: Optional[str] = None,
         stderr: Optional[str] = None,
+        kernel_id: Optional[str] = None,
     ):
         self.exit_code = exit_code
         self.execution_time = execution_time
@@ -49,6 +63,7 @@ class ExecutionResult:
         self.error = error
         self.stdout = stdout or ""
         self.stderr = stderr or ""
+        self.kernel_id = kernel_id
 
     @property
     def success(self) -> bool:
@@ -423,6 +438,21 @@ class Sandbox:
                 )
 
         return self._kernel_ids[language]
+    
+    def _check_kernel_alive(self, kernel_id: str) -> bool:
+        """Check if kernel still exists via Jupyter REST API"""
+        try:
+            response = requests.get(f"{self.jupyter_url}/api/kernels/{kernel_id}", timeout=5.0)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def _get_language_for_kernel(self, kernel_id: str) -> str:
+        """Get language name for a kernel ID"""
+        for language, kid in self._kernel_ids.items():
+            if kid == kernel_id:
+                return language
+        return "unknown"
 
     def _connect_websocket(self, kernel_id: str, timeout: float = 30.0) -> None:
         """
@@ -514,12 +544,16 @@ class Sandbox:
             # Get or create kernel for language
             kernel_id = self._ensure_kernel_for_language(language)
 
-            # Execute code with user's timeout
+            # Execute code with user's timeout and kernel death detection
             result = self._execute_via_websocket(kernel_id, code, timeout)
             result.execution_time = time.time() - start_time
+            result.kernel_id = kernel_id
 
             return result
 
+        except KernelCrashedException:
+            # Re-raise kernel crash exceptions without modification
+            raise
         except Exception as e:
             # Handle any unexpected errors
             return ExecutionResult(
@@ -591,7 +625,7 @@ class Sandbox:
         ws.send(json.dumps(msg))
 
         # Process responses
-        result = ExecutionResult()
+        result = ExecutionResult(kernel_id=kernel_id)
         outputs = []
         stdout_parts = []
         stderr_parts = []
@@ -715,10 +749,20 @@ class Sandbox:
                     # Continue listening if we're still within timeout
                     continue
                 except websocket.WebSocketConnectionClosedException as ws_err:
-                    result.error = (
-                        f"WebSocket connection closed unexpectedly: {str(ws_err)}"
-                    )
-                    result.exit_code = 1
+                    # Check if kernel still exists - if not, it crashed
+                    if self._check_kernel_alive(kernel_id):
+                        result.error = (
+                            f"WebSocket connection closed unexpectedly: {str(ws_err)}"
+                        )
+                        result.exit_code = 1
+                    else:
+                        # Kernel died, raise specific exception
+                        language = self._get_language_for_kernel(kernel_id)
+                        raise KernelCrashedException(
+                            "Kernel process died during execution (common causes: out of memory, resource limits, crashes)",
+                            kernel_id,
+                            language
+                        )
                     break
                 except Exception as e:
                     result.error = f"Error processing response: {str(e)}"
@@ -728,6 +772,9 @@ class Sandbox:
         except websocket.WebSocketException as ws_err:
             result.error = f"WebSocket error: {str(ws_err)}"
             result.exit_code = 1
+        except KernelCrashedException:
+            # Re-raise kernel crash exceptions without modification
+            raise
         except Exception as e:
             result.error = f"Unexpected error during execution: {str(e)}"
             result.exit_code = 1
@@ -739,6 +786,14 @@ class Sandbox:
 
         # Check for timeout
         if time.time() >= deadline and not got_status_idle:
+            # Check if kernel died during timeout
+            if not self._check_kernel_alive(kernel_id):
+                language = self._get_language_for_kernel(kernel_id)
+                raise KernelCrashedException(
+                    "Kernel process died during execution (common causes: out of memory, resource limits, crashes)",
+                    kernel_id,
+                    language
+                )
             result.error = f"Execution timed out after {timeout} seconds"
             result.exit_code = 124  # Standard timeout exit code
 
