@@ -164,7 +164,7 @@ def ssh_stream(
         while chan.recv_stderr_ready():
             data = chan.recv_stderr(chunk_size)
             if data:
-                yield ("stdin", data.decode(encoding, errors="replace"))
+                yield ("stderr", data.decode(encoding, errors="replace"))
         if (
             chan.exit_status_ready()
             and not chan.recv_ready()
@@ -189,7 +189,7 @@ def instance_exec(
             match msg:
                 case ("stdout", txt):
                     on_stdout(txt)
-                case ("stdin", txt):
+                case ("stderr", txt):
                     on_stderr(txt)
                 case ("exit_code", code):
                     return code

@@ -1098,6 +1098,8 @@ class InstanceAPI(BaseAPI):
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
@@ -1109,6 +1111,11 @@ class InstanceAPI(BaseAPI):
             body["disk_size"] = disk_size
         if metadata is not None:
             body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
+        
         response = self._client._http_client.post(
             f"/snapshot/{snapshot_id}/boot",
             json=body,
@@ -1122,6 +1129,8 @@ class InstanceAPI(BaseAPI):
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
@@ -1133,6 +1142,10 @@ class InstanceAPI(BaseAPI):
             body["disk_size"] = disk_size
         if metadata is not None:
             body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
         response = await self._client._async_http_client.post(
             f"/snapshot/{snapshot_id}/boot",
             json=body,
