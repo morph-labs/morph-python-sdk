@@ -1,2 +1,2 @@
-from ._sandbox import (ExecutionResult, LanguageSupport, OutputType, Sandbox,
-                       SandboxAPI)
+from ._sandbox import (ExecutionResult, KernelCrashedException, LanguageSupport, 
+                       OutputType, Sandbox, SandboxAPI)
