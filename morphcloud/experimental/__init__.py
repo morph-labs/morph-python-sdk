@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import stat
 import threading
@@ -312,7 +313,16 @@ class Snapshot:
             yield inst
 
     def key_to_digest(self, key: str) -> str:
-        return (self.snapshot.digest or "") + self.snapshot.id + key
+        """
+        Computes a digest hash based on the parent snapshot and operation key.
+        Follows the same pattern as api.py's compute_chain_hash method.
+        """
+        parent_content = (self.snapshot.digest or "") + self.snapshot.id
+        hasher = hashlib.sha256()
+        hasher.update(parent_content.encode("utf-8"))
+        hasher.update(b"\n")
+        hasher.update(key.encode("utf-8"))
+        return hasher.hexdigest()
 
     def apply(
         self,
