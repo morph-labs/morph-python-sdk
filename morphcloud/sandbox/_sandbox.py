@@ -276,18 +276,18 @@ class Sandbox:
             response = requests.get(f"{self.jupyter_url}/api/kernels", timeout=10.0)
             response.raise_for_status()
             existing_kernels = response.json()
-            
+
             # Map kernel specs to our supported languages
             kernel_to_language = {}
             for language in LanguageSupport.get_supported_languages():
                 kernel_name = LanguageSupport.get_kernel_name(language)
                 kernel_to_language[kernel_name] = language
-            
+
             # Connect to existing kernels that match our supported languages
             for kernel_info in existing_kernels:
                 kernel_id = kernel_info.get("id")
                 kernel_spec = kernel_info.get("name")
-                
+
                 if kernel_spec in kernel_to_language:
                     language = kernel_to_language[kernel_spec]
                     # Only connect if we don't already have a kernel for this language
@@ -299,7 +299,7 @@ class Sandbox:
                         except ConnectionError:
                             # If we can't connect, remove from our tracking
                             del self._kernel_ids[language]
-                            
+
         except requests.RequestException:
             # If we can't discover existing kernels, that's okay
             # New kernels will be created as needed

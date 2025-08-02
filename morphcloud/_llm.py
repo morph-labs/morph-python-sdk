@@ -29,7 +29,7 @@ def _get_anthropic_api_key():
     return key
 
 
-MODEL_NAME = "claude-3-7-sonnet-20250219"
+MODEL_NAME = "claude-sonnet-4-20250514"
 
 
 COLORS = {

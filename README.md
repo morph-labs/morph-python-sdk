@@ -18,7 +18,7 @@ For comprehensive documentation, visit the [Morph Cloud Documentation](https://c
 
 ### Getting Your API Key
 
-1. Go to [https://cloud.morph.so/web/api-keys](https://cloud.morph.so/web/api-keys)
+1. Go to [https://cloud.morph.so/web/keys](https://cloud.morph.so/web/keys)
 2. Log in with your credentials
 3. Create a new API key
 

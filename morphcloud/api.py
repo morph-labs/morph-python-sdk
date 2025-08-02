@@ -128,6 +128,8 @@ class InstanceSshKey(BaseModel):
 
 
 class MorphCloudClient:
+    _plugins_loaded = False
+
     def __init__(
         self,
         api_key: typing.Optional[str] = None,
@@ -158,6 +160,25 @@ class MorphCloudClient:
             },
             timeout=None,
         )
+
+        # Load SDK plugins
+        if not MorphCloudClient._plugins_loaded:
+            self._load_sdk_plugins()
+            MorphCloudClient._plugins_loaded = True
+
+    def _load_sdk_plugins(self):
+        """Load SDK plugins from entry points."""
+        import importlib.metadata
+
+        try:
+            plugin_entry_points = importlib.metadata.entry_points(
+                group="morphcloud.sdk_plugins"
+            )
+            for entry_point in plugin_entry_points:
+                plugin_loader_func = entry_point.load()
+                plugin_loader_func(self)
+        except Exception:
+            pass
 
     @property
     def instances(self) -> InstanceAPI:
@@ -408,6 +429,11 @@ class Snapshot(BaseModel):
         response.raise_for_status()
 
     def set_metadata(self, metadata: typing.Dict[str, str]) -> None:
+        """Set snapshot metadata. WARNING: Overwrites entire metadata dict.
+
+        To preserve existing metadata:
+        metadata = snapshot.metadata.copy(); metadata.update(new_fields); snapshot.set_metadata(metadata)
+        """
         response = self._api._client._http_client.post(
             f"/snapshot/{self.id}/metadata", json=metadata
         )
@@ -953,6 +979,7 @@ class InstanceAPI(BaseAPI):
         metadata: typing.Optional[typing.Dict[str, str]] = None,
         ttl_seconds: typing.Optional[int] = None,
         ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+        timeout: typing.Optional[float] = None,
     ) -> Instance:
         """Create a new instance from a snapshot.
 
@@ -961,6 +988,7 @@ class InstanceAPI(BaseAPI):
             metadata: Optional metadata to attach to the instance.
             ttl_seconds: Optional time-to-live in seconds for the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
+            timeout: Seconds to wait for instance to be ready. None means don't wait, 0.0 means wait indefinitely.
         """
         if isinstance(snapshot_id, Snapshot):
             assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
@@ -973,7 +1001,25 @@ class InstanceAPI(BaseAPI):
                 "ttl_action": ttl_action,
             },
         )
-        return Instance.model_validate(response.json())._set_api(self)
+        instance = Instance.model_validate(response.json())._set_api(self)
+        if timeout is not None:
+            try:
+                timeout_val = None if timeout == 0.0 else timeout
+                instance.wait_until_ready(timeout=timeout_val)
+            except Exception as e:
+                console.print(
+                    f"[red]Failed to start instance {instance.id} with timeout: {e}[/red]"
+                )
+                # Clean up the instance if it fails to become ready
+                try:
+                    instance.stop()
+                except Exception as cleanup_error:
+                    console.print(
+                        f"[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]"
+                    )
+                    raise cleanup_error from e
+                raise e
+        return instance
 
     async def astart(
         self,
@@ -981,6 +1027,7 @@ class InstanceAPI(BaseAPI):
         metadata: typing.Optional[typing.Dict[str, str]] = None,
         ttl_seconds: typing.Optional[int] = None,
         ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+        timeout: typing.Optional[float] = None,
     ) -> Instance:
         """Create a new instance from a snapshot.
 
@@ -989,6 +1036,7 @@ class InstanceAPI(BaseAPI):
             metadata: Optional metadata to attach to the instance.
             ttl_seconds: Optional time-to-live in seconds for the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
+            timeout: Seconds to wait for instance to be ready. None means don't wait, 0.0 means wait indefinitely.
         """
         if isinstance(snapshot_id, Snapshot):
             assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
@@ -1001,7 +1049,25 @@ class InstanceAPI(BaseAPI):
                 "ttl_action": ttl_action,
             },
         )
-        return Instance.model_validate(response.json())._set_api(self)
+        instance = Instance.model_validate(response.json())._set_api(self)
+        if timeout is not None:
+            try:
+                timeout_val = None if timeout == 0.0 else timeout
+                await instance.await_until_ready(timeout=timeout_val)
+            except Exception as e:
+                console.print(
+                    f"[red]Failed to start instance {instance.id} with timeout: {e}[/red]"
+                )
+                # Clean up the instance if it fails to become ready
+                try:
+                    await instance.astop()
+                except Exception as cleanup_error:
+                    console.print(
+                        f"[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]"
+                    )
+                    raise cleanup_error from e
+                raise e
+        return instance
 
     def get(self, instance_id: str) -> Instance:
         """Get an instance by its ID."""
@@ -1032,6 +1098,8 @@ class InstanceAPI(BaseAPI):
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
@@ -1043,6 +1111,11 @@ class InstanceAPI(BaseAPI):
             body["disk_size"] = disk_size
         if metadata is not None:
             body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
+        
         response = self._client._http_client.post(
             f"/snapshot/{snapshot_id}/boot",
             json=body,
@@ -1056,6 +1129,8 @@ class InstanceAPI(BaseAPI):
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
     ) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
@@ -1067,6 +1142,10 @@ class InstanceAPI(BaseAPI):
             body["disk_size"] = disk_size
         if metadata is not None:
             body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
         response = await self._client._async_http_client.post(
             f"/snapshot/{snapshot_id}/boot",
             json=body,

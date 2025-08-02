@@ -111,6 +111,21 @@ class VersionCheckGroup(click.Group):
             raise
 
 
+def load_cli_plugins(cli_group: click.Group):
+    """Load CLI plugins from entry points."""
+    import importlib.metadata
+
+    try:
+        plugin_entry_points = importlib.metadata.entry_points(
+            group="morphcloud.cli_plugins"
+        )
+        for entry_point in plugin_entry_points:
+            plugin_loader_func = entry_point.load()
+            plugin_loader_func(cli_group)
+    except Exception:
+        pass
+
+
 @click.group(cls=VersionCheckGroup)
 @click.version_option(version=__version__, package_name="morphcloud")
 def cli():
@@ -1644,6 +1659,10 @@ def cleanup_instances(
     except Exception as e:
         click.echo(f"An unexpected error occurred: {e}", err=True)
         sys.exit(1)
+
+
+# Load CLI plugins
+load_cli_plugins(cli)
 
 
 if __name__ == "__main__":
