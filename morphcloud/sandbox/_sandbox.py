@@ -13,10 +13,11 @@ import websocket
 
 from morphcloud.api import Instance, MorphCloudClient, Snapshot
 
+
 class KernelCrashedException(Exception):
     """Exception that automatically updates snapshot metadata"""
-    
-    def __init__(self, message: str, kernel_id: str, language: str, sandbox: 'Sandbox'):
+
+    def __init__(self, message: str, kernel_id: str, language: str, sandbox: "Sandbox"):
         super().__init__(message)
         print("Init kernel crash")
 
@@ -25,72 +26,71 @@ class KernelCrashedException(Exception):
         self.kernel_id = kernel_id
         self.language = language
         self.message = message
-        
+
         # Update snapshot metadata with crash info
         print(f"Now calling record crash in metadata")
 
         self._record_crash_in_metadata()
-    
+
     def _record_crash_in_metadata(self):
         """Record this crash in the snapshot metadata"""
         try:
             print("Started recording crash in metadata")
 
             client = self.sandbox._instance._api._client
-            snapshot_id = getattr(self.sandbox._instance.refs, 'snapshot_id', None)
-            
+            snapshot_id = getattr(self.sandbox._instance.refs, "snapshot_id", None)
+
             if not snapshot_id:
                 return
-            
+
             snapshot = client.snapshots.get(snapshot_id)
             current_metadata = snapshot.metadata or {}
-            
+
             # Initialize crash history if not exists
-            if 'crash_history' not in current_metadata:
+            if "crash_history" not in current_metadata:
                 crash_history = []
             else:
                 # Parse existing crash history from JSON string
                 try:
-                    crash_history = json.loads(current_metadata['crash_history'])
+                    crash_history = json.loads(current_metadata["crash_history"])
                 except (json.JSONDecodeError, TypeError):
                     crash_history = []
-            
+
             # Add new crash record
             crash_record = {
-                'timestamp': self.crash_timestamp,
-                'kernel_id': self.kernel_id,
-                'language': self.language,
-                'crash_type': self._infer_crash_type(),
-                'message': self.message,
-                'instance_id': self.sandbox._instance.id
+                "timestamp": self.crash_timestamp,
+                "kernel_id": self.kernel_id,
+                "language": self.language,
+                "crash_type": self._infer_crash_type(),
+                "message": self.message,
+                "instance_id": self.sandbox._instance.id,
             }
-            
+
             # Keep only last 10 crashes
             crash_history.append(crash_record)
             crash_history = crash_history[-10:]
-            
+
             # Store as JSON string since API expects string values
-            current_metadata['crash_history'] = json.dumps(crash_history)
-            
+            current_metadata["crash_history"] = json.dumps(crash_history)
+
             # Update metadata
             snapshot.set_metadata(current_metadata)
             print(f"Finished recording crash in metadata")
 
-            
         except Exception as e:
             print(f"⚠️  Failed to record crash in metadata: {e}")
-    
+
     def _infer_crash_type(self) -> str:
         """Infer crash type from message"""
         message_lower = self.message.lower()
-        
-        if any(word in message_lower for word in ['memory', 'oom', 'out of memory']):
-            return 'OOM_KILL'
-        elif 'timeout' in message_lower:
-            return 'TIMEOUT'
+
+        if any(word in message_lower for word in ["memory", "oom", "out of memory"]):
+            return "OOM_KILL"
+        elif "timeout" in message_lower:
+            return "TIMEOUT"
         else:
-            return 'KERNEL_DIED'
-        
+            return "KERNEL_DIED"
+
     def __str__(self):
         return f"Kernel {self.kernel_id} ({self.language}) crashed: {self.message}"
 
@@ -354,21 +354,21 @@ class Sandbox:
         try:
             # Load crash history from snapshot metadata
             crash_history = self._load_crash_history_from_snapshot()
-            
+
             # Your existing kernel discovery logic (unchanged)
             response = requests.get(f"{self.jupyter_url}/api/kernels", timeout=10.0)
             response.raise_for_status()
             existing_kernels = response.json()
-            
+
             kernel_to_language = {}
             for language in LanguageSupport.get_supported_languages():
                 kernel_name = LanguageSupport.get_kernel_name(language)
                 kernel_to_language[kernel_name] = language
-            
+
             for kernel_info in existing_kernels:
                 kernel_id = kernel_info.get("id")
                 kernel_spec = kernel_info.get("name")
-                
+
                 if kernel_spec in kernel_to_language:
                     language = kernel_to_language[kernel_spec]
                     if language not in self._kernel_ids:
@@ -377,14 +377,19 @@ class Sandbox:
                             self._connect_websocket(kernel_id)
                         except ConnectionError:
                             del self._kernel_ids[language]
-            
+
             # Only essential notification if there were recent crashes
             if crash_history:
-                recent_crashes = [c for c in crash_history 
-                                if self._is_recent_crash(c.get('timestamp', ''), hours_back=24)]
+                recent_crashes = [
+                    c
+                    for c in crash_history
+                    if self._is_recent_crash(c.get("timestamp", ""), hours_back=24)
+                ]
                 if recent_crashes:
-                    print(f"⚠️  {len(recent_crashes)} kernel crash(es) detected in last 24h - starting fresh kernels as needed")
-                            
+                    print(
+                        f"⚠️  {len(recent_crashes)} kernel crash(es) detected in last 24h - starting fresh kernels as needed"
+                    )
+
         except:
             pass
 
@@ -392,11 +397,11 @@ class Sandbox:
         """Load crash history from snapshot metadata"""
         try:
             client = self._instance._api._client
-            snapshot_id = getattr(self._instance.refs, 'snapshot_id', None)
+            snapshot_id = getattr(self._instance.refs, "snapshot_id", None)
             if snapshot_id:
                 snapshot = client.snapshots.get(snapshot_id)
-                if snapshot.metadata and 'crash_history' in snapshot.metadata:
-                    crash_history_str = snapshot.metadata['crash_history']
+                if snapshot.metadata and "crash_history" in snapshot.metadata:
+                    crash_history_str = snapshot.metadata["crash_history"]
                     # Parse JSON string back to list
                     try:
                         return json.loads(crash_history_str)
@@ -411,12 +416,13 @@ class Sandbox:
         """Check if crash is recent"""
         try:
             from datetime import datetime, timedelta
+
             crash_time = datetime.fromisoformat(timestamp)
             cutoff = datetime.now() - timedelta(hours=hours_back)
             return crash_time >= cutoff
         except:
             return True
-        
+
     def _discover_existing_kernels(self) -> None:
         """
         Discover and reconnect to existing kernels on the Jupyter server.
@@ -427,18 +433,18 @@ class Sandbox:
             response = requests.get(f"{self.jupyter_url}/api/kernels", timeout=10.0)
             response.raise_for_status()
             existing_kernels = response.json()
-            
+
             # Map kernel specs to our supported languages
             kernel_to_language = {}
             for language in LanguageSupport.get_supported_languages():
                 kernel_name = LanguageSupport.get_kernel_name(language)
                 kernel_to_language[kernel_name] = language
-            
+
             # Connect to existing kernels that match our supported languages
             for kernel_info in existing_kernels:
                 kernel_id = kernel_info.get("id")
                 kernel_spec = kernel_info.get("name")
-                
+
                 if kernel_spec in kernel_to_language:
                     language = kernel_to_language[kernel_spec]
                     # Only connect if we don't already have a kernel for this language
@@ -450,7 +456,7 @@ class Sandbox:
                         except ConnectionError:
                             # If we can't connect, remove from our tracking
                             del self._kernel_ids[language]
-                            
+
         except requests.RequestException:
             # If we can't discover existing kernels, that's okay
             # New kernels will be created as needed
@@ -462,7 +468,7 @@ class Sandbox:
     def connect(self, timeout_seconds: int = 60) -> Sandbox:
         """Ensure Jupyter service is running and accessible"""
         self.wait_for_jupyter(timeout_seconds)
-        #self._discover_existing_kernels()
+        # self._discover_existing_kernels()
         self._discover_existing_kernels_with_history()
         return self
 
@@ -575,15 +581,17 @@ class Sandbox:
                 )
 
         return self._kernel_ids[language]
-    
+
     def _check_kernel_alive(self, kernel_id: str) -> bool:
         """Check if kernel still exists via Jupyter REST API"""
         try:
-            response = requests.get(f"{self.jupyter_url}/api/kernels/{kernel_id}", timeout=5.0)
+            response = requests.get(
+                f"{self.jupyter_url}/api/kernels/{kernel_id}", timeout=5.0
+            )
             return response.status_code == 200
         except:
             return False
-    
+
     def _get_language_for_kernel(self, kernel_id: str) -> str:
         """Get language name for a kernel ID"""
         for language, kid in self._kernel_ids.items():
@@ -899,7 +907,7 @@ class Sandbox:
                             "Kernel process died during execution (common causes: out of memory, resource limits, crashes)",
                             kernel_id,
                             language,
-                            self
+                            self,
                         )
                     break
                 except Exception as e:
@@ -931,7 +939,7 @@ class Sandbox:
                     "Kernel process died during execution (common causes: out of memory, resource limits, crashes)",
                     kernel_id,
                     language,
-                    self
+                    self,
                 )
             result.error = f"Execution timed out after {timeout} seconds"
             result.exit_code = 124  # Standard timeout exit code

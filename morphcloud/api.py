@@ -1115,7 +1115,7 @@ class InstanceAPI(BaseAPI):
             body["ttl_seconds"] = ttl_seconds
         if ttl_action is not None:
             body["ttl_action"] = ttl_action
-        
+
         response = self._client._http_client.post(
             f"/snapshot/{snapshot_id}/boot",
             json=body,
