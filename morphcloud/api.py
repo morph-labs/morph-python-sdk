@@ -134,11 +134,13 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
+        verbose: bool = False,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
         )
         self.api_key = api_key or os.environ.get("MORPH_API_KEY")
+        self.verbose = verbose
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
@@ -263,6 +265,20 @@ class ResourceSpec(BaseModel):
 
 class SnapshotRefs(BaseModel):
     image_id: str
+
+
+class SyncOptions(BaseModel):
+    """Options for file synchronization operations."""
+    delete: bool = Field(False, description="Delete files in destination not present in source")
+    dry_run: bool = Field(False, description="Preview changes without executing them")
+    verbose: bool = Field(False, description="Enable verbose logging")
+    respect_gitignore: bool = Field(False, description="Respect .gitignore patterns during sync")
+
+
+class FileInfo(BaseModel):
+    """File information for synchronization operations."""
+    size: int = Field(..., description="File size in bytes")
+    mtime: float = Field(..., description="Last modification time as Unix timestamp")
 
 
 class SnapshotAPI:
@@ -760,6 +776,67 @@ class Snapshot(BaseModel):
         return await asyncio.to_thread(
             self.download, remote_path, local_path, recursive
         )
+
+    def setup(self, command: str) -> 'Snapshot':
+        """
+        Run a command on top of this snapshot with effect caching.
+        
+        Returns a new snapshot that includes modifications from the command.
+        Uses caching to avoid rebuilding if identical effect was applied before.
+        
+        Based on morph-labs/morph-typescript-sdk/src/api.ts:337-346
+        
+        Args:
+            command: Shell command to run
+            
+        Returns:
+            New snapshot with command applied (or cached snapshot)
+        """
+        return self._cache_effect(
+            self._run_command_effect,
+            command,
+            False,  # background
+            True    # get_pty
+        )
+
+    def _cache_effect(self, fn: typing.Callable, *args) -> 'Snapshot':
+        """
+        Generic caching mechanism based on chain hash.
+        
+        Based on morph-labs/morph-typescript-sdk/src/api.ts:288-327
+        
+        - Computes unique hash from parent's chain hash and effect identifier
+        - If snapshot exists with that chain hash, returns it  
+        - Otherwise applies effect and creates new snapshot with chain hash
+        """
+        import json
+        
+        metadata = self.metadata or {}
+        parent_chain_hash = self.digest or self.id
+        effect_identifier = fn.__name__ + json.dumps(args)
+        
+        new_chain_hash = self.compute_chain_hash(parent_chain_hash, effect_identifier)
+        
+        # Check for existing snapshot with this chain hash
+        candidates = self._api.list(digest=new_chain_hash)
+        if candidates:
+            # Return cached snapshot
+            if hasattr(self._api._client, 'verbose') and getattr(self._api._client, 'verbose', False):
+                print(f"✅ [CACHED] {args}")
+            return candidates[0]
+        
+        # Apply effect on fresh instance
+        if hasattr(self._api._client, 'verbose') and getattr(self._api._client, 'verbose', False):
+            print(f"🚀 [RUN] {args}")
+        
+        instance = self._api._client.instances.start(snapshot_id=self.id)
+        try:
+            instance.wait_until_ready(300)
+            fn(instance, *args)
+            new_snapshot = instance.snapshot(digest=new_chain_hash)
+            return new_snapshot
+        finally:
+            instance.stop()
 
     def as_container(
         self,
@@ -2213,15 +2290,97 @@ class Instance(BaseModel):
         await self._refresh_async()
 
     def exec(
-        self, command: typing.Union[str, typing.List[str]]
+        self, 
+        command: typing.Union[str, typing.List[str]],
+        stream: bool = False,
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None
     ) -> InstanceExecResponse:
-        """Execute a command on the instance."""
-        command = [command] if isinstance(command, str) else command
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/exec",
-            json={"command": command},
-        )
-        return InstanceExecResponse.model_validate(response.json())
+        """
+        Execute a command on the instance with optional streaming support.
+        
+        Enhanced based on morph-labs/morph-typescript-sdk/src/api.ts:478-486
+        
+        Args:
+            command: Command to execute (string or list of strings)
+            stream: Enable real-time output streaming via SSH
+            on_stdout: Callback for stdout chunks during streaming
+            on_stderr: Callback for stderr chunks during streaming
+            
+        Returns:
+            InstanceExecResponse with exit code and captured output
+        """
+        if stream or on_stdout or on_stderr:
+            return self._exec_with_streaming(command, on_stdout, on_stderr)
+        else:
+            # Use original API-based implementation for non-streaming
+            command = [command] if isinstance(command, str) else command
+            response = self._api._client._http_client.post(
+                f"/instance/{self.id}/exec",
+                json={"command": command},
+            )
+            return InstanceExecResponse.model_validate(response.json())
+
+    def _exec_with_streaming(
+        self,
+        command: typing.Union[str, typing.List[str]],
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None
+    ) -> InstanceExecResponse:
+        """
+        Execute command with real-time streaming support.
+        
+        Based on morph-labs/morph-typescript-sdk/src/api.ts:241-273
+        """
+        import sys
+        import select
+        
+        cmd = command if isinstance(command, str) else ' '.join(command)
+        
+        ssh_client = self.ssh_connect()
+        try:
+            stdin, stdout, stderr = ssh_client.exec_command(cmd, get_pty=True)
+            
+            stdout_data = []
+            stderr_data = []
+            
+            # Stream output in real-time
+            while True:
+                # Use select to check for available data
+                ready, _, _ = select.select([stdout.channel, stderr.channel], [], [], 0.1)
+                
+                if stdout.channel in ready:
+                    chunk = stdout.channel.recv(1024)
+                    if chunk:
+                        chunk_str = chunk.decode('utf-8', errors='ignore')
+                        stdout_data.append(chunk_str)
+                        if on_stdout:
+                            on_stdout(chunk_str)
+                        else:
+                            print(chunk_str, end='')
+                
+                if stderr.channel in ready:
+                    chunk = stderr.channel.recv_stderr(1024)
+                    if chunk:
+                        chunk_str = chunk.decode('utf-8', errors='ignore')
+                        stderr_data.append(chunk_str)
+                        if on_stderr:
+                            on_stderr(chunk_str)
+                        else:
+                            print(chunk_str, end='', file=sys.stderr)
+                
+                if stdout.channel.exit_status_ready():
+                    break
+            
+            exit_code = stdout.channel.recv_exit_status()
+            
+            return InstanceExecResponse(
+                exit_code=exit_code,
+                stdout=''.join(stdout_data),
+                stderr=''.join(stderr_data)
+            )
+        finally:
+            ssh_client.close()
 
     async def aexec(
         self, command: typing.Union[str, typing.List[str]]
@@ -3273,6 +3432,331 @@ fi"""
         key_data = response.json()
 
         return InstanceSshKey.model_validate(key_data)
+
+    def sync(self, source: str, dest: str, options: typing.Optional[SyncOptions] = None) -> None:
+        """
+        Synchronize files between local and remote paths.
+        
+        Based on morph-labs/morph-typescript-sdk/src/api.ts:514-1015
+        
+        Args:
+            source: Source path (local or instance_id:/remote/path)
+            dest: Destination path (local or instance_id:/remote/path)
+            options: SyncOptions for controlling sync behavior
+            
+        Raises:
+            ValueError: If path format is invalid
+            ApiError: If API operations fail
+        """
+        import os
+        import pathlib
+        import fnmatch
+        from collections import defaultdict
+        
+        if options is None:
+            options = SyncOptions()
+        
+        # Parse instance paths
+        source_instance, source_path = self._parse_instance_path(source)
+        dest_instance, dest_path = self._parse_instance_path(dest)
+        
+        # Validation - one path must be local, other must be remote
+        if (source_instance and dest_instance) or (not source_instance and not dest_instance):
+            raise ValueError("One (and only one) path must be a remote path in format instance_id:/path")
+        
+        # Validate instance ID matches
+        instance_id = source_instance or dest_instance
+        if instance_id and instance_id != self.id:
+            raise ValueError(f"Instance ID in path ({instance_id}) doesn't match this instance ({self.id})")
+        
+        if options.verbose:
+            print(f"Starting sync operation from {source} to {dest}")
+            if options.dry_run:
+                print("[DRY RUN] No changes will be made")
+        
+        # Determine sync direction and execute
+        if source_instance:
+            self._sync_from_remote(source_path, dest_path, options)  
+        else:
+            self._sync_to_remote(source_path, dest_path, options)
+
+    async def asyncsync(self, source: str, dest: str, options: typing.Optional[SyncOptions] = None) -> None:
+        """Async version of sync method"""
+        # For now, run sync in thread pool to avoid blocking
+        import asyncio
+        import functools
+        
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, functools.partial(self.sync, source, dest, options))
+
+    def _parse_instance_path(self, path: str) -> typing.Tuple[typing.Optional[str], str]:
+        """Parse path to extract instance ID and file path"""
+        import re
+        match = re.match(r'^([^:]+):(.+)$', path)
+        return (match.group(1), match.group(2)) if match else (None, path)
+
+    def _sync_to_remote(self, local_dir: str, remote_dir: str, options: SyncOptions) -> None:
+        """Sync local directory to remote"""
+        import os
+        import pathlib
+        from collections import defaultdict
+        
+        if options.verbose:
+            print(f"Syncing {local_dir} → {remote_dir}")
+        
+        # Get file listings
+        local_files = self._get_local_files(local_dir, options)
+        remote_files = self._get_remote_files(remote_dir)
+        
+        changes = []
+        synced = set()
+        
+        # Check local files against remote
+        for local_path, local_info in local_files.items():
+            relative_path = os.path.relpath(local_path, local_dir)
+            remote_path = f"{remote_dir}/{relative_path}".replace('\\', '/')
+            remote_info = remote_files.get(remote_path)
+            
+            # Check if file needs sync (different size/mtime or doesn't exist)
+            if (not remote_info or 
+                remote_info.size != local_info.size or
+                abs(remote_info.mtime - local_info.mtime) >= 1):
+                changes.append({
+                    'type': 'copy',
+                    'source': local_path,
+                    'dest': remote_path,
+                    'size': local_info.size
+                })
+            synced.add(remote_path)
+        
+        # Check for files to delete
+        if options.delete:
+            for remote_path in remote_files:
+                if remote_path not in synced:
+                    changes.append({
+                        'type': 'delete', 
+                        'dest': remote_path
+                    })
+        
+        self._execute_sync_changes(changes, options)
+
+    def _sync_from_remote(self, remote_dir: str, local_dir: str, options: SyncOptions) -> None:
+        """Sync remote directory to local"""
+        import os
+        import pathlib
+        
+        if options.verbose:
+            print(f"Syncing {remote_dir} → {local_dir}")
+        
+        # Get file listings
+        remote_files = self._get_remote_files(remote_dir)
+        local_files = self._get_local_files(local_dir, options)
+        
+        changes = []
+        synced = set()
+        
+        # Check remote files against local
+        for remote_path, remote_info in remote_files.items():
+            relative_path = os.path.relpath(remote_path, remote_dir)
+            local_path = os.path.join(local_dir, relative_path)
+            local_info = local_files.get(local_path)
+            
+            # Check if file needs sync
+            if (not local_info or
+                local_info.size != remote_info.size or
+                abs(local_info.mtime - remote_info.mtime) >= 1):
+                changes.append({
+                    'type': 'copy',
+                    'source': remote_path,
+                    'dest': local_path,
+                    'size': remote_info.size
+                })
+            synced.add(local_path)
+        
+        # Check for files to delete
+        if options.delete:
+            for local_path in local_files:
+                if local_path not in synced:
+                    changes.append({
+                        'type': 'delete',
+                        'dest': local_path
+                    })
+        
+        self._execute_sync_changes(changes, options)
+
+    def _get_local_files(self, directory: str, options: SyncOptions) -> typing.Dict[str, FileInfo]:
+        """Get local file listing with metadata"""
+        import os
+        import pathlib
+        
+        files = {}
+        path_obj = pathlib.Path(directory)
+        
+        if not path_obj.exists():
+            return files
+        
+        # Load gitignore patterns if requested
+        gitignore_patterns = []
+        if options.respect_gitignore:
+            gitignore_path = path_obj / '.gitignore'
+            if gitignore_path.exists():
+                with open(gitignore_path, 'r') as f:
+                    gitignore_patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        def should_ignore(file_path: str) -> bool:
+            if not gitignore_patterns:
+                return False
+            rel_path = os.path.relpath(file_path, directory)
+            return any(fnmatch.fnmatch(rel_path, pattern) for pattern in gitignore_patterns)
+        
+        # Walk directory tree
+        for root, dirs, filenames in os.walk(directory):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                
+                if should_ignore(file_path):
+                    continue
+                
+                try:
+                    stat = os.stat(file_path)
+                    files[file_path] = FileInfo(size=stat.st_size, mtime=stat.st_mtime)
+                except OSError:
+                    continue  # Skip files we can't stat
+        
+        return files
+
+    def _get_remote_files(self, directory: str) -> typing.Dict[str, FileInfo]:
+        """Get remote file listing with metadata"""
+        files = {}
+        
+        with self.ssh() as ssh:
+            sftp = ssh._client.open_sftp()
+            
+            def walk_remote(path: str):
+                try:
+                    for item in sftp.listdir_attr(path):
+                        item_path = f"{path}/{item.filename}"
+                        if hasattr(item, 'st_mode') and item.st_mode is not None:
+                            import stat
+                            if stat.S_ISDIR(item.st_mode):
+                                walk_remote(item_path)
+                            elif stat.S_ISREG(item.st_mode):
+                                files[item_path] = FileInfo(
+                                    size=item.st_size or 0,
+                                    mtime=item.st_mtime or 0
+                                )
+                except (OSError, IOError):
+                    pass  # Skip directories we can't access
+            
+            walk_remote(directory)
+            sftp.close()
+        
+        return files
+
+    def _execute_sync_changes(self, changes: typing.List[typing.Dict], options: SyncOptions) -> None:
+        """Execute the computed sync changes"""
+        import os
+        import pathlib
+        
+        if not changes:
+            if options.verbose:
+                print("No changes needed")
+            return
+        
+        copy_count = sum(1 for c in changes if c['type'] == 'copy')
+        delete_count = sum(1 for c in changes if c['type'] == 'delete')
+        total_size = sum(c.get('size', 0) for c in changes if c['type'] == 'copy')
+        
+        if options.verbose:
+            print(f"\nChanges to be made:")
+            print(f"  Copy: {copy_count} files ({self._format_size(total_size)})")
+            if options.delete:
+                print(f"  Delete: {delete_count} files")
+        
+        if options.dry_run:
+            if options.verbose:
+                print("\nDry run - no changes made:")
+                for change in changes:
+                    if change['type'] == 'copy':
+                        print(f"  Would copy: {change['dest']} ({self._format_size(change['size'])})")
+                    else:
+                        print(f"  Would delete: {change['dest']}")
+            return
+        
+        # Execute changes
+        with self.ssh() as ssh:
+            sftp = ssh._client.open_sftp()
+            
+            for change in changes:
+                try:
+                    if change['type'] == 'copy':
+                        if options.verbose:
+                            print(f"Copying {change['dest']}")
+                        
+                        # Ensure remote directory exists
+                        remote_dir = os.path.dirname(change['dest'])
+                        self._ensure_remote_dir(sftp, remote_dir)
+                        
+                        # Copy file
+                        if 'source' in change and os.path.exists(change['source']):
+                            # Local to remote
+                            sftp.put(change['source'], change['dest'])
+                        else:
+                            # Remote to local
+                            local_dir = os.path.dirname(change['dest'])
+                            os.makedirs(local_dir, exist_ok=True)
+                            sftp.get(change['source'], change['dest'])
+                    
+                    elif change['type'] == 'delete':
+                        if options.verbose:
+                            print(f"Deleting {change['dest']}")
+                        
+                        try:
+                            if os.path.exists(change['dest']):
+                                # Delete local file
+                                os.unlink(change['dest'])
+                            else:
+                                # Delete remote file
+                                sftp.unlink(change['dest'])
+                        except (OSError, IOError):
+                            pass  # Ignore delete errors
+                
+                except Exception as e:
+                    print(f"Error processing {change['dest']}: {e}")
+            
+            sftp.close()
+
+    def _ensure_remote_dir(self, sftp, directory: str) -> None:
+        """Ensure remote directory exists"""
+        if not directory or directory == '/':
+            return
+        
+        parts = directory.split('/')
+        current = ''
+        
+        for part in parts:
+            if not part:
+                continue
+            current += '/' + part
+            try:
+                sftp.stat(current)
+            except (OSError, IOError):
+                try:
+                    sftp.mkdir(current)
+                except (OSError, IOError):
+                    pass  # Directory might already exist
+
+    def _format_size(self, size: int) -> str:
+        """Format file size in human readable format"""
+        units = ['B', 'KB', 'MB', 'GB']
+        formatted = float(size)
+        unit_index = 0
+        
+        while formatted >= 1024 and unit_index < len(units) - 1:
+            formatted /= 1024
+            unit_index += 1
+        
+        return f"{formatted:.1f}{units[unit_index]}"
 
 
 # Helper functions
