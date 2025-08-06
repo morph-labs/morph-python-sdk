@@ -15,45 +15,6 @@ logger = logging.getLogger("morph-tests")
 # Mark all tests as asyncio tests
 pytestmark = pytest.mark.asyncio
 
-# Configure pytest-asyncio
-def pytest_configure(config):
-    config.option.asyncio_default_fixture_loop_scope = "function"
-
-
-@pytest.fixture
-def api_key():
-    """Get API key from environment variable."""
-    key = os.environ.get("MORPH_API_KEY")
-    if not key:
-        pytest.fail("MORPH_API_KEY environment variable must be set")
-    return key
-
-
-@pytest.fixture
-def base_url():
-    """Get base URL from environment variable."""
-    return os.environ.get("MORPH_BASE_URL")
-
-
-@pytest_asyncio.fixture
-async def client(api_key, base_url):
-    """Create a MorphCloudClient."""
-    client = MorphCloudClient(api_key=api_key, base_url=base_url)
-    logger.info("Created MorphCloud client")
-    return client
-
-
-@pytest_asyncio.fixture
-async def base_image(client):
-    """Get a base image to use for tests."""
-    images = await client.images.alist()
-    if not images:
-        pytest.fail("No images available")
-    
-    # Use an Ubuntu image or fall back to the first available
-    image = next((img for img in images if "ubuntu" in img.id.lower()), images[0])
-    logger.info(f"Using base image: {image.id}")
-    return image
 
 
 @pytest_asyncio.fixture
@@ -274,3 +235,384 @@ async def test_command_with_sudo(test_instance):
     assert "root" in result.stdout.lower(), "Command output should contain 'root'"
     
     logger.info("Command with sudo test passed")
+
+
+async def test_streaming_stdout_callback(test_instance):
+    """Test streaming execution with stdout callback."""
+    logger.info("Testing streaming execution with stdout callback")
+    
+    # Collect stdout chunks
+    stdout_chunks = []
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+        logger.info(f"Received stdout chunk: {content[:50]}...")
+    
+    # Execute command with streaming
+    result = await test_instance.aexec(
+        "echo 'line1'; echo 'line2'; echo 'line3'",
+        on_stdout=capture_stdout
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    assert "line1" in result.stdout, "Final response should contain line1"
+    assert "line2" in result.stdout, "Final response should contain line2" 
+    assert "line3" in result.stdout, "Final response should contain line3"
+    
+    # Verify callbacks were called
+    assert len(stdout_chunks) > 0, "Stdout callback should have been called"
+    stdout_content = "".join(stdout_chunks)
+    assert "line1" in stdout_content, "Stdout callbacks should contain line1"
+    assert "line2" in stdout_content, "Stdout callbacks should contain line2"
+    assert "line3" in stdout_content, "Stdout callbacks should contain line3"
+    
+    logger.info("Streaming stdout callback test passed")
+
+
+async def test_streaming_stderr_callback(test_instance):
+    """Test streaming execution with stderr callback."""
+    logger.info("Testing streaming execution with stderr callback")
+    
+    # Collect stderr chunks
+    stderr_chunks = []
+    def capture_stderr(content):
+        stderr_chunks.append(content)
+        logger.info(f"Received stderr chunk: {content[:50]}...")
+    
+    # Execute command that produces stderr
+    result = await test_instance.aexec(
+        "echo 'error1' >&2; echo 'error2' >&2",
+        on_stderr=capture_stderr
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    assert "error1" in result.stderr, "Final response should contain error1"
+    assert "error2" in result.stderr, "Final response should contain error2"
+    
+    # Verify callbacks were called
+    assert len(stderr_chunks) > 0, "Stderr callback should have been called"
+    stderr_content = "".join(stderr_chunks)
+    assert "error1" in stderr_content, "Stderr callbacks should contain error1"
+    assert "error2" in stderr_content, "Stderr callbacks should contain error2"
+    
+    logger.info("Streaming stderr callback test passed")
+
+
+async def test_streaming_both_callbacks(test_instance):
+    """Test streaming execution with both stdout and stderr callbacks."""
+    logger.info("Testing streaming execution with both callbacks")
+    
+    # Collect output chunks
+    stdout_chunks = []
+    stderr_chunks = []
+    
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+        logger.info(f"Received stdout: {content[:50]}...")
+    
+    def capture_stderr(content):
+        stderr_chunks.append(content)
+        logger.info(f"Received stderr: {content[:50]}...")
+    
+    # Execute command that produces both stdout and stderr
+    result = await test_instance.aexec(
+        "echo 'stdout message'; echo 'stderr message' >&2; exit 0",
+        on_stdout=capture_stdout,
+        on_stderr=capture_stderr
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    assert "stdout message" in result.stdout, "Final response should contain stdout"
+    assert "stderr message" in result.stderr, "Final response should contain stderr"
+    
+    # Verify stdout callback was called
+    assert len(stdout_chunks) > 0, "Stdout callback should have been called"
+    stdout_content = "".join(stdout_chunks)
+    assert "stdout message" in stdout_content, "Stdout callbacks should contain message"
+    
+    # Verify stderr callback was called
+    assert len(stderr_chunks) > 0, "Stderr callback should have been called"
+    stderr_content = "".join(stderr_chunks)
+    assert "stderr message" in stderr_content, "Stderr callbacks should contain message"
+    
+    logger.info("Streaming both callbacks test passed")
+
+
+async def test_streaming_vs_traditional_consistency(test_instance):
+    """Test that streaming and traditional endpoints return consistent results."""
+    logger.info("Testing streaming vs traditional consistency")
+    
+    # Same command executed both ways
+    command = "echo 'test output'; echo 'test error' >&2; exit 42"
+    
+    # Execute without callbacks (traditional endpoint)
+    traditional_result = await test_instance.aexec(command)
+    
+    # Execute with callbacks (streaming endpoint)
+    stdout_chunks = []
+    stderr_chunks = []
+    
+    streaming_result = await test_instance.aexec(
+        command,
+        on_stdout=lambda content: stdout_chunks.append(content),
+        on_stderr=lambda content: stderr_chunks.append(content)
+    )
+    
+    # Results should be identical
+    assert traditional_result.exit_code == streaming_result.exit_code, "Exit codes should match"
+    assert traditional_result.stdout == streaming_result.stdout, "Stdout should match"
+    assert traditional_result.stderr == streaming_result.stderr, "Stderr should match"
+    
+    # Streaming callbacks should contain the same content
+    assert "test output" in "".join(stdout_chunks), "Streaming stdout should match"
+    assert "test error" in "".join(stderr_chunks), "Streaming stderr should match"
+    
+    logger.info("Streaming vs traditional consistency test passed")
+
+
+async def test_streaming_with_timeout(test_instance):
+    """Test streaming execution with timeout."""
+    logger.info("Testing streaming execution with timeout")
+    
+    stdout_chunks = []
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+    
+    # Execute command with short timeout (should timeout)
+    with pytest.raises(TimeoutError) as exc_info:
+        await test_instance.aexec(
+            "sleep 10",  # Simple sleep command - timeout expected 
+            timeout=1.0,
+            on_stdout=capture_stdout
+        )
+    
+    # Verify it's the correct timeout error 
+    assert "1.0 seconds" in str(exc_info.value), "Error message should contain timeout duration"
+    logger.info("Streaming with timeout test passed")
+
+
+async def test_traditional_with_timeout(test_instance):
+    """Test traditional execution with timeout."""
+    logger.info("Testing traditional execution with timeout")
+    
+    # Execute command with short timeout (should timeout)
+    try:
+        result = await test_instance.aexec("sleep 5", timeout=2.0)
+        # If we get here, something went wrong
+        assert False, "Command should have timed out"
+    except Exception as e:
+        # Timeout is expected
+        logger.info(f"Command timed out as expected: {e}")
+    
+    logger.info("Traditional with timeout test passed")
+
+
+async def test_sync_streaming_stdout_callback(test_instance):
+    """Test synchronous streaming execution with stdout callback."""
+    logger.info("Testing sync streaming execution with stdout callback")
+    
+    # Collect stdout chunks
+    stdout_chunks = []
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+        logger.info(f"Received stdout chunk: {content[:50]}...")
+    
+    # Execute command with streaming (sync version)
+    result = test_instance.exec(
+        "echo 'sync line1'; echo 'sync line2'",
+        on_stdout=capture_stdout
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    assert "sync line1" in result.stdout, "Final response should contain sync line1"
+    assert "sync line2" in result.stdout, "Final response should contain sync line2"
+    
+    # Verify callbacks were called
+    assert len(stdout_chunks) > 0, "Stdout callback should have been called"
+    stdout_content = "".join(stdout_chunks)
+    assert "sync line1" in stdout_content, "Stdout callbacks should contain sync line1"
+    assert "sync line2" in stdout_content, "Stdout callbacks should contain sync line2"
+    
+    logger.info("Sync streaming stdout callback test passed")
+
+
+async def test_timeout_error_type_streaming(test_instance):
+    """Test that streaming timeout raises TimeoutError with proper message."""
+    logger.info("Testing streaming timeout error type and message")
+    
+    stdout_chunks = []
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+    
+    # Execute command with short timeout (should raise TimeoutError)
+    with pytest.raises(TimeoutError) as exc_info:
+        await test_instance.aexec(
+            "echo 'start'; sleep 5; echo 'end'",
+            timeout=1.0,
+            on_stdout=capture_stdout
+        )
+    
+    # Verify exception message contains timeout duration
+    assert "1.0 seconds" in str(exc_info.value), "Exception message should contain timeout duration"
+    logger.info("Streaming timeout error type test passed")
+
+
+async def test_timeout_error_type_traditional(test_instance):
+    """Test that traditional timeout raises TimeoutError with proper message."""
+    logger.info("Testing traditional timeout error type and message")
+    
+    # Execute command with short timeout (should raise TimeoutError)
+    with pytest.raises(TimeoutError) as exc_info:
+        await test_instance.aexec("sleep 5", timeout=1.0)
+    
+    # Verify exception message contains timeout duration
+    assert "1.0 seconds" in str(exc_info.value), "Exception message should contain timeout duration"
+    logger.info("Traditional timeout error type test passed")
+
+
+
+async def test_callback_exception_handling(test_instance):
+    """Test that callback exceptions don't interrupt command execution."""
+    logger.info("Testing callback exception handling")
+    
+    stdout_chunks = []
+    callback_error_count = 0
+    
+    def failing_stdout_callback(content):
+        nonlocal callback_error_count
+        callback_error_count += 1
+        stdout_chunks.append(content)
+        if "line1" in content:
+            raise ValueError("Intentional callback error")
+    
+    # Execute command with callback that raises exceptions
+    result = await test_instance.aexec(
+        "echo 'line1'; echo 'line2'; echo 'line3'",
+        on_stdout=failing_stdout_callback
+    )
+    
+    # Command should still complete successfully despite callback errors
+    assert result.exit_code == 0, "Command should complete despite callback errors"
+    assert "line1" in result.stdout, "Final response should contain line1"
+    assert "line2" in result.stdout, "Final response should contain line2"
+    assert "line3" in result.stdout, "Final response should contain line3"
+    
+    # Verify callback was called multiple times
+    assert len(stdout_chunks) >= 2, "Callback should have been called multiple times"
+    assert callback_error_count > 0, "Callback should have raised at least one error"
+    
+    logger.info("Callback exception handling test passed")
+
+
+async def test_utf8_and_colored_output_streaming(test_instance):
+    """Test streaming with UTF-8 characters and ANSI color codes."""
+    logger.info("Testing UTF-8 and colored output streaming")
+    
+    stdout_chunks = []
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+        logger.info(f"Received chunk: {repr(content)}")
+    
+    # Command that produces UTF-8 characters and ANSI color codes
+    result = await test_instance.aexec(
+        "echo -e '\\033[31mRed Text\\033[0m'; echo 'UTF-8: ñáéíóú 中文 🚀'; echo -e '\\033[32mGreen Text\\033[0m'",
+        on_stdout=capture_stdout
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    
+    # Check UTF-8 characters are preserved
+    assert "ñáéíóú" in result.stdout, "UTF-8 Spanish characters should be preserved"
+    assert "中文" in result.stdout, "UTF-8 Chinese characters should be preserved"
+    assert "🚀" in result.stdout, "UTF-8 emoji should be preserved"
+    
+    # Check ANSI color codes are preserved
+    assert "\033[31m" in result.stdout, "ANSI red color code should be preserved"
+    assert "\033[32m" in result.stdout, "ANSI green color code should be preserved" 
+    assert "\033[0m" in result.stdout, "ANSI reset code should be preserved"
+    assert "Red Text" in result.stdout, "Colored text content should be preserved"
+    assert "Green Text" in result.stdout, "Colored text content should be preserved"
+    
+    # Verify streaming preserved encoding
+    combined_chunks = "".join(stdout_chunks)
+    assert combined_chunks == result.stdout, "Streamed chunks should match final result exactly"
+    
+    # Check that individual chunks contain valid UTF-8
+    for chunk in stdout_chunks:
+        assert isinstance(chunk, str), "All chunks should be strings"
+        # Verify chunk can be encoded/decoded without errors
+        chunk.encode('utf-8').decode('utf-8')
+    
+    logger.info("UTF-8 and colored output streaming test passed")
+
+
+async def test_stderr_only_with_stdout_callback(test_instance):
+    """Test command that produces only stderr with stdout callback provided."""
+    logger.info("Testing stderr-only command with stdout callback")
+    
+    stdout_chunks = []
+    stderr_chunks = []
+    
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+    
+    def capture_stderr(content):
+        stderr_chunks.append(content)
+    
+    # Command that only produces stderr
+    result = await test_instance.aexec(
+        "echo 'error message' >&2",
+        on_stdout=capture_stdout,
+        on_stderr=capture_stderr
+    )
+    
+    # Verify final response
+    assert result.exit_code == 0, "Command should execute successfully"
+    assert result.stdout == "", "Should have no stdout"
+    assert "error message" in result.stderr, "Should have stderr content"
+    
+    # Verify callbacks
+    assert len(stdout_chunks) == 0, "Stdout callback should not be called"
+    assert len(stderr_chunks) > 0, "Stderr callback should be called"
+    assert "error message" in "".join(stderr_chunks), "Stderr callback should receive message"
+    
+    logger.info("Stderr-only with stdout callback test passed")
+
+
+async def test_none_callback_vs_not_provided(test_instance):
+    """Test difference between on_stdout=None vs not providing parameter."""
+    logger.info("Testing None callback vs not provided")
+    
+    # Test 1: No callback parameters (should use traditional endpoint)
+    result1 = await test_instance.aexec("echo 'test1'")
+    
+    # Test 2: Explicit None callback (should still use traditional endpoint)
+    result2 = await test_instance.aexec("echo 'test2'", on_stdout=None)
+    
+    # Test 3: Empty lambda callback (should use streaming endpoint)
+    stdout_chunks = []
+    result3 = await test_instance.aexec(
+        "echo 'test3'", 
+        on_stdout=lambda content: stdout_chunks.append(content)
+    )
+    
+    # All should work and produce similar results
+    assert result1.exit_code == 0, "Traditional exec should work"
+    assert result2.exit_code == 0, "Explicit None callback should work"
+    assert result3.exit_code == 0, "Lambda callback should work"
+    
+    assert "test1" in result1.stdout, "Result1 should contain test1"
+    assert "test2" in result2.stdout, "Result2 should contain test2" 
+    assert "test3" in result3.stdout, "Result3 should contain test3"
+    
+    # Verify streaming was used for test3
+    assert len(stdout_chunks) > 0, "Lambda callback should have received chunks"
+    assert "test3" in "".join(stdout_chunks), "Chunks should contain test3"
+    
+    logger.info("None callback vs not provided test passed")
+
+

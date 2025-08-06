@@ -16,13 +16,12 @@ import httpx
 from pydantic import BaseModel, Field, PrivateAttr
 # Import Rich for fancy printing
 from rich.console import Console
-from rich.live import Live
-from rich.panel import Panel
 
 from morphcloud._utils import StrEnum
 
 # Global console instance
 console = Console()
+
 
 
 @lru_cache
@@ -504,8 +503,6 @@ class Snapshot(BaseModel):
         import re
         import threading
 
-        from rich.console import Console
-        from rich.text import Text
 
         # Create a thread ID for logging
         thread_id = threading.get_ident()
@@ -1190,7 +1187,7 @@ class InstanceAPI(BaseAPI):
                 f"Invalid action '{action}'. Must be one of: {valid_actions}"
             )
 
-        console.print(f"[bold blue]Starting MorphCloud Instance Cleanup[/bold blue]")
+        console.print("[bold blue]Starting MorphCloud Instance Cleanup[/bold blue]")
         console.print(f"Action: [cyan]{action}[/cyan]")
 
         # List all instances
@@ -1342,7 +1339,7 @@ class InstanceAPI(BaseAPI):
                 )
 
         # Summary
-        console.print(f"\n[bold]Summary:[/bold]")
+        console.print("\n[bold]Summary:[/bold]")
         console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
         console.print(
             f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
@@ -1531,7 +1528,7 @@ class InstanceAPI(BaseAPI):
                     )
 
         # Final report
-        console.print(f"\n[bold blue]Cleanup Operation Complete[/bold blue]")
+        console.print("\n[bold blue]Cleanup Operation Complete[/bold blue]")
         console.print(
             f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
         )
@@ -1539,7 +1536,7 @@ class InstanceAPI(BaseAPI):
         console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
 
         if processed_failed > 0:
-            console.print(f"\n[bold red]Failures occurred:[/bold red]")
+            console.print("\n[bold red]Failures occurred:[/bold red]")
             for error in error_details:
                 console.print(f"  - Instance {error['instance_id']}: {error['error']}")
 
@@ -1599,7 +1596,7 @@ class InstanceAPI(BaseAPI):
             )
 
         console.print(
-            f"[bold blue]Starting Async MorphCloud Instance Cleanup[/bold blue]"
+            "[bold blue]Starting Async MorphCloud Instance Cleanup[/bold blue]"
         )
         console.print(f"Action: [cyan]{action}[/cyan]")
 
@@ -1752,7 +1749,7 @@ class InstanceAPI(BaseAPI):
                 )
 
         # Summary
-        console.print(f"\n[bold]Summary:[/bold]")
+        console.print("\n[bold]Summary:[/bold]")
         console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
         console.print(
             f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
@@ -1945,7 +1942,7 @@ class InstanceAPI(BaseAPI):
                     )
 
         # Final report
-        console.print(f"\n[bold blue]Async Cleanup Operation Complete[/bold blue]")
+        console.print("\n[bold blue]Async Cleanup Operation Complete[/bold blue]")
         console.print(
             f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
         )
@@ -1953,7 +1950,7 @@ class InstanceAPI(BaseAPI):
         console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
 
         if processed_failed > 0:
-            console.print(f"\n[bold red]Failures occurred:[/bold red]")
+            console.print("\n[bold red]Failures occurred:[/bold red]")
             for error in error_details:
                 console.print(f"  - Instance {error['instance_id']}: {error['error']}")
 
@@ -2213,26 +2210,266 @@ class Instance(BaseModel):
         await self._refresh_async()
 
     def exec(
-        self, command: typing.Union[str, typing.List[str]]
+        self,
+        command: typing.Union[str, typing.List[str]],
+        timeout: typing.Optional[float] = None,
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
-        """Execute a command on the instance."""
+        """Execute a command on the instance.
+        
+        Args:
+            command: Command to execute (string or list of strings)
+            timeout: Optional timeout in seconds
+            on_stdout: Optional callback for stdout chunks during streaming execution
+            on_stderr: Optional callback for stderr chunks during streaming execution
+            
+        Returns:
+            InstanceExecResponse with exit_code, stdout, and stderr
+            
+        Note:
+            If on_stdout or on_stderr callbacks are provided, the SSE streaming endpoint
+            will be used for real-time output. Otherwise, the traditional endpoint is used.
+        """
         command = [command] if isinstance(command, str) else command
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/exec",
-            json={"command": command},
-        )
-        return InstanceExecResponse.model_validate(response.json())
+        
+        # Smart endpoint selection: use streaming if callbacks provided
+        if on_stdout is not None or on_stderr is not None:
+            return self._exec_streaming(command, timeout, on_stdout, on_stderr)
+        else:
+            # Use traditional endpoint
+            try:
+                response = self._api._client._http_client.post(
+                    f"/instance/{self.id}/exec",
+                    json={"command": command},
+                    timeout=timeout,
+                )
+                return InstanceExecResponse.model_validate(response.json())
+            except Exception as e:
+                # Convert HTTP timeout errors to more user-friendly TimeoutError
+                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                    raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                # Re-raise other exceptions as-is
+                raise
+
+    def _exec_streaming(
+        self,
+        command: typing.List[str],
+        timeout: typing.Optional[float] = None,
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
+    ) -> InstanceExecResponse:
+        """Execute command using SSE streaming endpoint."""
+        
+        # Prepare headers for SSE
+        headers = {
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self._api._client.api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        # Accumulate output for final response
+        stdout_chunks = []
+        stderr_chunks = []
+        exit_code = 0
+        
+        # Make streaming request
+        try:
+            with self._api._client._http_client.stream(
+                "POST",
+                f"{self._api._client.base_url}/instance/{self.id}/exec/sse",
+                json={"command": command},
+                headers=headers,
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                        
+                    # Skip lines that don't start with 'data: '
+                    if not line.startswith('data: '):
+                        continue
+                        
+                    data_content = line[6:]  # Remove 'data: ' prefix
+                    
+                    # Check for stream end
+                    if data_content.strip() == '[DONE]':
+                        break
+                        
+                    try:
+                        event = json.loads(data_content)
+                        event_type = event.get('type')
+                        content = event.get('content', '')
+                        
+                        if event_type == 'stdout':
+                            stdout_chunks.append(content)
+                            if on_stdout:
+                                try:
+                                    on_stdout(content)
+                                except Exception:
+                                    # Log callback errors but don't interrupt stream
+                                    pass
+                                    
+                        elif event_type == 'stderr':
+                            stderr_chunks.append(content)
+                            if on_stderr:
+                                try:
+                                    on_stderr(content)
+                                except Exception:
+                                    # Log callback errors but don't interrupt stream
+                                    pass
+                                    
+                        elif event_type == 'exit_code':
+                            exit_code = int(content)
+                            
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        # Skip malformed events and continue processing
+                        continue
+        except Exception as e:
+            # Convert HTTP timeout errors to more user-friendly TimeoutError
+            if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+            # Re-raise other exceptions as-is
+            raise
+        
+        return InstanceExecResponse.model_validate({
+            "exit_code": exit_code,
+            "stdout": ''.join(stdout_chunks),
+            "stderr": ''.join(stderr_chunks),
+        })
 
     async def aexec(
-        self, command: typing.Union[str, typing.List[str]]
+        self,
+        command: typing.Union[str, typing.List[str]],
+        timeout: typing.Optional[float] = None,
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
-        """Execute a command on the instance."""
+        """Execute a command on the instance asynchronously.
+        
+        Args:
+            command: Command to execute (string or list of strings)
+            timeout: Optional timeout in seconds
+            on_stdout: Optional callback for stdout chunks during streaming execution
+            on_stderr: Optional callback for stderr chunks during streaming execution
+            
+        Returns:
+            InstanceExecResponse with exit_code, stdout, and stderr
+            
+        Note:
+            If on_stdout or on_stderr callbacks are provided, the SSE streaming endpoint
+            will be used for real-time output. Otherwise, the traditional endpoint is used.
+        """
         command = [command] if isinstance(command, str) else command
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/exec",
-            json={"command": command},
-        )
-        return InstanceExecResponse.model_validate(response.json())
+        
+        # Smart endpoint selection: use streaming if callbacks provided
+        if on_stdout is not None or on_stderr is not None:
+            return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
+        else:
+            # Use traditional endpoint
+            try:
+                response = await self._api._client._async_http_client.post(
+                    f"/instance/{self.id}/exec",
+                    json={"command": command},
+                    timeout=timeout,
+                )
+                return InstanceExecResponse.model_validate(response.json())
+            except Exception as e:
+                # Convert HTTP timeout errors to more user-friendly TimeoutError
+                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                    raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                # Re-raise other exceptions as-is
+                raise
+
+    async def _aexec_streaming(
+        self,
+        command: typing.List[str],
+        timeout: typing.Optional[float] = None,
+        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
+        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
+    ) -> InstanceExecResponse:
+        """Execute command using SSE streaming endpoint asynchronously."""
+        
+        # Prepare headers for SSE
+        headers = {
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self._api._client.api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        # Accumulate output for final response
+        stdout_chunks = []
+        stderr_chunks = []
+        exit_code = 0
+        
+        # Make streaming request
+        try:
+            async with self._api._client._async_http_client.stream(
+                "POST",
+                f"/instance/{self.id}/exec/sse",
+                json={"command": command},
+                headers=headers,
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+            
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                        
+                    # Skip lines that don't start with 'data: '
+                    if not line.startswith('data: '):
+                        continue
+                        
+                    data_content = line[6:]  # Remove 'data: ' prefix
+                    
+                    # Check for stream end
+                    if data_content.strip() == '[DONE]':
+                        break
+                        
+                    try:
+                        event = json.loads(data_content)
+                        event_type = event.get('type')
+                        content = event.get('content', '')
+                        
+                        if event_type == 'stdout':
+                            stdout_chunks.append(content)
+                            if on_stdout:
+                                try:
+                                    on_stdout(content)
+                                except Exception:
+                                    # Log callback errors but don't interrupt stream
+                                    pass
+                                    
+                        elif event_type == 'stderr':
+                            stderr_chunks.append(content)
+                            if on_stderr:
+                                try:
+                                    on_stderr(content)
+                                except Exception:
+                                    # Log callback errors but don't interrupt stream
+                                    pass
+                                    
+                        elif event_type == 'exit_code':
+                            exit_code = int(content)
+                            
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        # Skip malformed events and continue processing
+                        continue
+        except Exception as e:
+            # Convert HTTP timeout errors to more user-friendly TimeoutError
+            if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+            # Re-raise other exceptions as-is
+            raise
+        
+        return InstanceExecResponse.model_validate({
+            "exit_code": exit_code,
+            "stdout": ''.join(stdout_chunks),
+            "stderr": ''.join(stderr_chunks),
+        })
 
     def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
         """Wait until the instance is ready."""
@@ -3069,7 +3306,7 @@ fi"""
                 "Note: This change cannot be easily reversed. Consider creating a snapshot before using this method."
             )
 
-        except Exception as e:
+        except Exception:
             raise
 
     async def aas_container(
