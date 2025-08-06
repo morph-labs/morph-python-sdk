@@ -23,7 +23,6 @@ from morphcloud._utils import StrEnum
 console = Console()
 
 
-
 @lru_cache
 def _dummy_key():
     import io
@@ -502,7 +501,6 @@ class Snapshot(BaseModel):
         """
         import re
         import threading
-
 
         # Create a thread ID for logging
         thread_id = threading.get_ident()
@@ -2217,22 +2215,22 @@ class Instance(BaseModel):
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance.
-        
+
         Args:
             command: Command to execute (string or list of strings)
             timeout: Optional timeout in seconds
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
-            
+
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
-            
+
         Note:
             If on_stdout or on_stderr callbacks are provided, the SSE streaming endpoint
             will be used for real-time output. Otherwise, the traditional endpoint is used.
         """
         command = [command] if isinstance(command, str) else command
-        
+
         # Smart endpoint selection: use streaming if callbacks provided
         if on_stdout is not None or on_stderr is not None:
             return self._exec_streaming(command, timeout, on_stdout, on_stderr)
@@ -2248,7 +2246,9 @@ class Instance(BaseModel):
             except Exception as e:
                 # Convert HTTP timeout errors to more user-friendly TimeoutError
                 if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                    raise TimeoutError(
+                        f"Command execution timed out after {timeout} seconds"
+                    ) from e
                 # Re-raise other exceptions as-is
                 raise
 
@@ -2260,19 +2260,19 @@ class Instance(BaseModel):
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
         """Execute command using SSE streaming endpoint."""
-        
+
         # Prepare headers for SSE
         headers = {
             "Accept": "text/event-stream",
             "Authorization": f"Bearer {self._api._client.api_key}",
             "Content-Type": "application/json",
         }
-        
+
         # Accumulate output for final response
         stdout_chunks = []
         stderr_chunks = []
         exit_code = 0
-        
+
         # Make streaming request
         try:
             with self._api._client._http_client.stream(
@@ -2283,27 +2283,27 @@ class Instance(BaseModel):
                 timeout=timeout,
             ) as response:
                 response.raise_for_status()
-                
+
                 for line in response.iter_lines():
                     if not line.strip():
                         continue
-                        
+
                     # Skip lines that don't start with 'data: '
-                    if not line.startswith('data: '):
+                    if not line.startswith("data: "):
                         continue
-                        
+
                     data_content = line[6:]  # Remove 'data: ' prefix
-                    
+
                     # Check for stream end
-                    if data_content.strip() == '[DONE]':
+                    if data_content.strip() == "[DONE]":
                         break
-                        
+
                     try:
                         event = json.loads(data_content)
-                        event_type = event.get('type')
-                        content = event.get('content', '')
-                        
-                        if event_type == 'stdout':
+                        event_type = event.get("type")
+                        content = event.get("content", "")
+
+                        if event_type == "stdout":
                             stdout_chunks.append(content)
                             if on_stdout:
                                 try:
@@ -2311,8 +2311,8 @@ class Instance(BaseModel):
                                 except Exception:
                                     # Log callback errors but don't interrupt stream
                                     pass
-                                    
-                        elif event_type == 'stderr':
+
+                        elif event_type == "stderr":
                             stderr_chunks.append(content)
                             if on_stderr:
                                 try:
@@ -2320,25 +2320,29 @@ class Instance(BaseModel):
                                 except Exception:
                                     # Log callback errors but don't interrupt stream
                                     pass
-                                    
-                        elif event_type == 'exit_code':
+
+                        elif event_type == "exit_code":
                             exit_code = int(content)
-                            
+
                     except (json.JSONDecodeError, KeyError, ValueError):
                         # Skip malformed events and continue processing
                         continue
         except Exception as e:
             # Convert HTTP timeout errors to more user-friendly TimeoutError
             if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                raise TimeoutError(
+                    f"Command execution timed out after {timeout} seconds"
+                ) from e
             # Re-raise other exceptions as-is
             raise
-        
-        return InstanceExecResponse.model_validate({
-            "exit_code": exit_code,
-            "stdout": ''.join(stdout_chunks),
-            "stderr": ''.join(stderr_chunks),
-        })
+
+        return InstanceExecResponse.model_validate(
+            {
+                "exit_code": exit_code,
+                "stdout": "".join(stdout_chunks),
+                "stderr": "".join(stderr_chunks),
+            }
+        )
 
     async def aexec(
         self,
@@ -2348,22 +2352,22 @@ class Instance(BaseModel):
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance asynchronously.
-        
+
         Args:
             command: Command to execute (string or list of strings)
             timeout: Optional timeout in seconds
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
-            
+
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
-            
+
         Note:
             If on_stdout or on_stderr callbacks are provided, the SSE streaming endpoint
             will be used for real-time output. Otherwise, the traditional endpoint is used.
         """
         command = [command] if isinstance(command, str) else command
-        
+
         # Smart endpoint selection: use streaming if callbacks provided
         if on_stdout is not None or on_stderr is not None:
             return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
@@ -2379,7 +2383,9 @@ class Instance(BaseModel):
             except Exception as e:
                 # Convert HTTP timeout errors to more user-friendly TimeoutError
                 if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                    raise TimeoutError(
+                        f"Command execution timed out after {timeout} seconds"
+                    ) from e
                 # Re-raise other exceptions as-is
                 raise
 
@@ -2391,19 +2397,19 @@ class Instance(BaseModel):
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
         """Execute command using SSE streaming endpoint asynchronously."""
-        
+
         # Prepare headers for SSE
         headers = {
             "Accept": "text/event-stream",
             "Authorization": f"Bearer {self._api._client.api_key}",
             "Content-Type": "application/json",
         }
-        
+
         # Accumulate output for final response
         stdout_chunks = []
         stderr_chunks = []
         exit_code = 0
-        
+
         # Make streaming request
         try:
             async with self._api._client._async_http_client.stream(
@@ -2414,27 +2420,27 @@ class Instance(BaseModel):
                 timeout=timeout,
             ) as response:
                 response.raise_for_status()
-            
+
                 async for line in response.aiter_lines():
                     if not line.strip():
                         continue
-                        
+
                     # Skip lines that don't start with 'data: '
-                    if not line.startswith('data: '):
+                    if not line.startswith("data: "):
                         continue
-                        
+
                     data_content = line[6:]  # Remove 'data: ' prefix
-                    
+
                     # Check for stream end
-                    if data_content.strip() == '[DONE]':
+                    if data_content.strip() == "[DONE]":
                         break
-                        
+
                     try:
                         event = json.loads(data_content)
-                        event_type = event.get('type')
-                        content = event.get('content', '')
-                        
-                        if event_type == 'stdout':
+                        event_type = event.get("type")
+                        content = event.get("content", "")
+
+                        if event_type == "stdout":
                             stdout_chunks.append(content)
                             if on_stdout:
                                 try:
@@ -2442,8 +2448,8 @@ class Instance(BaseModel):
                                 except Exception:
                                     # Log callback errors but don't interrupt stream
                                     pass
-                                    
-                        elif event_type == 'stderr':
+
+                        elif event_type == "stderr":
                             stderr_chunks.append(content)
                             if on_stderr:
                                 try:
@@ -2451,25 +2457,29 @@ class Instance(BaseModel):
                                 except Exception:
                                     # Log callback errors but don't interrupt stream
                                     pass
-                                    
-                        elif event_type == 'exit_code':
+
+                        elif event_type == "exit_code":
                             exit_code = int(content)
-                            
+
                     except (json.JSONDecodeError, KeyError, ValueError):
                         # Skip malformed events and continue processing
                         continue
         except Exception as e:
             # Convert HTTP timeout errors to more user-friendly TimeoutError
             if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(f"Command execution timed out after {timeout} seconds") from e
+                raise TimeoutError(
+                    f"Command execution timed out after {timeout} seconds"
+                ) from e
             # Re-raise other exceptions as-is
             raise
-        
-        return InstanceExecResponse.model_validate({
-            "exit_code": exit_code,
-            "stdout": ''.join(stdout_chunks),
-            "stderr": ''.join(stderr_chunks),
-        })
+
+        return InstanceExecResponse.model_validate(
+            {
+                "exit_code": exit_code,
+                "stdout": "".join(stdout_chunks),
+                "stderr": "".join(stderr_chunks),
+            }
+        )
 
     def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
         """Wait until the instance is ready."""
