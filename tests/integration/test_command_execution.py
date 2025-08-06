@@ -616,3 +616,53 @@ async def test_none_callback_vs_not_provided(test_instance):
     logger.info("None callback vs not provided test passed")
 
 
+async def test_exec_with_array_command_format(test_instance):
+    """Test command execution with array format ['cmd', 'arg1', 'arg2']."""
+    logger.info("Testing command execution with array format")
+    
+    stdout_chunks = []
+    
+    def capture_stdout(content):
+        stdout_chunks.append(content)
+        logger.info(f"Array command output: {content.strip()}")
+    
+    # Test array command format with streaming
+    array_command = ["ls", "-la", "/tmp"]
+    logger.info(f"Executing array command with streaming: {array_command}")
+    
+    result = await test_instance.aexec(array_command, on_stdout=capture_stdout)
+    
+    # Verify command executed successfully
+    assert result.exit_code == 0, "Array command should execute successfully"
+    logger.info("Array command with streaming executed successfully")
+    
+    # Verify we got output
+    assert len(stdout_chunks) > 0, "Should have received output from array command"
+    
+    full_output = ''.join(stdout_chunks)
+    # Should contain directory listing information
+    assert ('total' in full_output or 'drwx' in full_output or 
+            'tmp' in full_output), "Should contain directory listing output"
+    
+    # Test array command format without streaming (traditional endpoint)
+    array_command2 = ["echo", "Array command test"]
+    logger.info(f"Executing array command without streaming: {array_command2}")
+    
+    result2 = await test_instance.aexec(array_command2)
+    
+    # Verify command executed successfully
+    assert result2.exit_code == 0, "Array command should execute successfully"
+    assert "Array command test" in result2.stdout, "Should contain expected output"
+    
+    # Test complex array command with multiple arguments
+    array_command3 = ["grep", "-r", "test", "/tmp", "/var/tmp"]
+    logger.info(f"Executing complex array command: {array_command3}")
+    
+    result3 = await test_instance.aexec(array_command3)
+    
+    # Command may fail if no files found, but should not crash
+    assert result3.exit_code in [0, 1, 2], "Array command should execute without crashing"
+    
+    logger.info("Array command format test successful")
+
+
