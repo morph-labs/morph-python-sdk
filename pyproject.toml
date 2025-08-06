@@ -1,6 +1,6 @@
 [project]
 name = "morphcloud"
-version = "0.1.84"
+version = "0.1.85"
 description = "A Python SDK and CLI tool for creating, managing, and interacting with Morph Cloud VMs."
 authors = [
     {name = "Morph Labs", email = "jobs@morph.so"}
@@ -46,3 +46,9 @@ morphcloud = "morphcloud.cli:cli"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+]
