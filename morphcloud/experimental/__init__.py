@@ -243,21 +243,20 @@ class Snapshot:
             for s in snaps:
                 if invalidate_fn(Snapshot(s)):
                     s.delete()
+        digest = f"{name}-{image_id}-{vcpus}-{memory}-{disk_size}"
         snap = client.snapshots.create(
             image_id=image_id,
             vcpus=vcpus,
             memory=memory,
             disk_size=disk_size,
-            digest=name,
+            digest=digest,
             metadata={"name": name},
         )
         return cls(snap)
 
     @classmethod
     def from_snapshot_id(cls, snapshot_id: str) -> "Snapshot":
-        logger.info(
-            "🔍 Snapshot.from_snapshot_id()", extra={"snapshot_id": snapshot_id}
-        )
+        logger.info("🔍 Snapshot.from_snapshot_id()", extra={"snapshot_id": snapshot_id})
         snap = client.snapshots.get(snapshot_id)
         return cls(snap)
 
@@ -397,9 +396,7 @@ class Snapshot:
     def run(
         self, command: str, debug: bool = False, invalidate: InvalidateFn | bool = False
     ):
-        logger.info(
-            "🚀 Snapshot.run()", extra={"command": command, "debug_mode": debug}
-        )
+        logger.info("🚀 Snapshot.run()", extra={"command": command, "debug_mode": debug})
 
         def execute(instance):
             logger.info(
@@ -618,9 +615,7 @@ class Snapshot:
             return all_ok
 
         def run_verification(instance):
-            logger.info(
-                "🔍 Starting verification", extra={"instructions": instructions}
-            )
+            logger.info("🔍 Starting verification", extra={"instructions": instructions})
             success = verifier(instance)
             if not success:
                 raise Exception("Verification failed.")
