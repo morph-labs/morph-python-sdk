@@ -525,7 +525,7 @@ def list_instances(metadata, json_mode):
             total_vcpus = 0
             total_memory_mb = 0
             total_disk_mb = 0
-            
+
             for inst in instances:
                 rows.append(
                     [
@@ -546,13 +546,22 @@ def list_instances(metadata, json_mode):
                 total_vcpus += inst.spec.vcpus
                 total_memory_mb += inst.spec.memory
                 total_disk_mb += inst.spec.disk_size
-            
+
             # Add totals row if there are instances
             if instances:
                 # Add a separator row (dashes)
-                separator_row = ["─" * 10, "─" * 10, "─" * 10, "─" * 10, "─" * 5, "─" * 10, "─" * 10, "─" * 10]
+                separator_row = [
+                    "─" * 10,
+                    "─" * 10,
+                    "─" * 10,
+                    "─" * 10,
+                    "─" * 5,
+                    "─" * 10,
+                    "─" * 10,
+                    "─" * 10,
+                ]
                 rows.append(separator_row)
-                
+
                 # Add totals row
                 totals_row = [
                     f"{len(instances)} instances",  # Total count in ID column
@@ -562,13 +571,14 @@ def list_instances(metadata, json_mode):
                     total_vcpus,  # Total vCPUs
                     f"{total_memory_mb / 1024:.1f} GB",  # Memory in GB
                     f"{total_disk_mb / 1024:.1f} GB",  # Disk in GB
-                    ""  # Blank HTTP services
+                    "",  # Blank HTTP services
                 ]
                 rows.append(totals_row)
-            
+
             print_docker_style_table(headers, rows)
     except Exception as e:
-        handle_api_error(e)        
+        handle_api_error(e)
+
 
 @instance.command("start")
 @click.argument("snapshot_id")

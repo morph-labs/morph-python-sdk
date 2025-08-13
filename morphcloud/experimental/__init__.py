@@ -256,7 +256,9 @@ class Snapshot:
 
     @classmethod
     def from_snapshot_id(cls, snapshot_id: str) -> "Snapshot":
-        logger.info("🔍 Snapshot.from_snapshot_id()", extra={"snapshot_id": snapshot_id})
+        logger.info(
+            "🔍 Snapshot.from_snapshot_id()", extra={"snapshot_id": snapshot_id}
+        )
         snap = client.snapshots.get(snapshot_id)
         return cls(snap)
 
@@ -396,7 +398,9 @@ class Snapshot:
     def run(
         self, command: str, debug: bool = False, invalidate: InvalidateFn | bool = False
     ):
-        logger.info("🚀 Snapshot.run()", extra={"command": command, "debug_mode": debug})
+        logger.info(
+            "🚀 Snapshot.run()", extra={"command": command, "debug_mode": debug}
+        )
 
         def execute(instance):
             logger.info(
@@ -615,7 +619,9 @@ class Snapshot:
             return all_ok
 
         def run_verification(instance):
-            logger.info("🔍 Starting verification", extra={"instructions": instructions})
+            logger.info(
+                "🔍 Starting verification", extra={"instructions": instructions}
+            )
             success = verifier(instance)
             if not success:
                 raise Exception("Verification failed.")
