@@ -5,6 +5,8 @@ Released under the license as described in the file LICENSE.
 
 import importlib.metadata
 
+from morphcloud.api import MorphCloudClient
+
 try:
     __version__ = importlib.metadata.version("morphcloud")
 except importlib.metadata.PackageNotFoundError:
