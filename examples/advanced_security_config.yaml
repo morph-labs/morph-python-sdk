@@ -1,0 +1,439 @@
+# Advanced Security & Performance Configuration
+# This file demonstrates the comprehensive security and performance features
+# implemented in the morph-python-sdk
+
+# Container Security Configuration
+container_security:
+  security_level: "paranoid"  # paranoid, high, medium, low
+  isolation_type: "maximum"    # maximum, enhanced, basic, none
+  enable_scanning: true
+  enable_runtime_protection: true
+  enable_resource_monitoring: true
+  enable_threat_detection: true
+  allow_privileged: false
+  allow_host_network: false
+  allow_host_pid: false
+  allow_host_uts: false
+  allow_host_mount: false
+  allow_host_ipc: false
+  scan_timeout: 600  # 10 minutes
+  max_scan_retries: 5
+  
+  resource_limits:
+    memory_mb: 2048
+    cpu_quota: 100000
+    cpu_period: 100000
+    network_bandwidth_mbps: 100
+    disk_read_mbps: 50
+    disk_write_mbps: 50
+    max_processes: 100
+    max_file_descriptors: 1024
+    max_open_files: 1000
+    max_network_connections: 50
+    max_socket_connections: 100
+  
+  security_profile:
+    seccomp_profile: "paranoid"
+    apparmor_profile: "restrictive"
+    selinux_policy: "enforcing"
+    capabilities: []
+    read_only_root: true
+    no_new_privileges: true
+    user_namespace: true
+    network_namespace: true
+    pid_namespace: true
+    uts_namespace: true
+    mount_namespace: true
+    ipc_namespace: true
+    seccomp_audit: true
+    apparmor_audit: true
+  
+  threat_detection:
+    enable_behavioral_analysis: true
+    enable_network_analysis: true
+    enable_file_activity_monitoring: true
+    enable_process_monitoring: true
+    suspicious_patterns:
+      - "rm -rf /"
+      - "dd if=/dev/zero"
+      - "format c:"
+      - "del /s /q"
+      - "chmod 777"
+      - "chown root:root"
+    network_blacklist:
+      - "tor2web.org"
+      - "anonymous-proxy.com"
+      - "malicious-domain.com"
+    file_extensions_blacklist:
+      - ".exe"
+      - ".bat"
+      - ".cmd"
+      - ".scr"
+      - ".pif"
+      - ".vbs"
+
+# Zero-Trust Architecture Configuration
+zero_trust:
+  trust_level: "high"  # trusted, high, medium, low, untrusted
+  authentication_method: "mtls"  # mtls, oauth2, saml, api_key
+  enable_service_mesh: true
+  enable_api_gateway: true
+  enable_secret_management: true
+  jwt_expiry_hours: 12
+  
+  rate_limit_config:
+    requests_per_minute: 100
+    requests_per_hour: 1000
+    requests_per_day: 10000
+    enable_ddos_protection: true
+    ddos_threshold: 50
+    block_duration: 300  # 5 minutes
+  
+  service_mesh:
+    enable_mtls: true
+    certificate_authority: "morphcloud-ca"
+    service_discovery: true
+    load_balancing: true
+    circuit_breaker: true
+    retry_policy: true
+  
+  api_gateway:
+    enable_rate_limiting: true
+    enable_authentication: true
+    enable_authorization: true
+    enable_logging: true
+    enable_metrics: true
+    cors_enabled: true
+    cors_origins: ["https://app.morphcloud.com"]
+  
+  secret_management:
+    backend: "hashicorp_vault"  # hashicorp_vault, aws_secrets_manager, azure_key_vault
+    vault_url: "https://vault.morphcloud.com"
+    aws_region: "us-west-2"
+    enable_key_rotation: true
+    key_rotation_interval_days: 90
+    enable_encryption: true
+    encryption_algorithm: "AES-256-GCM"
+
+# Advanced Performance Configuration
+performance:
+  gpu_type: "cuda"  # cuda, opencl, cpu, none
+  optimization_level: "maximum"  # maximum, advanced, basic, none
+  enable_gpu_acceleration: true
+  enable_memory_mapping: true
+  enable_async_optimization: true
+  enable_coroutine_optimization: true
+  enable_distributed_computing: true
+  enable_caching_clusters: true
+  enable_queue_management: true
+  
+  max_workers: 16
+  max_processes: 8
+  memory_mapping_threshold: 1048576  # 1MB
+  gpu_memory_limit: 2147483648  # 2GB
+  async_buffer_size: 16384
+  coroutine_batch_size: 200
+  
+  cache_backend: "redis"  # memory, redis, memcached
+  queue_backend: "rabbitmq"  # memory, rabbitmq, kafka
+  
+  redis:
+    url: "redis://localhost:6379"
+    max_connections: 100
+    connection_timeout: 5
+    read_timeout: 10
+  
+  memcached:
+    servers: ["localhost:11211"]
+    max_connections: 50
+    connection_timeout: 5
+  
+  rabbitmq:
+    url: "amqp://guest:guest@localhost:5672/"
+    max_connections: 50
+    connection_timeout: 5
+    heartbeat: 60
+  
+  kafka:
+    bootstrap_servers: ["localhost:9092"]
+    max_connections: 50
+    connection_timeout: 5
+    enable_auto_commit: false
+  
+  distributed_computing:
+    enable_load_balancing: true
+    enable_failover: true
+    enable_health_checks: true
+    health_check_interval: 30
+    max_retries: 3
+    retry_delay: 5
+
+# Supply Chain Security Configuration
+supply_chain_security:
+  security_level: "critical"  # critical, high, medium, low
+  enable_dependency_scanning: true
+  enable_build_analysis: true
+  enable_package_verification: true
+  enable_typosquatting_detection: true
+  enable_license_checking: true
+  enable_ci_cd_analysis: true
+  enable_credential_scanning: true
+  enable_unsafe_command_detection: true
+  
+  checksum_verification: true
+  gpg_verification: true
+  signature_verification: true
+  
+  vulnerability_databases:
+    - "nvd"
+    - "ghsa"
+    - "pyup"
+    - "safety"
+    - "bandit"
+  
+  license_whitelist:
+    - "MIT"
+    - "Apache-2.0"
+    - "BSD-3-Clause"
+    - "ISC"
+    - "Unlicense"
+  
+  license_blacklist:
+    - "GPL-3.0"
+    - "AGPL-3.0"
+    - "SSPL-1.0"
+  
+  suspicious_patterns:
+    - "eval("
+    - "exec("
+    - "os.system("
+    - "subprocess.call("
+    - "pickle.loads("
+    - "yaml.load("
+  
+  credential_patterns:
+    - "password.*=.*['\"][^'\"]+['\"]"
+    - "api_key.*=.*['\"][^'\"]+['\"]"
+    - "secret.*=.*['\"][^'\"]+['\"]"
+    - "token.*=.*['\"][^'\"]+['\"]"
+  
+  unsafe_commands:
+    - "rm -rf"
+    - "del /s /q"
+    - "format"
+    - "fdisk"
+    - "dd"
+    - "mkfs"
+
+# Runtime Security Configuration
+runtime_security:
+  security_level: "high"  # high, medium, low, paranoid
+  enable_memory_protection: true
+  enable_race_detection: true
+  enable_resource_monitoring: true
+  enable_buffer_overflow_detection: true
+  enable_memory_leak_detection: true
+  enable_thread_safety_analysis: true
+  enable_dos_protection: true
+  
+  memory_threshold_mb: 2048
+  cpu_threshold_percent: 85.0
+  file_descriptor_limit: 2000
+  thread_limit: 200
+  stack_size_limit_mb: 16
+  heap_size_limit_mb: 1024
+  monitoring_interval: 0.5  # 500ms
+  alert_threshold: 3
+  
+  memory_protection:
+    enable_stack_protection: true
+    enable_heap_protection: true
+    enable_buffer_overflow_protection: true
+    enable_memory_leak_detection: true
+    enable_use_after_free_detection: true
+  
+  race_detection:
+    enable_thread_monitoring: true
+    enable_lock_detection: true
+    enable_deadlock_detection: true
+    enable_data_race_detection: true
+  
+  dos_protection:
+    enable_rate_limiting: true
+    enable_connection_limiting: true
+    enable_resource_limiting: true
+    enable_pattern_detection: true
+    max_requests_per_second: 100
+    max_connections_per_ip: 50
+    block_duration: 300
+
+# Network Security Configuration
+network_security:
+  security_level: "high"  # high, medium, low, paranoid
+  enable_protocol_analysis: true
+  enable_tls_analysis: true
+  enable_network_monitoring: true
+  enable_intrusion_detection: true
+  enable_traffic_analysis: true
+  enable_firewall_rules: true
+  enable_network_segmentation: true
+  
+  monitoring_interval: 1.0
+  alert_threshold: 5
+  max_connections_per_ip: 100
+  
+  tls_config:
+    min_tls_version: "TLSv1.2"
+    max_tls_version: "TLSv1.3"
+    allowed_ciphers:
+      - "TLS_AES_256_GCM_SHA384"
+      - "TLS_AES_128_GCM_SHA256"
+      - "TLS_CHACHA20_POLY1305_SHA256"
+    disallowed_ciphers:
+      - "TLS_RSA_WITH_AES_128_CBC_SHA"
+      - "TLS_RSA_WITH_AES_256_CBC_SHA"
+      - "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+  
+  firewall_rules:
+    default_policy: "DROP"
+    allowed_ports: [22, 80, 443, 8080, 8443]
+    allowed_protocols: ["TCP", "UDP"]
+    blocked_ips: []
+    allowed_ips: []
+  
+  network_segmentation:
+    enable_vlans: true
+    enable_microsegmentation: true
+    enable_network_isolation: true
+    segments:
+      - name: "dmz"
+        network: "10.0.1.0/24"
+        allowed_services: ["http", "https"]
+      - name: "internal"
+        network: "10.0.2.0/24"
+        allowed_services: ["ssh", "database"]
+      - name: "management"
+        network: "10.0.3.0/24"
+        allowed_services: ["ssh", "monitoring"]
+  
+  suspicious_patterns:
+    - "(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION)\b)"
+    - "(<script|javascript:|vbscript:|onload=|onerror=)"
+    - "(\\.\\./|\\.\\\\)"
+    - "(\b(cmd|powershell|bash|sh|exec|system)\b)"
+    - "(union.*select|select.*union)"
+    - "(javascript:|vbscript:|data:text/html)"
+
+# Data Security Configuration
+data_security:
+  security_level: "high"  # high, medium, low, paranoid
+  enable_encryption: true
+  enable_data_sanitization: true
+  enable_audit_logging: true
+  enable_data_classification: true
+  enable_data_masking: true
+  
+  encryption_config:
+    encryption_type: "symmetric"  # symmetric, asymmetric, hash, hmac
+    key_size: 256
+    algorithm: "AES"
+    key_derivation_rounds: 100000
+    salt_length: 32
+    iv_length: 16
+    enable_key_rotation: true
+    key_rotation_interval_days: 90
+    master_key_path: "/etc/morphcloud/keys/master.key"
+  
+  sanitization_config:
+    enable_input_validation: true
+    enable_output_sanitization: true
+    enable_sql_injection_protection: true
+    enable_xss_protection: true
+    enable_path_traversal_protection: true
+    enable_command_injection_protection: true
+    allowed_file_extensions: [".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx"]
+    max_file_size_mb: 10
+    sanitization_patterns:
+      sql_injection: "(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION)\b)"
+      xss: "(<script|javascript:|vbscript:|onload=|onerror=)"
+      path_traversal: "(\\.\\./|\\.\\\\)"
+      command_injection: "(\b(cmd|powershell|bash|sh|exec|system)\b)"
+  
+  sensitive_patterns:
+    - "\\b\\d{4}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"  # Credit card
+    - "\\b\\d{3}-\\d{2}-\\d{4}\\b"  # SSN
+    - "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"  # Email
+    - "\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b"  # IP address
+    - "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3[0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\\b"  # Credit card patterns
+  
+  audit_logging:
+    audit_log_path: "logs/data_security.log"
+    max_log_size_mb: 200
+    log_retention_days: 730  # 2 years
+    enable_structured_logging: true
+    enable_log_encryption: true
+    enable_log_compression: true
+  
+  data_classification:
+    enable_auto_classification: true
+    classification_levels:
+      - "public"
+      - "internal"
+      - "confidential"
+      - "restricted"
+      - "secret"
+    default_classification: "internal"
+    enable_watermarking: true
+    enable_data_masking: true
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: "logs/morphcloud.log"
+  max_file_size_mb: 100
+  backup_count: 10
+  enable_console: true
+  enable_file: true
+  enable_syslog: false
+  enable_structured_logging: true
+  
+  security_logging:
+    enable_security_events: true
+    enable_audit_trail: true
+    enable_threat_logging: true
+    security_log_path: "logs/security.log"
+    max_security_log_size_mb: 200
+    security_log_retention_days: 365
+
+# Monitoring Configuration
+monitoring:
+  enable_metrics: true
+  enable_health_checks: true
+  enable_alerting: true
+  enable_dashboard: true
+  
+  metrics:
+    backend: "prometheus"  # prometheus, statsd, influxdb
+    prometheus_port: 9090
+    statsd_host: "localhost"
+    statsd_port: 8125
+    collection_interval: 15  # seconds
+  
+  health_checks:
+    enable_self_health_check: true
+    health_check_interval: 30  # seconds
+    health_check_timeout: 10  # seconds
+    max_consecutive_failures: 3
+  
+  alerting:
+    enable_email_alerts: false
+    enable_slack_alerts: false
+    enable_pagerduty_alerts: false
+    alert_threshold: 5
+    alert_cooldown: 300  # 5 minutes
+
+# Environment Configuration
+environment: "production"  # development, staging, production, testing
+debug_mode: false
+config_file_path: null

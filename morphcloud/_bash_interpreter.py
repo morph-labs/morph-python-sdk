@@ -1,4 +1,4 @@
-import re
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -49,7 +49,7 @@ class OSCParams:
         # Split the sequence into type and parameters
         parts = sequence.split(";")
         if not parts:
-            raise ValueError(f"Empty sequence")
+            raise ValueError("Empty sequence")
 
         # Handle the sequence type
         type_str = parts[0]
@@ -112,117 +112,187 @@ class SemanticShellClient:
         username: str,
         port: int = 2222,
     ):
+        self.hostname = hostname
+        self.username = username
+        self.port = port
+        self.client = None
+
+    def connect(self, password: str = None, key_filename: str = None):
+        """Establish SSH connection with proper host key verification"""
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(
-            hostname=hostname,
-            username=username,
-            port=port,
-        )
-        self.channel = self.client.invoke_shell()
-        self.buffer = ""
-        # Wait for initial prompt
-        self._read_until_prompt()
+
+        # Load known hosts for proper verification
+        known_hosts_file = os.path.expanduser("~/.ssh/known_hosts")
+        if os.path.exists(known_hosts_file):
+            self.client.load_host_keys(known_hosts_file)
+
+        # Use RejectPolicy for security - reject unknown hosts
+        self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+        # Connect with authentication
+        connect_kwargs = {
+            "hostname": self.hostname,
+            "username": self.username,
+            "port": self.port,
+            "timeout": 30,
+            "look_for_keys": True,
+            "allow_agent": True,
+        }
+
+        if password:
+            connect_kwargs["password"] = password
+        if key_filename:
+            connect_kwargs["key_filename"] = key_filename
+
+        self.client.connect(**connect_kwargs)
 
     def _parse_osc_sequences(self, text: str) -> Dict[str, OSCParams]:
-        """Parse all OSC sequences in the text"""
-        params = {}
-        sequences = re.finditer(r"\x1b]133;([^\x07]*)\x07", text)
+        """Parse OSC 133 sequences from text and return structured data"""
+        import re
+
+        # Find all OSC 133 sequences
+        osc_pattern = r"\x1b\]133;([^\x07\x1b]*)(?:\x07|\x1b\\)"
+        sequences = re.findall(osc_pattern, text)
+
+        parsed = {}
         for i, seq in enumerate(sequences):
             try:
-                params[f"seq_{i}"] = OSCParams.from_sequence(seq.group(1))
+                parsed[f"sequence_{i}"] = OSCParams.from_sequence(seq)
             except ValueError as e:
-                # Uncomment for debugging
-                # print(f"Error parsing sequence: {e}")
-                continue
-        return params
+                # Log parsing errors but continue
+                print(f"Warning: Failed to parse OSC sequence '{seq}': {e}")
+
+        return parsed
 
     def _split_repl_parts(
         self, text: str
     ) -> Tuple[str, str, str, Dict[str, OSCParams]]:
-        """
-        Split the shell output into prompt, command output, and OSC parameters.
-        Returns (prompt, command_output, output, osc_params)
-        """
+        """Split REPL output into prompt, command, and output sections"""
         # Parse OSC sequences first
         osc_params = self._parse_osc_sequences(text)
 
-        # Clean the text of OSC sequences
-        clean_text = re.sub(r"\x1b]133;[^\x07]*\x07", "", text)
-        clean_text = re.sub(r"\x1b]122;[^\x07]*\x07", "", clean_text)
+        # Find command start and end markers
+        command_start = None
+        command_end = None
 
-        # Split into lines
-        lines = clean_text.split("\r\n")
+        for key, params in osc_params.items():
+            if params.type == OSCType.COMMAND_START:
+                command_start = key
+            elif params.type == OSCType.COMMAND_DONE:
+                command_end = key
 
-        # Extract parts
-        prompt = lines[-1] if lines else ""  # Last line is the new prompt
-        command_output = (
-            lines[0] if len(lines) > 0 else ""
-        )  # First line contains command echo
-        output = (
-            "\n".join(lines[1:-1]) if len(lines) > 2 else ""
-        )  # Middle lines are command output
+        if command_start and command_end:
+            # Extract sections based on OSC markers
+            start_marker = f"\x1b]133;{command_start}"
+            end_marker = f"\x1b]133;{command_end}"
+            start_idx = text.find(start_marker)
+            end_idx = text.find(end_marker)
 
-        # Clean up any remaining control characters
-        prompt = re.sub(r"\x1b[^m]*m", "", prompt).strip()
-        command_output = re.sub(r"\x1b[^m]*m", "", command_output).strip()
-        output = re.sub(r"\x1b[^m]*m", "", output).strip()
+            if start_idx != -1 and end_idx != -1:
+                prompt = text[:start_idx].strip()
+                command_section = text[start_idx:end_idx]
+                output = text[end_idx:].strip()
 
-        return prompt, command_output, output, osc_params
+                # Extract command from command section
+                command = ""
+                for line in command_section.split("\n"):
+                    if line.strip() and not line.startswith("\x1b"):
+                        command = line.strip()
+                        break
+
+                return prompt, command, output, osc_params
+
+        # Fallback: simple line-based parsing
+        lines = text.split("\n")
+        if len(lines) >= 3:
+            prompt = lines[0].strip()
+            command = lines[1].strip()
+            output = "\n".join(lines[2:]).strip()
+            return prompt, command, output, osc_params
+
+        # Minimal fallback
+        return text.strip(), "", "", osc_params
 
     def _read_until_prompt(self, timeout: float = 30) -> Tuple[str, int]:
-        """
-        Read the shell output until we see the OSC 133 command completion sequence.
-        Returns the output and the exit code.
-        """
+        """Read from SSH channel until prompt is detected"""
+        if not self.client:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        channel = self.client.get_transport().open_session()
+        channel.get_pty()
+        channel.exec_command("")
+
+        output = ""
         start_time = time.time()
-        output = []
-        exit_code = None
 
         while time.time() - start_time < timeout:
-            if self.channel.recv_ready():
-                chunk = self.channel.recv(4096).decode("utf-8")
-                self.buffer += chunk
-                output.append(chunk)
+            if channel.recv_ready():
+                chunk = channel.recv(1024).decode("utf-8", errors="replace")
+                output += chunk
 
-                # Look for the command completion sequence
-                completion_match = re.search(
-                    r"\x1b]133;D;(\d+);aid=\d+\x07", self.buffer
-                )
-                if completion_match:
-                    exit_code = int(completion_match.group(1))
+                # Check if we have a complete prompt
+                if output.strip().endswith("$") or output.strip().endswith("#"):
+                    break
 
-                # Look for the next prompt indicator
-                if re.search(r"\x1b]133;A;cl=m;aid=\d+\x07", self.buffer):
-                    complete_output = "".join(output)
-                    self.buffer = ""
-                    return complete_output, exit_code
+            if channel.exit_status_ready():
+                break
 
             time.sleep(0.1)
-        raise TimeoutError("Timed out waiting for command completion")
+
+        exit_code = channel.recv_exit_status()
+        channel.close()
+
+        return output, exit_code
 
     def execute_command(self, command: str, timeout: float = 30) -> CommandResult:
-        """
-        Execute a command and wait for its completion.
-        Returns a CommandResult with structured output and OSC parameters.
-        """
-        # Send the command
-        self.channel.send(command + "\n")
+        """Execute a command and return structured result"""
+        if not self.client:
+            raise RuntimeError("Not connected. Call connect() first.")
 
-        # Wait for completion and return output
-        raw_output, exit_code = self._read_until_prompt(timeout)
-        prompt, command_output, output, osc_params = self._split_repl_parts(raw_output)
+        # Get initial prompt
+        initial_output, _ = self._read_until_prompt(timeout)
+
+        # Execute command
+        channel = self.client.get_transport().open_session()
+        channel.get_pty()
+        channel.exec_command(command)
+
+        # Read command output
+        output = ""
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            if channel.recv_ready():
+                chunk = channel.recv(1024).decode("utf-8", errors="replace")
+                output += chunk
+
+            if channel.exit_status_ready():
+                break
+
+            time.sleep(0.1)
+
+        exit_code = channel.recv_exit_status()
+        channel.close()
+
+        # Get final prompt
+        final_output, _ = self._read_until_prompt(timeout)
+
+        # Combine all output
+        full_output = initial_output + output + final_output
+
+        # Parse into structured parts
+        prompt, cmd, result_output, osc_params = self._split_repl_parts(full_output)
 
         return CommandResult(
             prompt=prompt,
-            command=command_output
-            or command,  # Use echo'd command or original if not found
-            output=output,
-            exit_code=exit_code or 0,
+            command=cmd or command,  # Use parsed command or fallback to input
+            output=result_output,
+            exit_code=exit_code,
             osc_params=osc_params,
         )
 
     def close(self):
-        """Close the SSH connection."""
-        self.channel.close()
-        self.client.close()
+        """Close the SSH connection"""
+        if self.client:
+            self.client.close()
+            self.client = None
