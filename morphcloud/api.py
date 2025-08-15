@@ -910,8 +910,8 @@ class Snapshot(BaseModel):
         max_len: int = 120,
     ) -> str:
         """Nice one-line label for a step when printing 'skipped' lists."""
-        import inspect
         import hashlib
+        import inspect
 
         if isinstance(step, str):
             s = step.strip().replace("\n", "\\n")
@@ -937,18 +937,14 @@ class Snapshot(BaseModel):
           fn.__name__ + str(args) + str(kwargs)
         For shell steps, kwargs must render as a PLAIN dict (not OrderedDict).
         """
-        import inspect
         import hashlib
+        import inspect
 
         if isinstance(step, str):
             # Must match Snapshot.exec(...)/_cache_effect bit-for-bit:
             # fn=_run_command_effect, args=(), kwargs={"command": step, "background": False, "get_pty": True}
             kwargs = {"command": step, "background": False, "get_pty": True}
-            return (
-                f"{self._run_command_effect.__name__}"
-                f"{str(())}"
-                f"{str(kwargs)}"
-            )
+            return f"{self._run_command_effect.__name__}" f"{str(())}" f"{str(kwargs)}"
         else:
             name = getattr(step, "__qualname__", getattr(step, "__name__", repr(step)))
             module = getattr(step, "__module__", "")
@@ -1011,7 +1007,6 @@ class Snapshot(BaseModel):
 
         return cached_len, last_snap
 
-    
     def build(
         self,
         steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
@@ -1170,7 +1165,7 @@ class Snapshot(BaseModel):
                         instance,
                         step,
                         False,  # background
-                        True,   # get_pty
+                        True,  # get_pty
                     )
                 else:
                     # Offload user callable to a thread
@@ -1196,7 +1191,7 @@ class Snapshot(BaseModel):
             except Exception as e:
                 console.print(f"[red]Warning: failed to stop instance: {e}[/red]")
 
-                
+
 class InstanceStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"
