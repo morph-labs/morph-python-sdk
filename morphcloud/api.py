@@ -904,7 +904,299 @@ class Snapshot(BaseModel):
             restart_policy=restart_policy,
         )
 
+    def _format_step_for_log(
+        self,
+        step: typing.Union[str, typing.Callable[[Instance], None]],
+        max_len: int = 120,
+    ) -> str:
+        """Nice one-line label for a step when printing 'skipped' lists."""
+        import inspect
+        import hashlib
 
+        if isinstance(step, str):
+            s = step.strip().replace("\n", "\\n")
+            if len(s) > max_len:
+                s = s[: max_len - 3] + "..."
+            return f"$ {s}"
+        else:
+            name = getattr(step, "__qualname__", getattr(step, "__name__", repr(step)))
+            module = getattr(step, "__module__", "")
+            try:
+                src = inspect.getsource(step)
+                src_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()[:10]
+            except Exception:
+                src_hash = "unknown"
+            return f"{module}.{name} (src:{src_hash})"
+
+    def _effect_identifier_for_step(
+        self,
+        step: typing.Union[str, typing.Callable[[Instance], None]],
+    ) -> str:
+        """
+        Build the effect-identifier string exactly like _cache_effect does:
+          fn.__name__ + str(args) + str(kwargs)
+        For shell steps, kwargs must render as a PLAIN dict (not OrderedDict).
+        """
+        import inspect
+        import hashlib
+
+        if isinstance(step, str):
+            # Must match Snapshot.exec(...)/_cache_effect bit-for-bit:
+            # fn=_run_command_effect, args=(), kwargs={"command": step, "background": False, "get_pty": True}
+            kwargs = {"command": step, "background": False, "get_pty": True}
+            return (
+                f"{self._run_command_effect.__name__}"
+                f"{str(())}"
+                f"{str(kwargs)}"
+            )
+        else:
+            name = getattr(step, "__qualname__", getattr(step, "__name__", repr(step)))
+            module = getattr(step, "__module__", "")
+            try:
+                src = inspect.getsource(step)
+                src_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
+            except Exception:
+                src_hash = hashlib.sha256(repr(step).encode("utf-8")).hexdigest()[:16]
+            # Mirror the simple pattern ("fn.__name__ + str(args) + str(kwargs)")
+            # Encode metadata in kwargs-like container (no real args/kwargs for the callable).
+            pseudo_kwargs = {"callable": f"{module}.{name}", "src": src_hash}
+            return f"{name}{str(())}{str(pseudo_kwargs)}"
+
+    def _compute_all_digests(
+        self,
+        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
+    ) -> typing.List[str]:
+        """
+        Compute the digest for EACH step sequentially starting from the ORIGINAL parent
+        (self.digest or self.id). This keeps indices aligned with the user’s list.
+        """
+        parent = self.digest or self.id
+        digests: typing.List[str] = []
+        for step in steps:
+            eff = self._effect_identifier_for_step(step)
+            parent = Snapshot.compute_chain_hash(parent, eff)
+            digests.append(parent)
+        return digests
+
+    def _scan_cached_prefix_with_digests(
+        self,
+        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
+        digests: typing.List[str],
+        list_func: typing.Callable[[str], typing.List["Snapshot"]],
+    ) -> typing.Tuple[int, typing.Optional["Snapshot"]]:
+        """
+        Given precomputed per-step digests, find the longest cached prefix.
+        Logs a concise summary of skipped steps (friendly names).
+        """
+        cached_len = 0
+        last_snap: typing.Optional["Snapshot"] = None
+
+        for i, d in enumerate(digests):
+            candidates = list_func(d)
+            if candidates:
+                cached_len = i + 1
+                last_snap = candidates[0]
+            else:
+                break
+
+        if cached_len > 0:
+            console.print(
+                f"[bold green]✅ Using cached snapshot[/bold green] "
+                f"through step [white]{cached_len}[/white] "
+                f"(digest [white]{digests[cached_len - 1]}[/white])."
+            )
+            console.print(f"[cyan]Skipping {cached_len} cached step(s):[/cyan]")
+            for idx in range(cached_len):
+                console.print(f"  {idx + 1}. {self._format_step_for_log(steps[idx])}")
+
+        return cached_len, last_snap
+
+    
+    def build(
+        self,
+        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
+    ) -> "Snapshot":
+        """
+        Run a list of steps using ONE ephemeral instance, snapshotting after each step.
+        Reuses the longest cached prefix and logs the skipped steps.
+        """
+        if not steps:
+            console.print(
+                "[cyan]Snapshot.build called with no steps; returning original snapshot.[/cyan]"
+            )
+            return self
+
+        console.print(
+            f"[bold blue]🧱 Starting build[/bold blue] from snapshot "
+            f"[white]{self.id}[/white] with [white]{len(steps)}[/white] step(s)."
+        )
+
+        # 1) Compute canonical digests for ALL steps from the ORIGINAL parent
+        all_digests = self._compute_all_digests(steps)
+
+        # 2) Find longest cached prefix and print a friendly skip summary
+        cached_len, last_cached = self._scan_cached_prefix_with_digests(
+            steps,
+            all_digests,
+            lambda d: self._api.list(digest=d),
+        )
+
+        # Fully cached build
+        if cached_len == len(steps):
+            return last_cached  # type: ignore[return-value]
+
+        # 3) Start ONE instance from the end of the cached prefix (or from self)
+        base_snapshot = last_cached or self
+        start_index = cached_len
+
+        instance = self._api._client.instances.start(base_snapshot.id)
+        try:
+            instance.wait_until_ready(timeout=300)
+
+            current_snapshot: typing.Optional["Snapshot"] = last_cached
+
+            # 4) Apply remaining steps, snapshotting with the precomputed per-step digest
+            for idx in range(start_index, len(steps)):
+                step = steps[idx]
+                desired_digest = all_digests[idx]
+
+                console.print(
+                    f"\n[bold]Step {idx + 1}/{len(steps)}[/bold] "
+                    f"→ {self._format_step_for_log(step)}"
+                )
+
+                if isinstance(step, str):
+                    # Execute as foreground PTY command (identical to .exec semantics)
+                    self._run_command_effect(
+                        instance, command=step, background=False, get_pty=True
+                    )
+                else:
+                    # Callable step
+                    step(instance)
+
+                console.print(
+                    f"[magenta]• Snapshotting step {idx + 1} with digest "
+                    f"[white]{desired_digest}[/white] ...[/magenta]"
+                )
+                current_snapshot = instance.snapshot(digest=desired_digest)
+
+            assert current_snapshot is not None
+            console.print(
+                f"\n[bold blue]🎉 Build complete[/bold blue] → final snapshot "
+                f"[white]{current_snapshot.id}[/white] "
+                f"(digest [white]{current_snapshot.digest}[/white])."
+            )
+            return current_snapshot
+
+        finally:
+            try:
+                instance.stop()
+            except Exception as e:
+                console.print(f"[red]Warning: failed to stop instance: {e}[/red]")
+
+    async def abuild(
+        self,
+        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
+    ) -> "Snapshot":
+        """
+        Async variant: same semantics as build(...), using async API calls and
+        offloading blocking work to threads where appropriate.
+        """
+        import asyncio
+
+        if not steps:
+            console.print(
+                "[cyan]Snapshot.abuild called with no steps; returning original snapshot.[/cyan]"
+            )
+            return self
+
+        console.print(
+            f"[bold blue]🧱 Starting async build[/bold blue] from snapshot "
+            f"[white]{self.id}[/white] with [white]{len(steps)}[/white] step(s)."
+        )
+
+        # 1) Compute canonical digests for ALL steps from the ORIGINAL parent
+        all_digests = self._compute_all_digests(steps)
+
+        # 2) Find longest cached prefix (async list) and print a friendly skip summary
+        cached_len = 0
+        last_cached: typing.Optional["Snapshot"] = None
+        for i, d in enumerate(all_digests):
+            candidates = await self._api.alist(digest=d)
+            if candidates:
+                cached_len = i + 1
+                last_cached = candidates[0]
+            else:
+                break
+
+        if cached_len > 0:
+            console.print(
+                f"[bold green]✅ Using cached snapshot[/bold green] "
+                f"through step [white]{cached_len}[/white] "
+                f"(digest [white]{all_digests[cached_len - 1]}[/white])."
+            )
+            console.print(f"[cyan]Skipping {cached_len} cached step(s):[/cyan]")
+            for idx in range(cached_len):
+                console.print(f"  {idx + 1}. {self._format_step_for_log(steps[idx])}")
+
+        # Fully cached build
+        if cached_len == len(steps):
+            return last_cached  # type: ignore[return-value]
+
+        # 3) Start ONE instance from the end of the cached prefix (or from self)
+        base_snapshot = last_cached or self
+        start_index = cached_len
+
+        instance = await self._api._client.instances.astart(base_snapshot.id)
+        try:
+            await instance.await_until_ready(timeout=300)
+
+            current_snapshot: typing.Optional["Snapshot"] = last_cached
+
+            # 4) Apply remaining steps, snapshotting with the precomputed per-step digest
+            for idx in range(start_index, len(steps)):
+                step = steps[idx]
+                desired_digest = all_digests[idx]
+
+                console.print(
+                    f"\n[bold]Step {idx + 1}/{len(steps)}[/bold] "
+                    f"→ {self._format_step_for_log(step)}"
+                )
+
+                if isinstance(step, str):
+                    # Offload the blocking SSH work to a thread
+                    await asyncio.to_thread(
+                        self._run_command_effect,
+                        instance,
+                        step,
+                        False,  # background
+                        True,   # get_pty
+                    )
+                else:
+                    # Offload user callable to a thread
+                    await asyncio.to_thread(step, instance)
+
+                console.print(
+                    f"[magenta]• Snapshotting step {idx + 1} with digest "
+                    f"[white]{desired_digest}[/white] ...[/magenta]"
+                )
+                current_snapshot = await instance.asnapshot(digest=desired_digest)
+
+            assert current_snapshot is not None
+            console.print(
+                f"\n[bold blue]🎉 Async build complete[/bold blue] → final snapshot "
+                f"[white]{current_snapshot.id}[/white] "
+                f"(digest [white]{current_snapshot.digest}[/white])."
+            )
+            return current_snapshot
+
+        finally:
+            try:
+                await instance.astop()
+            except Exception as e:
+                console.print(f"[red]Warning: failed to stop instance: {e}[/red]")
+
+                
 class InstanceStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"
