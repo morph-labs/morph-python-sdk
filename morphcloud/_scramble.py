@@ -1,5 +1,6 @@
 import array
 import random
+import secrets
 import shutil
 import threading
 import time
@@ -54,7 +55,10 @@ class TextScrambler:
         self._char_cache = array.array(
             "u",
             [
-                chr(random.randint(config.range[0], config.range[1]))
+                chr(
+                    secrets.randbelow(config.range[1] - config.range[0])
+                    + config.range[0]
+                )
                 for _ in range(1024)
             ],
         )

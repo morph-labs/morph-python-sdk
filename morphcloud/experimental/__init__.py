@@ -155,7 +155,12 @@ def ssh_stream(
     transport = ssh.get_transport()
     assert transport is not None, "SSH transport must be connected"
     chan = transport.open_session()
-    chan.exec_command(command)
+
+    # Sanitize command input to prevent injection
+    import shlex
+
+    sanitized_command = shlex.quote(command)
+    chan.exec_command(sanitized_command)
 
     while True:
         while chan.recv_ready():

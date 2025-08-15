@@ -1,0 +1,1154 @@
+{
+  "errors": [],
+  "generated_at": "2025-08-13T21:36:53Z",
+  "metrics": {
+    "_totals": {
+      "CONFIDENCE.HIGH": 29,
+      "CONFIDENCE.LOW": 7,
+      "CONFIDENCE.MEDIUM": 9,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 2,
+      "SEVERITY.LOW": 28,
+      "SEVERITY.MEDIUM": 15,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 9791,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 11,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_asyncify.py": {
+      "CONFIDENCE.HIGH": 2,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 287,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_bash_interpreter.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 1,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 172,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_llm.py": {
+      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 4,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 463,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_scramble.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 257,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_ssh.py": {
+      "CONFIDENCE.HIGH": 3,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 3,
+      "SEVERITY.MEDIUM": 2,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 423,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/_utils.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 81,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/api.py": {
+      "CONFIDENCE.HIGH": 7,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 3,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 1,
+      "SEVERITY.LOW": 7,
+      "SEVERITY.MEDIUM": 2,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 3008,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/cli.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1445,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/computer\\__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/computer\\_computer.py": {
+      "CONFIDENCE.HIGH": 2,
+      "CONFIDENCE.LOW": 6,
+      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 2,
+      "SEVERITY.MEDIUM": 8,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1494,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/experimental\\__init__.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 547,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/experimental\\browser.py": {
+      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 4,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 674,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/sandbox\\__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 2,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "morphcloud/sandbox\\_sandbox.py": {
+      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.LOW": 1,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 4,
+      "SEVERITY.MEDIUM": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 926,
+      "nosec": 0,
+      "skipped_tests": 0
+    }
+  },
+  "results": [
+    {
+      "code": "23 import sqlite3\n24 import subprocess\n25 import textwrap\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "morphcloud/_asyncify.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 24,
+      "line_range": [
+        24
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "205     new_globals.update(__ASYNCIFY_GLOBAL_MAP__)\n206     exec(code, new_globals)\n207 \n",
+      "col_offset": 4,
+      "end_col_offset": 27,
+      "filename": "morphcloud/_asyncify.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Use of exec detected.",
+      "line_number": 206,
+      "line_range": [
+        206
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b102_exec_used.html",
+      "test_id": "B102",
+      "test_name": "exec_used"
+    },
+    {
+      "code": "115         self.client = paramiko.SSHClient()\n116         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())\n117         self.client.connect(\n",
+      "col_offset": 8,
+      "end_col_offset": 73,
+      "filename": "morphcloud/_bash_interpreter.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 295,
+        "link": "https://cwe.mitre.org/data/definitions/295.html"
+      },
+      "issue_severity": "HIGH",
+      "issue_text": "Paramiko call with policy set to automatically trust the unknown host key.",
+      "line_number": 116,
+      "line_range": [
+        116
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b507_ssh_no_host_key_verification.html",
+      "test_id": "B507",
+      "test_name": "ssh_no_host_key_verification"
+    },
+    {
+      "code": "27     key = os.environ[\"ANTHROPIC_API_KEY\"]\n28     assert key, \"Anthropic API key cannot be an empty string\"\n29     return key\n",
+      "col_offset": 4,
+      "end_col_offset": 61,
+      "filename": "morphcloud/_llm.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 28,
+      "line_range": [
+        28
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "227             tool_input = json.loads(tool_input_json) if tool_input_json else {}\n228             assert current_tool_block is not None\n229             current_tool_block[\"input\"] = tool_input\n",
+      "col_offset": 12,
+      "end_col_offset": 49,
+      "filename": "morphcloud/_llm.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 228,
+      "line_range": [
+        228
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "344                     yaml.safe_dump(messages, f, sort_keys=False, allow_unicode=True)\n345             except Exception:\n346                 pass  # ignore write errors silently\n347 \n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "morphcloud/_llm.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 345,
+      "line_range": [
+        345,
+        346
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "409                             )\n410                         except Exception:\n411                             pass\n412 \n",
+      "col_offset": 24,
+      "end_col_offset": 32,
+      "filename": "morphcloud/_llm.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 410,
+      "line_range": [
+        410,
+        411
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "56             [\n57                 chr(random.randint(config.range[0], config.range[1]))\n58                 for _ in range(1024)\n",
+      "col_offset": 20,
+      "end_col_offset": 68,
+      "filename": "morphcloud/_scramble.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 330,
+        "link": "https://cwe.mitre.org/data/definitions/330.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Standard pseudo-random generators are not suitable for security/cryptographic purposes.",
+      "line_number": 57,
+      "line_range": [
+        57
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b311-random",
+      "test_id": "B311",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "64         if command:\n65             channel.exec_command(command)\n66         else:\n",
+      "col_offset": 12,
+      "end_col_offset": 41,
+      "filename": "morphcloud/_ssh.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible shell injection via Paramiko call, check inputs are properly sanitized.",
+      "line_number": 65,
+      "line_range": [
+        65
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b601_paramiko_calls.html",
+      "test_id": "B601",
+      "test_name": "paramiko_calls"
+    },
+    {
+      "code": "272                 channel.close()\n273             except:\n274                 pass\n275             try:\n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "morphcloud/_ssh.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 273,
+      "line_range": [
+        273,
+        274
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "276                 client_socket.close()\n277             except:\n278                 pass\n279 \n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "morphcloud/_ssh.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 277,
+      "line_range": [
+        277,
+        278
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "331                 pass\n332         except:\n333             pass\n334         self._thread.join()\n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/_ssh.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 332,
+      "line_range": [
+        332,
+        333
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "386         start = time.monotonic()\n387         channel.exec_command(command)\n388 \n",
+      "col_offset": 8,
+      "end_col_offset": 37,
+      "filename": "morphcloud/_ssh.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible shell injection via Paramiko call, check inputs are properly sanitized.",
+      "line_number": 387,
+      "line_range": [
+        387
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b601_paramiko_calls.html",
+      "test_id": "B601",
+      "test_name": "paramiko_calls"
+    },
+    {
+      "code": "177                 plugin_loader_func(self)\n178         except Exception:\n179             pass\n180 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 178,
+      "line_range": [
+        178,
+        179
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "520                 channel.get_pty(width=120, height=40)\n521             channel.exec_command(command)\n522 \n",
+      "col_offset": 12,
+      "end_col_offset": 41,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible shell injection via Paramiko call, check inputs are properly sanitized.",
+      "line_number": 521,
+      "line_range": [
+        521
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b601_paramiko_calls.html",
+      "test_id": "B601",
+      "test_name": "paramiko_calls"
+    },
+    {
+      "code": "988         if isinstance(snapshot_id, Snapshot):\n989             assert isinstance(snapshot_id, str), \"start(...) excepts a snapshot_id: str\"\n990         response = self._client._http_client.post(\n",
+      "col_offset": 12,
+      "end_col_offset": 88,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 989,
+      "line_range": [
+        989
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "1036         if isinstance(snapshot_id, Snapshot):\n1037             assert isinstance(snapshot_id, str), \"start(...) excepts a snapshot_id: str\"\n1038         response = await self._client._async_http_client.post(\n",
+      "col_offset": 12,
+      "end_col_offset": 88,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 1037,
+      "line_range": [
+        1037
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "2310                                     on_stdout(content)\n2311                                 except Exception:\n2312                                     # Log callback errors but don't interrupt stream\n2313                                     pass\n2314 \n",
+      "col_offset": 32,
+      "end_col_offset": 40,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2311,
+      "line_range": [
+        2311,
+        2312,
+        2313
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2319                                     on_stderr(content)\n2320                                 except Exception:\n2321                                     # Log callback errors but don't interrupt stream\n2322                                     pass\n2323 \n",
+      "col_offset": 32,
+      "end_col_offset": 40,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2320,
+      "line_range": [
+        2320,
+        2321,
+        2322
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2447                                     on_stdout(content)\n2448                                 except Exception:\n2449                                     # Log callback errors but don't interrupt stream\n2450                                     pass\n2451 \n",
+      "col_offset": 32,
+      "end_col_offset": 40,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2448,
+      "line_range": [
+        2448,
+        2449,
+        2450
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2456                                     on_stderr(content)\n2457                                 except Exception:\n2458                                     # Log callback errors but don't interrupt stream\n2459                                     pass\n2460 \n",
+      "col_offset": 32,
+      "end_col_offset": 40,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 2457,
+      "line_range": [
+        2457,
+        2458,
+        2459
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "2601         client = paramiko.SSHClient()\n2602         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())\n2603 \n",
+      "col_offset": 8,
+      "end_col_offset": 68,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 295,
+        "link": "https://cwe.mitre.org/data/definitions/295.html"
+      },
+      "issue_severity": "HIGH",
+      "issue_text": "Paramiko call with policy set to automatically trust the unknown host key.",
+      "line_number": 2602,
+      "line_range": [
+        2602
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b507_ssh_no_host_key_verification.html",
+      "test_id": "B507",
+      "test_name": "ssh_no_host_key_verification"
+    },
+    {
+      "code": "2855                         # Set up build context directory\n2856                         build_dir = build_context or \"/tmp/docker-build\"\n2857                         ssh.run([\"mkdir\", \"-p\", build_dir])\n",
+      "col_offset": 53,
+      "end_col_offset": 72,
+      "filename": "morphcloud/api.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 377,
+        "link": "https://cwe.mitre.org/data/definitions/377.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Probable insecure usage of temp file/directory.",
+      "line_number": 2856,
+      "line_range": [
+        2856
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b108_hardcoded_tmp_directory.html",
+      "test_id": "B108",
+      "test_name": "hardcoded_tmp_directory"
+    },
+    {
+      "code": "124             plugin_loader_func(cli_group)\n125     except Exception:\n126         pass\n127 \n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "morphcloud/cli.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 125,
+      "line_range": [
+        125,
+        126
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "8 import json\n9 import subprocess\n10 import time\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 9,
+      "line_range": [
+        9
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "574 \n575         response = requests.get(f\"{self.jupyter_url}/api/kernels\")\n576         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 66,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 575,
+      "line_range": [
+        575
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "595 \n596         response = requests.post(\n597             f\"{self.jupyter_url}/api/kernels\", json={\"name\": kernel_name}\n598         )\n599         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 9,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 596,
+      "line_range": [
+        596,
+        597,
+        598
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "620         self._ensure_kernel_connection()\n621         assert self._ws, \"WebSocket connection is not established\"\n622 \n",
+      "col_offset": 8,
+      "end_col_offset": 66,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 621,
+      "line_range": [
+        621
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "810 \n811         response = requests.put(\n812             f\"{self.jupyter_url}/api/contents/{name}\",\n813             json={\"type\": \"notebook\", \"content\": notebook},\n814         )\n815         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 9,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 811,
+      "line_range": [
+        811,
+        812,
+        813,
+        814
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "844         # Get current notebook\n845         response = requests.get(\n846             f\"{self.jupyter_url}/api/contents/{notebook_path}\",\n847         )\n848         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 9,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 845,
+      "line_range": [
+        845,
+        846,
+        847
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "863         # Save notebook\n864         response = requests.put(\n865             f\"{self.jupyter_url}/api/contents/{notebook_path}\",\n866             json={\"type\": \"notebook\", \"content\": notebook},\n867         )\n868         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 9,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 864,
+      "line_range": [
+        864,
+        865,
+        866,
+        867
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "891         # Get the notebook\n892         response = requests.get(\n893             f\"{self.jupyter_url}/api/contents/{notebook_path}\",\n894         )\n895         response.raise_for_status()\n",
+      "col_offset": 19,
+      "end_col_offset": 9,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 892,
+      "line_range": [
+        892,
+        893,
+        894
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "1307         # Take screenshot as the morph user\n1308         temp_path = \"/tmp/screenshots/screenshot.png\"\n1309         self._instance.exec(\n",
+      "col_offset": 20,
+      "end_col_offset": 53,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 377,
+        "link": "https://cwe.mitre.org/data/definitions/377.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Probable insecure usage of temp file/directory.",
+      "line_number": 1308,
+      "line_range": [
+        1308
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b108_hardcoded_tmp_directory.html",
+      "test_id": "B108",
+      "test_name": "hardcoded_tmp_directory"
+    },
+    {
+      "code": "1422         # Use specified values or defaults from server settings\n1423         host = host or mcp_server.settings.host or \"0.0.0.0\"\n1424         port = port or mcp_server.settings.port or 8000\n",
+      "col_offset": 51,
+      "end_col_offset": 60,
+      "filename": "morphcloud/computer\\_computer.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 605,
+        "link": "https://cwe.mitre.org/data/definitions/605.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible binding to all interfaces.",
+      "line_number": 1423,
+      "line_range": [
+        1423
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b104_hardcoded_bind_all_interfaces.html",
+      "test_id": "B104",
+      "test_name": "hardcoded_bind_all_interfaces"
+    },
+    {
+      "code": "155     transport = ssh.get_transport()\n156     assert transport is not None, \"SSH transport must be connected\"\n157     chan = transport.open_session()\n",
+      "col_offset": 4,
+      "end_col_offset": 67,
+      "filename": "morphcloud/experimental\\__init__.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 156,
+      "line_range": [
+        156
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
+    },
+    {
+      "code": "157     chan = transport.open_session()\n158     chan.exec_command(command)\n159 \n",
+      "col_offset": 4,
+      "end_col_offset": 30,
+      "filename": "morphcloud/experimental\\__init__.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Possible shell injection via Paramiko call, check inputs are properly sanitized.",
+      "line_number": 158,
+      "line_range": [
+        158
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b601_paramiko_calls.html",
+      "test_id": "B601",
+      "test_name": "paramiko_calls"
+    },
+    {
+      "code": "169                 return True\n170         except:\n171             pass\n172 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/experimental\\browser.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 170,
+      "line_range": [
+        170,
+        171
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "199                 # self._instance.hide_http_service(\"cdp-server\")\n200             except:\n201                 pass  # Service might already be hidden or instance stopped\n202 \n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "morphcloud/experimental\\browser.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 200,
+      "line_range": [
+        200,
+        201
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "416                 return snapshot\n417         except:\n418             pass  # Fall through to create new snapshot\n419 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/experimental\\browser.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 417,
+      "line_range": [
+        417,
+        418
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "575                             break\n576                     except:\n577                         pass\n578                 if i % 5 == 0 and verbose:\n",
+      "col_offset": 20,
+      "end_col_offset": 28,
+      "filename": "morphcloud/experimental\\browser.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 576,
+      "line_range": [
+        576,
+        577
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "392 \n393         except:\n394             pass\n395 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/sandbox\\_sandbox.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 393,
+      "line_range": [
+        393,
+        394
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "463             pass\n464         except Exception:\n465             # Any other error during discovery should not prevent connection\n466             pass\n467 \n",
+      "col_offset": 8,
+      "end_col_offset": 16,
+      "filename": "morphcloud/sandbox\\_sandbox.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 464,
+      "line_range": [
+        464,
+        465,
+        466
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "961                     self._ws_connections[kernel_id].close()\n962                 except Exception:\n963                     pass\n964                 del self._ws_connections[kernel_id]\n",
+      "col_offset": 16,
+      "end_col_offset": 24,
+      "filename": "morphcloud/sandbox\\_sandbox.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 962,
+      "line_range": [
+        962,
+        963
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "966             # Restart kernel via REST API\n967             response = requests.post(\n968                 f\"{self.jupyter_url}/api/kernels/{kernel_id}/restart\"\n969             )\n970             response.raise_for_status()\n",
+      "col_offset": 23,
+      "end_col_offset": 13,
+      "filename": "morphcloud/sandbox\\_sandbox.py",
+      "issue_confidence": "LOW",
+      "issue_cwe": {
+        "id": 400,
+        "link": "https://cwe.mitre.org/data/definitions/400.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Call to requests without timeout",
+      "line_number": 967,
+      "line_range": [
+        967,
+        968,
+        969
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b113_request_without_timeout.html",
+      "test_id": "B113",
+      "test_name": "request_without_timeout"
+    },
+    {
+      "code": "1160                             break\n1161                     except Exception:\n1162                         pass\n1163                     time.sleep(2)\n",
+      "col_offset": 20,
+      "end_col_offset": 28,
+      "filename": "morphcloud/sandbox\\_sandbox.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 1161,
+      "line_range": [
+        1161,
+        1162
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    }
+  ]
+}

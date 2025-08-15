@@ -17,8 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 import requests
 import websocket
 
-from morphcloud.api import (ApiError, Instance, InstanceAPI, MorphCloudClient,
-                            Snapshot)
+from morphcloud.api import ApiError, Instance, InstanceAPI, MorphCloudClient, Snapshot
 
 _websockets_available = importlib.util.find_spec("websockets") is not None
 _jupyter_client_available = importlib.util.find_spec("jupyter_client") is not None
@@ -572,7 +571,7 @@ class Sandbox:
         self._check_dependencies()
         import requests
 
-        response = requests.get(f"{self.jupyter_url}/api/kernels")
+        response = requests.get(f"{self.jupyter_url}/api/kernels", timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -594,7 +593,7 @@ class Sandbox:
         import requests
 
         response = requests.post(
-            f"{self.jupyter_url}/api/kernels", json={"name": kernel_name}
+            f"{self.jupyter_url}/api/kernels", json={"name": kernel_name}, timeout=30
         )
         response.raise_for_status()
         kernel_info = response.json()
@@ -1304,8 +1303,14 @@ class Computer:
         # Ensure temp dir exists
         self._instance.exec("mkdir -p /tmp/screenshots && chmod 777 /tmp/screenshots")
 
-        # Take screenshot as the morph user
-        temp_path = "/tmp/screenshots/screenshot.png"
+        # Take screenshot as the morph user with secure temp path
+        import tempfile
+        import os
+
+        # Create secure temporary directory
+        temp_dir = tempfile.mkdtemp(prefix="screenshots-")
+        temp_path = os.path.join(temp_dir, "screenshot.png")
+
         self._instance.exec(
             f"sudo -u morph bash -c 'DISPLAY={self.display} import -window root {temp_path}'"
         )
@@ -1420,7 +1425,8 @@ class Computer:
         mcp_server = self.mcp()
 
         # Use specified values or defaults from server settings
-        host = host or mcp_server.settings.host or "0.0.0.0"
+        # Default to localhost for security instead of binding to all interfaces
+        host = host or mcp_server.settings.host or "127.0.0.1"
         port = port or mcp_server.settings.port or 8000
 
         # Return the SSE URL
