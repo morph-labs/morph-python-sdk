@@ -73,10 +73,47 @@ def check_for_package_update(display_mode="normal"):
         return None
 
 
+# Custom command class that supports aliases
+class AliasedCommand(click.Command):
+    def __init__(self, name, aliases=None, **kwargs):
+        super().__init__(name, **kwargs)
+        self.aliases = aliases or []
+
+
+# Custom group class that supports command aliases
+class AliasedGroup(click.Group):
+    def command(self, *args, **kwargs):
+        """Custom command decorator that supports aliases."""
+        aliases = kwargs.pop('aliases', None)
+        decorator = super().command(*args, **kwargs)
+        
+        if aliases:
+            def _decorator(f):
+                cmd = decorator(f)
+                if cmd.name:
+                    for alias in aliases:
+                        self.add_command(cmd, name=alias)
+                return cmd
+            return _decorator
+        return decorator
+    
+    def get_command(self, ctx, name):
+        rv = click.Group.get_command(self, ctx, name)
+        if rv is not None:
+            return rv
+        matches = [x for x in self.list_commands(ctx)
+                   if x.startswith(name)]
+        if not matches:
+            return None
+        elif len(matches) == 1:
+            return click.Group.get_command(self, ctx, matches[0])
+        ctx.fail(f"Too many matches: {', '.join(sorted(matches))}")
+
+
 # Replace your CustomGroup class with this enhanced version
 
 
-class VersionCheckGroup(click.Group):
+class VersionCheckGroup(AliasedGroup):
     """
     Custom Click Group that adds version checking on help display
     and also when errors occur.
@@ -235,13 +272,13 @@ def handle_api_error(error):
 # ─────────────────────────────────────────────────────────────
 
 
-@cli.group()
+@cli.group(cls=AliasedGroup)
 def image():
     """Manage Morph base images."""
     pass
 
 
-@image.command("list")
+@image.command(name="list", aliases=["ls"])
 @click.option(
     "--json", "json_mode", is_flag=True, default=False, help="Output in JSON format."
 )
@@ -276,13 +313,13 @@ def list_image(json_mode):
 # ─────────────────────────────────────────────────────────────
 
 
-@cli.group()
+@cli.group(cls=AliasedGroup)
 def snapshot():
     """Manage Morph snapshots (VM states)."""
     pass
 
 
-@snapshot.command("list")
+@snapshot.command(name="list", aliases=["ls"])
 @click.option(
     "--metadata",
     "-m",
@@ -484,13 +521,13 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
 # ─────────────────────────────────────────────────────────────
 
 
-@cli.group()
+@cli.group(cls=AliasedGroup)
 def instance():
     """Manage Morph instances."""
     pass
 
 
-@instance.command("list")
+@instance.command(name="list", aliases=["ls"])
 @click.option(
     "--metadata", "-m", help="Filter instances by metadata (key=value)", multiple=True
 )
