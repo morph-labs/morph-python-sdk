@@ -84,25 +84,26 @@ class AliasedCommand(click.Command):
 class AliasedGroup(click.Group):
     def command(self, *args, **kwargs):
         """Custom command decorator that supports aliases."""
-        aliases = kwargs.pop('aliases', None)
+        aliases = kwargs.pop("aliases", None)
         decorator = super().command(*args, **kwargs)
-        
+
         if aliases:
+
             def _decorator(f):
                 cmd = decorator(f)
                 if cmd.name:
                     for alias in aliases:
                         self.add_command(cmd, name=alias)
                 return cmd
+
             return _decorator
         return decorator
-    
+
     def get_command(self, ctx, name):
         rv = click.Group.get_command(self, ctx, name)
         if rv is not None:
             return rv
-        matches = [x for x in self.list_commands(ctx)
-                   if x.startswith(name)]
+        matches = [x for x in self.list_commands(ctx) if x.startswith(name)]
         if not matches:
             return None
         elif len(matches) == 1:
