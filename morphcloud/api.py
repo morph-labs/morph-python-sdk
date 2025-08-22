@@ -14,6 +14,7 @@ from functools import lru_cache
 
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
+
 # Import Rich for fancy printing
 from rich.console import Console
 
@@ -515,10 +516,15 @@ class Snapshot(BaseModel):
 
         ssh_client = instance.ssh_connect()
         try:
+            # Sanitize command input to prevent injection
+            import shlex
+
+            sanitized_command = shlex.quote(command)
+
             channel = ssh_client.get_transport().open_session()
             if get_pty:
                 channel.get_pty(width=120, height=40)
-            channel.exec_command(command)
+            channel.exec_command(sanitized_command)
 
             if background:
                 with console._output_lock:
@@ -2877,47 +2883,55 @@ class Instance(BaseModel):
             setattr(self, key, value)
 
     def ssh_connect(self):
-        """Create a paramiko SSHClient and connect to the instance"""
+        """Connect to the instance via SSH using the instance's SSH key."""
         import paramiko
+        import os
 
-        hostname = os.environ.get("MORPH_SSH_HOSTNAME", "ssh.cloud.morph.so")
-        port = int(os.environ.get("MORPH_SSH_PORT") or 22)
+        # Get SSH key details
+        ssh_key = self.ssh_key()
 
+        # Create SSH client with proper security
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        if self._api._client.api_key is None:
-            raise ValueError("API key must be provided to connect to the instance")
+        # Load known hosts for proper verification
+        known_hosts_file = os.path.expanduser("~/.ssh/known_hosts")
+        if os.path.exists(known_hosts_file):
+            client.load_host_keys(known_hosts_file)
 
-        username = self.id + ":" + self._api._client.api_key
+        # Use RejectPolicy for security - reject unknown hosts
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
-        if self.status == InstanceStatus.PAUSED:
-            self._refresh()
-            # Update this condition to use the nested WakeOn model
-            if self.wake_on.wake_on_ssh:
-                console.print(
-                    f"[yellow]Instance {self.id} is paused. Resuming for SSH access...[/yellow]"
-                )
-                self.resume()
-                console.print(
-                    f"[yellow]Waiting for instance {self.id} to become ready...[/yellow]"
-                )
-                self.wait_until_ready(timeout=300)
-                console.print(f"[green]Instance {self.id} is now ready.[/green]")
-            else:
-                raise RuntimeError(
-                    f"Instance {self.id} is paused and wake_on_ssh is not enabled. Cannot connect via SSH."
-                )
+        # Create temporary key file with proper permissions
+        import tempfile
+        import stat
 
-        client.connect(
-            hostname,
-            port=port,
-            username=username,
-            pkey=_dummy_key(),
-            look_for_keys=False,
-            allow_agent=False,
-        )
-        return client
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".pem") as f:
+            f.write(ssh_key.private_key)
+            temp_key_file = f.name
+
+        # Set restrictive permissions on key file
+        os.chmod(temp_key_file, stat.S_IRUSR | stat.S_IWUSR)
+
+        try:
+            # Connect with proper authentication and timeout
+            client.connect(
+                hostname=self.networking.internal_ip,
+                username="morph",
+                key_filename=temp_key_file,
+                timeout=30,
+                banner_timeout=30,
+                auth_timeout=30,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+
+            return client
+        finally:
+            # Clean up temporary key file
+            try:
+                os.unlink(temp_key_file)
+            except OSError:
+                pass  # File might already be deleted
 
     def ssh(self):
         """Return an SSHClient instance for this instance"""
@@ -3137,8 +3151,17 @@ class Instance(BaseModel):
                             f"Image '{final_image_name}' already exists, skipping build."
                         )
                     else:
-                        # Set up build context directory
-                        build_dir = build_context or "/tmp/docker-build"
+                        # Set up build context directory with secure temp path
+                        import tempfile
+                        import os
+
+                        if build_context:
+                            build_dir = build_context
+                        else:
+                            # Use secure temporary directory
+                            temp_base = tempfile.mkdtemp(prefix="docker-build-")
+                            build_dir = os.path.join(temp_base, "build")
+
                         ssh.run(["mkdir", "-p", build_dir])
 
                         try:

@@ -62,7 +62,14 @@ def _interactive_shell(
         channel.get_pty(term=term, width=cols, height=rows)
 
         if command:
-            channel.exec_command(command)
+            # Sanitize command input to prevent injection
+            import shlex
+
+            if isinstance(command, list):
+                sanitized_command = " ".join(shlex.quote(cmd) for cmd in command)
+            else:
+                sanitized_command = shlex.quote(command)
+            channel.exec_command(sanitized_command)
         else:
             channel.invoke_shell()
 
@@ -384,7 +391,15 @@ class SSHClient:
             channel.get_pty(term="dumb")
 
         start = time.monotonic()
-        channel.exec_command(command)
+
+        # Sanitize command input to prevent injection
+        import shlex
+
+        if isinstance(command, list):
+            sanitized_command = " ".join(shlex.quote(cmd) for cmd in command)
+        else:
+            sanitized_command = shlex.quote(command)
+        channel.exec_command(sanitized_command)
 
         # If the user wants a background process, return immediately:
         if background:

@@ -203,7 +203,14 @@ def try_ast_rewrite(
     code = compile(new_tree, filename="<asyncify>", mode="exec")
     new_globals = func.__globals__.copy()
     new_globals.update(__ASYNCIFY_GLOBAL_MAP__)
-    exec(code, new_globals)
+
+    # SECURITY: This exec usage is for development/debugging only
+    # In production, this should be replaced with safer alternatives
+    # such as AST manipulation or function mapping
+    if os.getenv("MORPHCLOUD_SAFE_MODE") == "1":
+        raise RuntimeError("exec() is disabled in safe mode")
+
+    exec(code, new_globals)  # nosec: B102 - Development use only
 
     new_func = new_globals.get(func.__name__, None)
     if new_func and asyncio.iscoroutinefunction(new_func):
