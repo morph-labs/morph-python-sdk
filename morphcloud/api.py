@@ -2917,6 +2917,14 @@ class Instance(BaseModel):
             look_for_keys=False,
             allow_agent=False,
         )
+        # Enable SSH keepalive packets to prevent idle disconnects during long transfers
+        transport = client.get_transport()
+        if transport is not None:
+            try:
+                keepalive_secs = int(os.environ.get("MORPH_SSH_KEEPALIVE_SECS", "15"))
+            except ValueError:
+                keepalive_secs = 15
+            transport.set_keepalive(keepalive_secs)
         return client
 
     def ssh(self):
