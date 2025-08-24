@@ -3886,7 +3886,34 @@ def copy_into_or_from_instance(
         parent = os.path.dirname(remote_file)
         if parent and parent != ".":
             sftp_makedirs(sftp, parent)
-        sftp.put(str(local_file), remote_file)
+
+        # Show a byte-level progress bar for single-file upload
+        try:
+            file_size = os.path.getsize(local_file)
+        except Exception:
+            file_size = None
+
+        if file_size and file_size > 0:
+            with tqdm(
+                total=file_size,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"Uploading {os.path.basename(str(local_file))}",
+            ) as pbar:
+                last = 0
+
+                def _cb(transferred, total=None):
+                    nonlocal last
+                    inc = max(0, int(transferred) - last)
+                    if inc:
+                        pbar.update(inc)
+                        last += inc
+
+                sftp.put(str(local_file), remote_file, callback=_cb)
+        else:
+            # Fallback without progress if size unknown
+            sftp.put(str(local_file), remote_file)
 
     def download_directory(sftp, remote_dir, local_dir):
         items_to_explore = [remote_dir]
@@ -3930,7 +3957,35 @@ def copy_into_or_from_instance(
     def download_file(sftp, remote_file, local_file):
         local_file_path = pathlib.Path(local_file)
         local_file_path.parent.mkdir(parents=True, exist_ok=True)
-        sftp.get(remote_file, str(local_file_path))
+
+        # Determine remote file size for progress bar
+        try:
+            remote_stat = sftp.stat(remote_file)
+            remote_size = getattr(remote_stat, "st_size", None)
+        except Exception:
+            remote_size = None
+
+        if remote_size and remote_size > 0:
+            with tqdm(
+                total=remote_size,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"Downloading {os.path.basename(remote_file)}",
+            ) as pbar:
+                last = 0
+
+                def _cb(transferred, total=None):
+                    nonlocal last
+                    inc = max(0, int(transferred) - last)
+                    if inc:
+                        pbar.update(inc)
+                        last += inc
+
+                sftp.get(remote_file, str(local_file_path), callback=_cb)
+        else:
+            # Fallback without progress if size unknown
+            sftp.get(remote_file, str(local_file_path))
 
     with instance_obj.ssh() as ssh:
         sftp = ssh._client.open_sftp()
