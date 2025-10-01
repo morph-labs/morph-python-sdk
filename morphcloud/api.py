@@ -3668,7 +3668,7 @@ fi"""
 
     def set_ttl(
         self,
-        ttl_seconds: int,
+        ttl_seconds: typing.Optional[int],
         ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = None,
     ) -> None:
         """
@@ -3678,7 +3678,7 @@ fi"""
         calculated as the current server time plus the provided TTL seconds.
 
         Parameters:
-            ttl_seconds: New TTL in seconds
+            ttl_seconds: New TTL in seconds. Pass None to remove TTL from the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
                        If not provided, the current action will be maintained.
 
@@ -3698,7 +3698,7 @@ fi"""
 
     async def aset_ttl(
         self,
-        ttl_seconds: int,
+        ttl_seconds: typing.Optional[int],
         ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = None,
     ) -> None:
         """
@@ -3708,7 +3708,7 @@ fi"""
         calculated as the current server time plus the provided TTL seconds.
 
         Parameters:
-            ttl_seconds: New TTL in seconds
+            ttl_seconds: New TTL in seconds. Pass None to remove TTL from the instance.
             ttl_action: Optional action to take when the TTL expires. Can be "stop" or "pause".
                        If not provided, the current action will be maintained.
 

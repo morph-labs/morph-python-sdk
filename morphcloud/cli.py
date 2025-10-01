@@ -1071,7 +1071,12 @@ def set_instance_metadata(instance_id, metadata, metadata_args):
 
 @instance.command("set-ttl")
 @click.argument("instance_id")
-@click.option("--ttl-seconds", type=int, required=True, help="Time-to-live in seconds.")
+@click.option(
+    "--ttl-seconds",
+    type=int,
+    required=True,
+    help="Time-to-live in seconds. Use -1 to remove TTL.",
+)
 @click.option(
     "--ttl-action",
     type=click.Choice(["stop", "pause"]),
@@ -1081,8 +1086,9 @@ def set_instance_metadata(instance_id, metadata, metadata_args):
 )
 def set_instance_ttl(instance_id, ttl_seconds, ttl_action):
     """
-    Set a time-to-live (TTL) for an instance.
+    Set or remove a time-to-live (TTL) for an instance.
     The instance will be stopped or paused when the TTL expires.
+    Pass --ttl-seconds -1 to remove TTL.
     """
     client = get_client()
     try:
@@ -1094,14 +1100,22 @@ def set_instance_ttl(instance_id, ttl_seconds, ttl_action):
             )
             sys.exit(1)
 
+        removing = ttl_seconds == -1
+        spinner_text = (
+            f"Removing TTL for {instance_id}..." if removing else f"Setting TTL for {instance_id} to {ttl_seconds} seconds..."
+        )
+        success_text = "TTL removed successfully!" if removing else "TTL set successfully!"
         with Spinner(
-            text=f"Setting TTL for {instance_id} to {ttl_seconds} seconds...",
-            success_text="TTL set successfully!",
+            text=spinner_text,
+            success_text=success_text,
             success_emoji="⏳",
         ):
-            instance_obj.set_ttl(ttl_seconds, ttl_action)
+            instance_obj.set_ttl(None if removing else ttl_seconds, ttl_action)
 
-        click.echo(f"TTL set for {instance_id}: {ttl_seconds} seconds")
+        if removing:
+            click.echo(f"TTL removed for {instance_id}")
+        else:
+            click.echo(f"TTL set for {instance_id}: {ttl_seconds} seconds")
     except api.ApiError as e:
         if e.status_code == 404:
             click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
