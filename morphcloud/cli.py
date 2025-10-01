@@ -1102,9 +1102,13 @@ def set_instance_ttl(instance_id, ttl_seconds, ttl_action):
 
         removing = ttl_seconds == -1
         spinner_text = (
-            f"Removing TTL for {instance_id}..." if removing else f"Setting TTL for {instance_id} to {ttl_seconds} seconds..."
+            f"Removing TTL for {instance_id}..."
+            if removing
+            else f"Setting TTL for {instance_id} to {ttl_seconds} seconds..."
         )
-        success_text = "TTL removed successfully!" if removing else "TTL set successfully!"
+        success_text = (
+            "TTL removed successfully!" if removing else "TTL set successfully!"
+        )
         with Spinner(
             text=spinner_text,
             success_text=success_text,
