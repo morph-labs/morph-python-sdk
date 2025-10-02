@@ -295,7 +295,8 @@ def user_api_key_list(json_mode):
     try:
         keys = client.user.list_api_keys()
         if json_mode:
-            click.echo(format_json([k for k in keys]))
+            for k in keys:
+                click.echo(format_json(k))
         else:
             headers = ["ID", "Prefix", "Created", "Last Used"]
             rows = [
