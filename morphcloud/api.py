@@ -264,12 +264,15 @@ class UserAPI(BaseAPI):
         response = self._client._http_client.get("/user/usage", params=params)
         return UserUsageOverview.model_validate(response.json())
 
-    async def ausage(self, interval: typing.Optional[str] = None) -> "UserUsageOverview":
+    async def ausage(
+        self, interval: typing.Optional[str] = None
+    ) -> "UserUsageOverview":
         params = {"interval": interval} if interval else None
         response = await self._client._async_http_client.get(
             "/user/usage", params=params
         )
         return UserUsageOverview.model_validate(response.json())
+
 
 class ImageAPI(BaseAPI):
     def list(self) -> typing.List[Image]:

@@ -318,7 +318,11 @@ def user_api_key_list(json_mode):
 def user_api_key_create(json_mode):
     client = get_client()
     try:
-        with Spinner(text="Creating API key...", success_text="API key created", success_emoji="🔑"):
+        with Spinner(
+            text="Creating API key...",
+            success_text="API key created",
+            success_emoji="🔑",
+        ):
             resp = client.user.create_api_key()
         if json_mode:
             click.echo(format_json(resp))
@@ -327,7 +331,9 @@ def user_api_key_create(json_mode):
             click.echo(f"ID: {resp.id}")
             click.echo(f"Prefix: {resp.key_prefix}")
             click.echo(f"Created: {unix_timestamp_to_datetime(resp.created)}")
-            click.secho("This is your API key — it will not be shown again:", fg="yellow")
+            click.secho(
+                "This is your API key — it will not be shown again:", fg="yellow"
+            )
             click.secho(resp.key, fg="yellow")
     except Exception as e:
         handle_api_error(e)
@@ -338,7 +344,11 @@ def user_api_key_create(json_mode):
 def user_api_key_delete(api_key_id):
     client = get_client()
     try:
-        with Spinner(text=f"Deleting API key {api_key_id}...", success_text="API key deleted", success_emoji="🗑"):
+        with Spinner(
+            text=f"Deleting API key {api_key_id}...",
+            success_text="API key deleted",
+            success_emoji="🗑",
+        ):
             client.user.delete_api_key(api_key_id)
     except Exception as e:
         handle_api_error(e)
@@ -370,12 +380,20 @@ def user_ssh_key_get(json_mode):
 
 
 @user_ssh_key.command(name="set", aliases=["update"])
-@click.option("--public-key", required=True, help="SSH public key string (e.g., 'ssh-rsa AAAA...')")
+@click.option(
+    "--public-key",
+    required=True,
+    help="SSH public key string (e.g., 'ssh-rsa AAAA...')",
+)
 @click.option("--json", "json_mode", is_flag=True, default=False)
 def user_ssh_key_set(public_key, json_mode):
     client = get_client()
     try:
-        with Spinner(text="Updating SSH key...", success_text="SSH key updated", success_emoji="🔐"):
+        with Spinner(
+            text="Updating SSH key...",
+            success_text="SSH key updated",
+            success_emoji="🔐",
+        ):
             info = client.user.update_ssh_key(public_key)
         if json_mode:
             click.echo(format_json(info))
