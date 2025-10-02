@@ -206,17 +206,70 @@ class BaseAPI:
 
 
 class UserAPI(BaseAPI):
-    """API methods for the authenticated user (/user)."""
+    """API methods for the authenticated user (/user/*)."""
 
-    def get(self) -> "User":
-        """Get information about the current authenticated user."""
-        response = self._client._http_client.get("/user")
-        return User.model_validate(response.json())._set_api(self)
+    # ────────────────────────────────
+    # API Keys
+    # ────────────────────────────────
+    def list_api_keys(self) -> typing.List["APIKey"]:
+        response = self._client._http_client.get("/user/api-key")
+        return [APIKey.model_validate(item) for item in response.json()["data"]]
 
-    async def aget(self) -> "User":
-        """Async version of get()."""
-        response = await self._client._async_http_client.get("/user")
-        return User.model_validate(response.json())._set_api(self)
+    async def alist_api_keys(self) -> typing.List["APIKey"]:
+        response = await self._client._async_http_client.get("/user/api-key")
+        return [APIKey.model_validate(item) for item in response.json()["data"]]
+
+    def create_api_key(self) -> "CreateAPIKeyResponse":
+        response = self._client._http_client.post("/user/api-key")
+        return CreateAPIKeyResponse.model_validate(response.json())
+
+    async def acreate_api_key(self) -> "CreateAPIKeyResponse":
+        response = await self._client._async_http_client.post("/user/api-key")
+        return CreateAPIKeyResponse.model_validate(response.json())
+
+    def delete_api_key(self, api_key_id: str) -> None:
+        self._client._http_client.delete(f"/user/api-key/{api_key_id}")
+
+    async def adelete_api_key(self, api_key_id: str) -> None:
+        await self._client._async_http_client.delete(f"/user/api-key/{api_key_id}")
+
+    # ────────────────────────────────
+    # SSH Key
+    # ────────────────────────────────
+    def get_ssh_key(self) -> "UserSSHKey":
+        response = self._client._http_client.get("/user/ssh-key")
+        return UserSSHKey.model_validate(response.json())
+
+    async def aget_ssh_key(self) -> "UserSSHKey":
+        response = await self._client._async_http_client.get("/user/ssh-key")
+        return UserSSHKey.model_validate(response.json())
+
+    def update_ssh_key(self, public_key: str) -> "UserSSHKey":
+        response = self._client._http_client.put(
+            "/user/ssh-key", json={"public_key": public_key}
+        )
+        return UserSSHKey.model_validate(response.json())
+
+    async def aupdate_ssh_key(self, public_key: str) -> "UserSSHKey":
+        response = await self._client._async_http_client.put(
+            "/user/ssh-key", json={"public_key": public_key}
+        )
+        return UserSSHKey.model_validate(response.json())
+
+    # ────────────────────────────────
+    # Usage
+    # ────────────────────────────────
+    def usage(self, interval: typing.Optional[str] = None) -> "UserUsageOverview":
+        params = {"interval": interval} if interval else None
+        response = self._client._http_client.get("/user/usage", params=params)
+        return UserUsageOverview.model_validate(response.json())
+
+    async def ausage(self, interval: typing.Optional[str] = None) -> "UserUsageOverview":
+        params = {"interval": interval} if interval else None
+        response = await self._client._async_http_client.get(
+            "/user/usage", params=params
+        )
+        return UserUsageOverview.model_validate(response.json())
 
 class ImageAPI(BaseAPI):
     def list(self) -> typing.List[Image]:
@@ -236,23 +289,44 @@ class ImageAPI(BaseAPI):
         ]
 
 
-class User(BaseModel):
-    id: str = Field(..., description="Unique identifier for the user")
-    object: typing.Literal["user"] = Field("user", description="Object type")
-    email: typing.Optional[str] = Field(None, description="User email address")
-    name: typing.Optional[str] = Field(None, description="User display name")
-    created: typing.Optional[int] = Field(
-        None, description="Unix timestamp when the user was created"
-    )
-    metadata: typing.Optional[typing.Dict[str, typing.Any]] = Field(
-        default=None, description="Additional user metadata"
-    )
+class APIKey(BaseModel):
+    id: str
+    key_prefix: str
+    created: int
+    last_used: typing.Optional[int] = None
 
-    _api: UserAPI = PrivateAttr()
 
-    def _set_api(self, api: UserAPI) -> "User":
-        self._api = api
-        return self
+class CreateAPIKeyResponse(BaseModel):
+    id: str
+    key: str
+    key_prefix: str
+    created: int
+
+
+class UserSSHKey(BaseModel):
+    public_key: str
+    created: int
+
+
+class UserInstanceUsage(BaseModel):
+    instance_cpu_time: int
+    instance_memory_time: int
+    instance_disk_time: int
+    period_start: int
+    period_end: int
+
+
+class UserSnapshotUsage(BaseModel):
+    snapshot_memory_time: int
+    snapshot_disk_time: int
+    period_start: int
+    period_end: int
+
+
+class UserUsageOverview(BaseModel):
+    instance: typing.List[UserInstanceUsage]
+    snapshot: typing.List[UserSnapshotUsage]
+    items: typing.List[str]
 
 
 class Image(BaseModel):

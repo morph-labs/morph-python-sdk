@@ -275,32 +275,141 @@ def handle_api_error(error):
 
 @cli.group(cls=AliasedGroup)
 def user():
-    """Manage the current authenticated user."""
+    """Manage settings for the current authenticated user."""
     pass
 
 
-@user.command(name="get", aliases=["me", "whoami"])
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output in JSON format."
-)
-def get_user(json_mode):
-    """Get information about the current user."""
+# ── API Keys ────────────────────────────────────────────────
+
+
+@user.group(cls=AliasedGroup, name="api-key")
+def user_api_key():
+    """Manage user API keys."""
+    pass
+
+
+@user_api_key.command(name="list", aliases=["ls"])
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_api_key_list(json_mode):
     client = get_client()
     try:
-        user_obj = client.user.get()
+        keys = client.user.list_api_keys()
         if json_mode:
-            click.echo(format_json(user_obj))
+            click.echo(format_json([k for k in keys]))
         else:
-            headers = ["ID", "Email", "Name", "Created At"]
+            headers = ["ID", "Prefix", "Created", "Last Used"]
             rows = [
                 [
-                    user_obj.id,
-                    getattr(user_obj, "email", ""),
-                    getattr(user_obj, "name", ""),
-                    unix_timestamp_to_datetime(getattr(user_obj, "created", None)),
+                    k.id,
+                    k.key_prefix,
+                    unix_timestamp_to_datetime(k.created),
+                    unix_timestamp_to_datetime(k.last_used),
                 ]
+                for k in keys
             ]
             print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_api_key.command(name="create", aliases=["new"])
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_api_key_create(json_mode):
+    client = get_client()
+    try:
+        with Spinner(text="Creating API key...", success_text="API key created", success_emoji="🔑"):
+            resp = client.user.create_api_key()
+        if json_mode:
+            click.echo(format_json(resp))
+        else:
+            click.secho("API key created.", fg="green")
+            click.echo(f"ID: {resp.id}")
+            click.echo(f"Prefix: {resp.key_prefix}")
+            click.echo(f"Created: {unix_timestamp_to_datetime(resp.created)}")
+            click.secho("This is your API key — it will not be shown again:", fg="yellow")
+            click.secho(resp.key, fg="yellow")
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_api_key.command(name="delete", aliases=["rm"])
+@click.argument("api_key_id")
+def user_api_key_delete(api_key_id):
+    client = get_client()
+    try:
+        with Spinner(text=f"Deleting API key {api_key_id}...", success_text="API key deleted", success_emoji="🗑"):
+            client.user.delete_api_key(api_key_id)
+    except Exception as e:
+        handle_api_error(e)
+
+
+# ── SSH Key ─────────────────────────────────────────────────
+
+
+@user.group(cls=AliasedGroup, name="ssh-key")
+def user_ssh_key():
+    """Manage user SSH public key."""
+    pass
+
+
+@user_ssh_key.command(name="get")
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_ssh_key_get(json_mode):
+    client = get_client()
+    try:
+        info = client.user.get_ssh_key()
+        if json_mode:
+            click.echo(format_json(info))
+        else:
+            headers = ["Public Key", "Created"]
+            rows = [[info.public_key, unix_timestamp_to_datetime(info.created)]]
+            print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_ssh_key.command(name="set", aliases=["update"])
+@click.option("--public-key", required=True, help="SSH public key string (e.g., 'ssh-rsa AAAA...')")
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_ssh_key_set(public_key, json_mode):
+    client = get_client()
+    try:
+        with Spinner(text="Updating SSH key...", success_text="SSH key updated", success_emoji="🔐"):
+            info = client.user.update_ssh_key(public_key)
+        if json_mode:
+            click.echo(format_json(info))
+        else:
+            click.secho("SSH key updated.", fg="green")
+            click.echo(f"Created: {unix_timestamp_to_datetime(info.created)}")
+    except Exception as e:
+        handle_api_error(e)
+
+
+# ── Usage ───────────────────────────────────────────────────
+
+
+@user.command(name="usage")
+@click.option("--interval", default=None, help="Lookback window (e.g., 30m, 3h, 7d)")
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_usage(interval, json_mode):
+    client = get_client()
+    try:
+        usage = client.user.usage(interval=interval)
+        if json_mode:
+            click.echo(format_json(usage))
+        else:
+            click.secho("User usage overview", fg="green")
+            click.echo(f"Interval buckets: {len(usage.items)}")
+            if usage.instance:
+                last = usage.instance[-1]
+                click.echo(
+                    f"Last bucket instance CPU: {last.instance_cpu_time}, MEM: {last.instance_memory_time}, DISK: {last.instance_disk_time}"
+                )
+            if usage.snapshot:
+                last = usage.snapshot[-1]
+                click.echo(
+                    f"Last bucket snapshot MEM: {last.snapshot_memory_time}, DISK: {last.snapshot_disk_time}"
+                )
     except Exception as e:
         handle_api_error(e)
 

@@ -443,6 +443,30 @@ async def main():
 asyncio.run(main())
 ```
 
+### User
+
+Minimal examples for managing your account:
+
+```
+# List your API keys
+morphcloud user api-key list
+
+# Create a new API key (shows the key once)
+morphcloud user api-key create
+
+# Delete an API key
+morphcloud user api-key delete <api_key_id>
+
+# Get your SSH public key
+morphcloud user ssh-key get
+
+# Set/update your SSH public key
+morphcloud user ssh-key set --public-key "ssh-rsa AAAA..."
+
+# View usage (3-hour lookback by default; supports 30m, 3h, 7d, etc.)
+morphcloud user usage --interval 3h
+```
+
 ## Advanced Features
 
 ### Environment Variables
