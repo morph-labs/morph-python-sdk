@@ -194,11 +194,29 @@ class MorphCloudClient:
 
         return ComputerAPI(self)
 
+    @property
+    def user(self) -> "UserAPI":
+        """Access the API for the current authenticated user."""
+        return UserAPI(self)
+
 
 class BaseAPI:
     def __init__(self, client: MorphCloudClient):
         self._client = client
 
+
+class UserAPI(BaseAPI):
+    """API methods for the authenticated user (/user)."""
+
+    def get(self) -> "User":
+        """Get information about the current authenticated user."""
+        response = self._client._http_client.get("/user")
+        return User.model_validate(response.json())._set_api(self)
+
+    async def aget(self) -> "User":
+        """Async version of get()."""
+        response = await self._client._async_http_client.get("/user")
+        return User.model_validate(response.json())._set_api(self)
 
 class ImageAPI(BaseAPI):
     def list(self) -> typing.List[Image]:
@@ -216,6 +234,25 @@ class ImageAPI(BaseAPI):
             Image.model_validate(image)._set_api(self)
             for image in response.json()["data"]
         ]
+
+
+class User(BaseModel):
+    id: str = Field(..., description="Unique identifier for the user")
+    object: typing.Literal["user"] = Field("user", description="Object type")
+    email: typing.Optional[str] = Field(None, description="User email address")
+    name: typing.Optional[str] = Field(None, description="User display name")
+    created: typing.Optional[int] = Field(
+        None, description="Unix timestamp when the user was created"
+    )
+    metadata: typing.Optional[typing.Dict[str, typing.Any]] = Field(
+        default=None, description="Additional user metadata"
+    )
+
+    _api: UserAPI = PrivateAttr()
+
+    def _set_api(self, api: UserAPI) -> "User":
+        self._api = api
+        return self
 
 
 class Image(BaseModel):

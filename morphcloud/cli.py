@@ -269,6 +269,43 @@ def handle_api_error(error):
 
 
 # ─────────────────────────────────────────────────────────────
+#  User Commands
+# ─────────────────────────────────────────────────────────────
+
+
+@cli.group(cls=AliasedGroup)
+def user():
+    """Manage the current authenticated user."""
+    pass
+
+
+@user.command(name="get", aliases=["me", "whoami"])
+@click.option(
+    "--json", "json_mode", is_flag=True, default=False, help="Output in JSON format."
+)
+def get_user(json_mode):
+    """Get information about the current user."""
+    client = get_client()
+    try:
+        user_obj = client.user.get()
+        if json_mode:
+            click.echo(format_json(user_obj))
+        else:
+            headers = ["ID", "Email", "Name", "Created At"]
+            rows = [
+                [
+                    user_obj.id,
+                    getattr(user_obj, "email", ""),
+                    getattr(user_obj, "name", ""),
+                    unix_timestamp_to_datetime(getattr(user_obj, "created", None)),
+                ]
+            ]
+            print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+# ─────────────────────────────────────────────────────────────
 #  Image Commands
 # ─────────────────────────────────────────────────────────────
 
