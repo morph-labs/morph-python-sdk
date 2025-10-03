@@ -35,6 +35,7 @@ venv/
 # Environment variables
 .env
 .env.*
+.envrc
 
 # Testing
 .coverage
