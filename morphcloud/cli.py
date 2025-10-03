@@ -302,7 +302,7 @@ def _get_keypress():
                         continue
                     except Exception:
                         continue
-                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k", "s"]:
+                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k", "s", "m"]:
                     return ch.lower()
                 elif ch == "\x03":
                     return "\x03"
@@ -315,9 +315,9 @@ def _get_keypress():
         while True:
             try:
                 key = input(
-                    "Enter command (←/→ page, ↑/↓ scroll, s search, q quit): "
+                    "Enter command (←/→ page, ↑/↓ scroll, m metadata, q quit): "
                 ).lower()
-                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k", "s"]:
+                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k", "s", "m"]:
                     return key
             except KeyboardInterrupt:
                 return "q"
@@ -431,7 +431,7 @@ def _interactive_pagination(
                 nav.append("↑ Scroll up (up/k)" if scroll_offset > 0 else "↑ Scroll up (disabled)")
                 nav.append("↓ Scroll down (down/j)" if scroll_offset < max_scroll else "↓ Scroll down (disabled)")
             if enable_search:
-                nav.append("[s]earch")
+                nav.append("[m]etadata")
             nav_text = " | ".join(nav)
             if len(nav_text) > width - 1:
                 mid = len(nav) // 2
@@ -440,7 +440,10 @@ def _interactive_pagination(
             else:
                 click.echo(f"Navigation: {nav_text}")
             click.echo()
-            click.echo("💡 Use arrow keys to navigate, 'q' to quit...")
+            if enable_search:
+                click.echo("💡 Use arrow keys to navigate, 'm' to set metadata filter, 'q' to quit...")
+            else:
+                click.echo("💡 Use arrow keys to navigate, 'q' to quit...")
 
             key = _get_keypress()
             if key in ("left", "h", "p"):
@@ -457,7 +460,7 @@ def _interactive_pagination(
             elif key in ("down", "j"):
                 if scroll_offset < max_scroll:
                     scroll_offset += 1
-            elif key == "s" and enable_search and callable(on_search):
+            elif key in ("m", "s") and enable_search and callable(on_search):
                 # Temporarily exit alt screen for input
                 click.echo("\033[?1049l", nl=False)
                 try:
