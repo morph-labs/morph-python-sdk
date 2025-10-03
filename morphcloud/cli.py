@@ -346,8 +346,19 @@ def _stop_spinner():
     time.sleep(0.2)
 
 
-def _interactive_pagination(get_data_func, format_item_func, items_attr: str, title: str, limit: int = 50, **kwargs):
-    page = 1
+def _interactive_pagination(
+    get_data_func,
+    format_item_func,
+    items_attr: str,
+    title: str,
+    limit: int = 50,
+    initial_page: int = 1,
+    enable_search: bool = False,
+    on_search=None,
+    search_summary_fn=None,
+    **kwargs,
+):
+    page = max(1, int(initial_page or 1))
     scroll_offset = 0
     # Enter alt screen
     click.echo("\033[?1049h", nl=False)
@@ -386,6 +397,13 @@ def _interactive_pagination(get_data_func, format_item_func, items_attr: str, ti
             click.echo(f"{title} (Interactive Mode)")
             click.echo("=" * min(80, width))
 
+            # Optional search summary display
+            if enable_search and callable(search_summary_fn):
+                summary = search_summary_fn()
+                if summary:
+                    click.echo(f"🔍 Filter: {summary}")
+                    click.echo()
+
             scroll_info = ""
             if total_items_on_page > content_height:
                 scroll_info = f" | Scroll: {scroll_offset + 1}-{min(scroll_offset + content_height, total_items_on_page)} of {total_items_on_page}"
@@ -414,6 +432,8 @@ def _interactive_pagination(get_data_func, format_item_func, items_attr: str, ti
             if total_items_on_page > content_height:
                 nav.append("↑ Scroll up (up/k)" if scroll_offset > 0 else "↑ Scroll up (disabled)")
                 nav.append("↓ Scroll down (down/j)" if scroll_offset < max_scroll else "↓ Scroll down (disabled)")
+            if enable_search:
+                nav.append("[s]earch")
             nav_text = " | ".join(nav)
             if len(nav_text) > width - 1:
                 mid = len(nav) // 2
@@ -439,6 +459,17 @@ def _interactive_pagination(get_data_func, format_item_func, items_attr: str, ti
             elif key in ("down", "j"):
                 if scroll_offset < max_scroll:
                     scroll_offset += 1
+            elif key == "s" and enable_search and callable(on_search):
+                # Temporarily exit alt screen for input
+                click.echo("\033[?1049l", nl=False)
+                try:
+                    changed = on_search()
+                finally:
+                    # Re-enter alt screen
+                    click.echo("\033[?1049h", nl=False)
+                # Reset page and refresh on any change
+                page = 1
+                current_items = []
             elif key in ("q", "\x03"):
                 break
         
@@ -673,10 +704,12 @@ def snapshot():
 @click.option(
     "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
 )
+@click.option("--page", type=int, default=None, help="Page number (1-based)")
+@click.option("--limit", type=int, default=None, help="Page size")
 @click.option(
     "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
 )
-def list_snapshots(metadata, interactive, json_mode):
+def list_snapshots(metadata, interactive, page, limit, json_mode):
     """List all snapshots."""
     client = get_client()
     try:
@@ -685,8 +718,13 @@ def list_snapshots(metadata, interactive, json_mode):
             key, value = meta.split("=", 1)
             metadata_dict[key] = value
         if interactive:
+            # Maintain dynamic search filters in interactive mode (do not mutate base metadata)
+            base_metadata = dict(metadata_dict)
+            search_filter: dict[str, str] = {}
+
             def get_data(**kwargs):
-                return client.snapshots.list_paginated(metadata=metadata_dict, **kwargs)
+                effective_metadata = {**base_metadata, **search_filter}
+                return client.snapshots.list_paginated(metadata=effective_metadata, **kwargs)
 
             def format_item(snap):
                 created = unix_timestamp_to_datetime(snap.created)
@@ -695,15 +733,56 @@ def list_snapshots(metadata, interactive, json_mode):
                     f"{snap.status:<8} | vCPU {snap.spec.vcpus:<2} | Mem {snap.spec.memory:<6} | Disk {snap.spec.disk_size:<6} | img {snap.refs.image_id}"
                 )
 
+            def on_search():
+                # Prompt user for metadata search term: key=value or empty to clear
+                new_search = click.prompt(
+                    "Enter metadata filter as key=value (Enter to clear)", default=""
+                ).strip()
+                nonlocal search_filter  # type: ignore
+                if not new_search:
+                    search_filter = {}
+                else:
+                    if "=" not in new_search:
+                        click.echo("Invalid format. Use key=value.")
+                    else:
+                        k, v = new_search.split("=", 1)
+                        search_filter = {k.strip(): v.strip()}
+                return True
+
+            def search_summary():
+                if not search_filter:
+                    return ""
+                k, v = next(iter(search_filter.items()))
+                return f"{k}={v}"
+
             _interactive_pagination(
-                get_data, format_item, items_attr="snapshots", title="MorphCloud - Snapshot List", limit=50
+                get_data,
+                format_item,
+                items_attr="snapshots",
+                title="MorphCloud - Snapshot List",
+                limit=(limit or 50),
+                initial_page=(page or 1),
+                enable_search=True,
+                on_search=on_search,
+                search_summary_fn=search_summary,
             )
             return
 
-        snapshots = client.snapshots.list(metadata=metadata_dict)
+        # Non-interactive: if page/limit provided, use paginated endpoint, else full list
+        if page or limit:
+            resp = client.snapshots.list_paginated(
+                metadata=metadata_dict, page=(page or 1), limit=(limit or 50)
+            )
+            snapshots = resp.snapshots
+        else:
+            snapshots = client.snapshots.list(metadata=metadata_dict)
         if json_mode:
-            for snap in snapshots:
-                click.echo(format_json(snap))
+            if page or limit:
+                # For paginated requests, emit the full envelope
+                click.echo(format_json(resp))
+            else:
+                for snap in snapshots:
+                    click.echo(format_json(snap))
         else:
             headers = [
                 "ID",
@@ -894,13 +973,15 @@ def instance():
 @click.option(
     "--metadata", "-m", help="Filter instances by metadata (key=value)", multiple=True
 )
+@click.option("--page", type=int, default=None, help="Page number (1-based)")
+@click.option("--limit", type=int, default=None, help="Page size")
 @click.option(
     "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
 )
 @click.option(
     "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
 )
-def list_instances(metadata, interactive, json_mode):
+def list_instances(metadata, page, limit, interactive, json_mode):
     """List all instances."""
     client = get_client()
     try:
@@ -910,8 +991,13 @@ def list_instances(metadata, interactive, json_mode):
             metadata_dict[key] = value
 
         if interactive:
+            # Maintain dynamic search filter (does not mutate base --metadata)
+            base_metadata = dict(metadata_dict)
+            search_filter: dict[str, str] = {}
+
             def get_data(**kwargs):
-                return client.instances.list_paginated(metadata=metadata_dict, **kwargs)
+                effective_metadata = {**base_metadata, **search_filter}
+                return client.instances.list_paginated(metadata=effective_metadata, **kwargs)
 
             def format_item(inst):
                 created = unix_timestamp_to_datetime(inst.created)
@@ -921,15 +1007,54 @@ def list_instances(metadata, interactive, json_mode):
                     f"vCPU {inst.spec.vcpus:<2} | Mem {inst.spec.memory:<6} | Disk {inst.spec.disk_size:<6} | Snapshot {inst.refs.snapshot_id} | {http_services}"
                 )
 
+            def on_search():
+                new_search = click.prompt(
+                    "Enter metadata filter as key=value (Enter to clear)", default=""
+                ).strip()
+                nonlocal search_filter  # type: ignore
+                if not new_search:
+                    search_filter = {}
+                else:
+                    if "=" not in new_search:
+                        click.echo("Invalid format. Use key=value.")
+                    else:
+                        k, v = new_search.split("=", 1)
+                        search_filter = {k.strip(): v.strip()}
+                return True
+
+            def search_summary():
+                if not search_filter:
+                    return ""
+                k, v = next(iter(search_filter.items()))
+                return f"{k}={v}"
+
             _interactive_pagination(
-                get_data, format_item, items_attr="instances", title="MorphCloud - Instance List", limit=50
+                get_data,
+                format_item,
+                items_attr="instances",
+                title="MorphCloud - Instance List",
+                limit=(limit or 50),
+                initial_page=(page or 1),
+                enable_search=True,
+                on_search=on_search,
+                search_summary_fn=search_summary,
             )
             return
 
-        instances = client.instances.list(metadata=metadata_dict)
+        # Non-interactive: support optional page/limit
+        if page or limit:
+            resp = client.instances.list_paginated(
+                metadata=metadata_dict, page=(page or 1), limit=(limit or 50)
+            )
+            instances = resp.instances
+        else:
+            instances = client.instances.list(metadata=metadata_dict)
         if json_mode:
-            for inst in instances:
-                click.echo(format_json(inst))
+            if page or limit:
+                click.echo(format_json(resp))
+            else:
+                for inst in instances:
+                    click.echo(format_json(inst))
         else:
             headers = [
                 "ID",
