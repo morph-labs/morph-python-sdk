@@ -302,7 +302,7 @@ def _get_keypress():
                         continue
                     except Exception:
                         continue
-                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k"]:
+                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k", "s"]:
                     return ch.lower()
                 elif ch == "\x03":
                     return "\x03"
@@ -315,9 +315,9 @@ def _get_keypress():
         while True:
             try:
                 key = input(
-                    "Enter command (←/→ page, ↑/↓ scroll, q quit): "
+                    "Enter command (←/→ page, ↑/↓ scroll, s search, q quit): "
                 ).lower()
-                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k"]:
+                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k", "s"]:
                     return key
             except KeyboardInterrupt:
                 return "q"
@@ -372,15 +372,13 @@ def _interactive_pagination(
             width = term.columns
             content_height = max(5, height - 12)
 
-            if not current_items or 'need_refresh' in locals():
+            if not current_items:
                 spinner = _start_spinner("Fetching data")
                 try:
                     result = get_data_func(page=page, limit=limit, **kwargs)
                     current_items = getattr(result, items_attr, [])
                     total = getattr(result, 'total', len(current_items))
                     scroll_offset = 0
-                    if 'need_refresh' in locals():
-                        del need_refresh
                 finally:
                     _stop_spinner()
 
@@ -784,6 +782,11 @@ def list_snapshots(metadata, interactive, page, limit, json_mode):
                 for snap in snapshots:
                     click.echo(format_json(snap))
         else:
+            # Show page info only when paginated flags are used
+            if page or limit:
+                click.echo(
+                    f"Total snapshots: {resp.total} | Page {resp.page} of {resp.total_pages} (showing {len(snapshots)})"
+                )
             headers = [
                 "ID",
                 "Created At",
@@ -1056,6 +1059,10 @@ def list_instances(metadata, page, limit, interactive, json_mode):
                 for inst in instances:
                     click.echo(format_json(inst))
         else:
+            if page or limit:
+                click.echo(
+                    f"Total instances: {resp.total} | Page {resp.page} of {resp.total_pages} (showing {len(instances)})"
+                )
             headers = [
                 "ID",
                 "Snapshot ID",
