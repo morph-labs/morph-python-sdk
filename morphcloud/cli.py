@@ -6,6 +6,9 @@ import json
 import sys
 import threading
 import time
+import os
+import tty
+import termios
 
 import click
 import requests
@@ -268,6 +271,181 @@ def handle_api_error(error):
     sys.exit(1)
 
 
+# Interactive pagination helpers (reused for list -i)
+def _get_terminal_size():
+    try:
+        return os.get_terminal_size()
+    except Exception:
+        return os.terminal_size((80, 24))
+
+
+def _get_keypress():
+    try:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(sys.stdin.fileno())
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    try:
+                        next_chars = sys.stdin.read(2)
+                        seq = ch + next_chars
+                        if seq == "\x1b[D":
+                            return "left"
+                        elif seq == "\x1b[C":
+                            return "right"
+                        elif seq == "\x1b[A":
+                            return "up"
+                        elif seq == "\x1b[B":
+                            return "down"
+                        continue
+                    except Exception:
+                        continue
+                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k"]:
+                    return ch.lower()
+                elif ch == "\x03":
+                    return "\x03"
+                else:
+                    continue
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except Exception:
+        # Fallback prompt
+        while True:
+            try:
+                key = input(
+                    "Enter command (←/→ page, ↑/↓ scroll, q quit): "
+                ).lower()
+                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k"]:
+                    return key
+            except KeyboardInterrupt:
+                return "q"
+
+
+def _spinner_loop(message="Loading"):
+    spinner_chars = "|/-\\"
+    idx = 0
+    while getattr(_spinner_loop, "running", False):
+        print(f"\r{message}... {spinner_chars[idx % len(spinner_chars)]}", end="", flush=True)
+        idx += 1
+        time.sleep(0.1)
+    print("\r" + " " * (len(message) + 10) + "\r", end="", flush=True)
+
+
+def _start_spinner(message="Loading"):
+    _spinner_loop.running = True
+    t = threading.Thread(target=_spinner_loop, args=(message,))
+    t.daemon = True
+    t.start()
+    return t
+
+
+def _stop_spinner():
+    _spinner_loop.running = False
+    time.sleep(0.2)
+
+
+def _interactive_pagination(get_data_func, format_item_func, items_attr: str, title: str, limit: int = 50, **kwargs):
+    page = 1
+    scroll_offset = 0
+    # Enter alt screen
+    click.echo("\033[?1049h", nl=False)
+    click.echo("\033[?47h", nl=False)
+    current_items = []
+    total = 0
+    try:
+        while True:
+            term = _get_terminal_size()
+            height = term.lines
+            width = term.columns
+            content_height = max(5, height - 12)
+
+            if not current_items or 'need_refresh' in locals():
+                spinner = _start_spinner("Fetching data")
+                try:
+                    result = get_data_func(page=page, limit=limit, **kwargs)
+                    current_items = getattr(result, items_attr, [])
+                    total = getattr(result, 'total', len(current_items))
+                    scroll_offset = 0
+                    if 'need_refresh' in locals():
+                        del need_refresh
+                finally:
+                    _stop_spinner()
+
+            total_pages = (total + limit - 1) // limit if total > 0 else 1
+            has_prev = page > 1
+            has_next = page < total_pages
+
+            total_items_on_page = len(current_items)
+            max_scroll = max(0, total_items_on_page - content_height)
+            scroll_offset = max(0, min(scroll_offset, max_scroll))
+
+            click.echo("\033[2J\033[H", nl=False)
+            click.echo("=" * min(80, width))
+            click.echo(f"{title} (Interactive Mode)")
+            click.echo("=" * min(80, width))
+
+            scroll_info = ""
+            if total_items_on_page > content_height:
+                scroll_info = f" | Scroll: {scroll_offset + 1}-{min(scroll_offset + content_height, total_items_on_page)} of {total_items_on_page}"
+            click.echo(f"📄 Page {page} of {total_pages} (Total: {total} items{scroll_info})")
+            click.echo("-" * min(80, width))
+
+            if not current_items:
+                click.echo()
+                click.echo("   No results found.")
+                click.echo()
+            else:
+                click.echo()
+                visible = current_items[scroll_offset:scroll_offset + content_height]
+                for item in visible:
+                    line = format_item_func(item)
+                    if len(line) > width - 1:
+                        line = line[: width - 4] + "..."
+                    click.echo(line)
+                for _ in range(content_height - len(visible)):
+                    click.echo()
+
+            click.echo("-" * min(80, width))
+            nav = []
+            nav.append("← Previous page (left/h)" if has_prev else "← Previous page (disabled)")
+            nav.append("→ Next page (right/l)" if has_next else "→ Next page (disabled)")
+            if total_items_on_page > content_height:
+                nav.append("↑ Scroll up (up/k)" if scroll_offset > 0 else "↑ Scroll up (disabled)")
+                nav.append("↓ Scroll down (down/j)" if scroll_offset < max_scroll else "↓ Scroll down (disabled)")
+            nav_text = " | ".join(nav)
+            if len(nav_text) > width - 1:
+                mid = len(nav) // 2
+                click.echo(f"Navigation: {' | '.join(nav[:mid])}")
+                click.echo(f"            {' | '.join(nav[mid:])}")
+            else:
+                click.echo(f"Navigation: {nav_text}")
+            click.echo()
+            click.echo("💡 Use arrow keys to navigate, 'q' to quit...")
+
+            key = _get_keypress()
+            if key in ("left", "h", "p"):
+                if has_prev:
+                    page -= 1
+                    current_items = []
+            elif key in ("right", "l", "n"):
+                if has_next:
+                    page += 1
+                    current_items = []
+            elif key in ("up", "k"):
+                if scroll_offset > 0:
+                    scroll_offset -= 1
+            elif key in ("down", "j"):
+                if scroll_offset < max_scroll:
+                    scroll_offset += 1
+            elif key in ("q", "\x03"):
+                break
+        
+    finally:
+        # Exit alt screen
+        click.echo("\033[?1049l", nl=False)
+
 # ─────────────────────────────────────────────────────────────
 #  User Commands
 # ─────────────────────────────────────────────────────────────
@@ -493,9 +671,12 @@ def snapshot():
     multiple=True,
 )
 @click.option(
+    "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
+)
+@click.option(
     "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
 )
-def list_snapshots(metadata, json_mode):
+def list_snapshots(metadata, interactive, json_mode):
     """List all snapshots."""
     client = get_client()
     try:
@@ -503,6 +684,22 @@ def list_snapshots(metadata, json_mode):
         for meta in metadata:
             key, value = meta.split("=", 1)
             metadata_dict[key] = value
+        if interactive:
+            def get_data(**kwargs):
+                return client.snapshots.list_paginated(metadata=metadata_dict, **kwargs)
+
+            def format_item(snap):
+                created = unix_timestamp_to_datetime(snap.created)
+                return (
+                    f"   📸 {snap.id:<24} | {created:<22} | "
+                    f"{snap.status:<8} | vCPU {snap.spec.vcpus:<2} | Mem {snap.spec.memory:<6} | Disk {snap.spec.disk_size:<6} | img {snap.refs.image_id}"
+                )
+
+            _interactive_pagination(
+                get_data, format_item, items_attr="snapshots", title="MorphCloud - Snapshot List", limit=50
+            )
+            return
+
         snapshots = client.snapshots.list(metadata=metadata_dict)
         if json_mode:
             for snap in snapshots:
@@ -698,9 +895,12 @@ def instance():
     "--metadata", "-m", help="Filter instances by metadata (key=value)", multiple=True
 )
 @click.option(
+    "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
+)
+@click.option(
     "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
 )
-def list_instances(metadata, json_mode):
+def list_instances(metadata, interactive, json_mode):
     """List all instances."""
     client = get_client()
     try:
@@ -708,6 +908,23 @@ def list_instances(metadata, json_mode):
         for meta in metadata:
             key, value = meta.split("=", 1)
             metadata_dict[key] = value
+
+        if interactive:
+            def get_data(**kwargs):
+                return client.instances.list_paginated(metadata=metadata_dict, **kwargs)
+
+            def format_item(inst):
+                created = unix_timestamp_to_datetime(inst.created)
+                http_services = ",".join(f"{svc.name}:{svc.port}" for svc in inst.networking.http_services)
+                return (
+                    f"   🖥  {inst.id:<24} | {created:<22} | {inst.status:<8} | "
+                    f"vCPU {inst.spec.vcpus:<2} | Mem {inst.spec.memory:<6} | Disk {inst.spec.disk_size:<6} | Snapshot {inst.refs.snapshot_id} | {http_services}"
+                )
+
+            _interactive_pagination(
+                get_data, format_item, items_attr="instances", title="MorphCloud - Instance List", limit=50
+            )
+            return
 
         instances = client.instances.list(metadata=metadata_dict)
         if json_mode:

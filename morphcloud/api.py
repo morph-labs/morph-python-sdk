@@ -399,6 +399,52 @@ class SnapshotAPI:
             for snapshot in response.json()["data"]
         ]
 
+    class ListPaginatedResponse(BaseModel):
+        snapshots: typing.List["Snapshot"]
+        total: int
+        page: int
+        size: int
+        total_pages: int
+        has_next: bool
+        has_prev: bool
+
+    def list_paginated(
+        self,
+        page: int = 1,
+        limit: int = 50,
+        *,
+        digest: typing.Optional[str] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> "SnapshotAPI.ListPaginatedResponse":
+        """List snapshots with pagination using the /snapshot/list endpoint.
+
+        Parameters:
+            page: Page number (1-based)
+            limit: Page size
+            digest: Optional digest to filter snapshots by
+            metadata: Optional metadata to filter snapshots by
+        """
+        params: typing.Dict[str, typing.Union[str, int]] = {"page": page, "limit": limit}
+        if digest is not None:
+            params["digest"] = digest
+        if metadata is not None:
+            for k, v in metadata.items():
+                params[f"metadata[{k}]"] = v
+        response = self._client._http_client.get("/snapshot/list", params=params)
+        payload = response.json()
+        snapshots = [
+            Snapshot.model_validate(s)._set_api(self) for s in payload.get("snapshots", [])
+        ]
+        return SnapshotAPI.ListPaginatedResponse(
+            snapshots=snapshots,
+            total=payload.get("total", len(snapshots)),
+            page=payload.get("page", page),
+            size=payload.get("size", len(snapshots)),
+            total_pages=payload.get("total_pages", 1),
+            has_next=payload.get("has_next", False),
+            has_prev=payload.get("has_prev", False),
+        )
+
     async def alist(
         self,
         digest: typing.Optional[str] = None,
@@ -1348,6 +1394,48 @@ class InstanceAPI(BaseAPI):
             Instance.model_validate(instance)._set_api(self)
             for instance in response.json()["data"]
         ]
+
+    class ListPaginatedResponse(BaseModel):
+        instances: typing.List["Instance"]
+        total: int
+        page: int
+        size: int
+        total_pages: int
+        has_next: bool
+        has_prev: bool
+
+    def list_paginated(
+        self,
+        page: int = 1,
+        limit: int = 50,
+        *,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> "InstanceAPI.ListPaginatedResponse":
+        """List instances with pagination using the /instance/list endpoint.
+
+        Parameters:
+            page: Page number (1-based)
+            limit: Page size
+            metadata: Optional metadata to filter instances by
+        """
+        params: typing.Dict[str, typing.Union[str, int]] = {"page": page, "limit": limit}
+        if metadata is not None:
+            for k, v in metadata.items():
+                params[f"metadata[{k}]"] = v
+        response = self._client._http_client.get("/instance/list", params=params)
+        payload = response.json()
+        instances = [
+            Instance.model_validate(i)._set_api(self) for i in payload.get("instances", [])
+        ]
+        return InstanceAPI.ListPaginatedResponse(
+            instances=instances,
+            total=payload.get("total", len(instances)),
+            page=payload.get("page", page),
+            size=payload.get("size", len(instances)),
+            total_pages=payload.get("total_pages", 1),
+            has_next=payload.get("has_next", False),
+            has_prev=payload.get("has_prev", False),
+        )
 
     async def alist(
         self, metadata: typing.Optional[typing.Dict[str, str]] = None
