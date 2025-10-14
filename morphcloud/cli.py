@@ -3,12 +3,12 @@
 import datetime
 import importlib.metadata
 import json
+import os
 import sys
+import termios
 import threading
 import time
-import os
 import tty
-import termios
 
 import click
 import requests
@@ -317,7 +317,21 @@ def _get_keypress():
                 key = input(
                     "Enter command (←/→ page, ↑/↓ scroll, m metadata, q quit): "
                 ).lower()
-                if key in ["left", "right", "up", "down", "q", "h", "l", "p", "n", "j", "k", "s", "m"]:
+                if key in [
+                    "left",
+                    "right",
+                    "up",
+                    "down",
+                    "q",
+                    "h",
+                    "l",
+                    "p",
+                    "n",
+                    "j",
+                    "k",
+                    "s",
+                    "m",
+                ]:
                     return key
             except KeyboardInterrupt:
                 return "q"
@@ -327,7 +341,11 @@ def _spinner_loop(message="Loading"):
     spinner_chars = "|/-\\"
     idx = 0
     while getattr(_spinner_loop, "running", False):
-        print(f"\r{message}... {spinner_chars[idx % len(spinner_chars)]}", end="", flush=True)
+        print(
+            f"\r{message}... {spinner_chars[idx % len(spinner_chars)]}",
+            end="",
+            flush=True,
+        )
         idx += 1
         time.sleep(0.1)
     print("\r" + " " * (len(message) + 10) + "\r", end="", flush=True)
@@ -377,7 +395,7 @@ def _interactive_pagination(
                 try:
                     result = get_data_func(page=page, limit=limit, **kwargs)
                     current_items = getattr(result, items_attr, [])
-                    total = getattr(result, 'total', len(current_items))
+                    total = getattr(result, "total", len(current_items))
                     scroll_offset = 0
                 finally:
                     _stop_spinner()
@@ -405,7 +423,9 @@ def _interactive_pagination(
             scroll_info = ""
             if total_items_on_page > content_height:
                 scroll_info = f" | Scroll: {scroll_offset + 1}-{min(scroll_offset + content_height, total_items_on_page)} of {total_items_on_page}"
-            click.echo(f"📄 Page {page} of {total_pages} (Total: {total} items{scroll_info})")
+            click.echo(
+                f"📄 Page {page} of {total_pages} (Total: {total} items{scroll_info})"
+            )
             click.echo("-" * min(80, width))
 
             if not current_items:
@@ -414,7 +434,7 @@ def _interactive_pagination(
                 click.echo()
             else:
                 click.echo()
-                visible = current_items[scroll_offset:scroll_offset + content_height]
+                visible = current_items[scroll_offset : scroll_offset + content_height]
                 for item in visible:
                     line = format_item_func(item)
                     if len(line) > width - 1:
@@ -425,11 +445,23 @@ def _interactive_pagination(
 
             click.echo("-" * min(80, width))
             nav = []
-            nav.append("← Previous page (left/h)" if has_prev else "← Previous page (disabled)")
-            nav.append("→ Next page (right/l)" if has_next else "→ Next page (disabled)")
+            nav.append(
+                "← Previous page (left/h)" if has_prev else "← Previous page (disabled)"
+            )
+            nav.append(
+                "→ Next page (right/l)" if has_next else "→ Next page (disabled)"
+            )
             if total_items_on_page > content_height:
-                nav.append("↑ Scroll up (up/k)" if scroll_offset > 0 else "↑ Scroll up (disabled)")
-                nav.append("↓ Scroll down (down/j)" if scroll_offset < max_scroll else "↓ Scroll down (disabled)")
+                nav.append(
+                    "↑ Scroll up (up/k)"
+                    if scroll_offset > 0
+                    else "↑ Scroll up (disabled)"
+                )
+                nav.append(
+                    "↓ Scroll down (down/j)"
+                    if scroll_offset < max_scroll
+                    else "↓ Scroll down (disabled)"
+                )
             if enable_search:
                 nav.append("[m]etadata")
             nav_text = " | ".join(nav)
@@ -441,7 +473,9 @@ def _interactive_pagination(
                 click.echo(f"Navigation: {nav_text}")
             click.echo()
             if enable_search:
-                click.echo("💡 Use arrow keys to navigate, 'm' to set metadata filter, 'q' to quit...")
+                click.echo(
+                    "💡 Use arrow keys to navigate, 'm' to set metadata filter, 'q' to quit..."
+                )
             else:
                 click.echo("💡 Use arrow keys to navigate, 'q' to quit...")
 
@@ -473,10 +507,11 @@ def _interactive_pagination(
                 current_items = []
             elif key in ("q", "\x03"):
                 break
-        
+
     finally:
         # Exit alt screen
         click.echo("\033[?1049l", nl=False)
+
 
 # ─────────────────────────────────────────────────────────────
 #  User Commands
@@ -725,7 +760,9 @@ def list_snapshots(metadata, interactive, page, limit, json_mode):
 
             def get_data(**kwargs):
                 effective_metadata = {**base_metadata, **search_filter}
-                return client.snapshots.list_paginated(metadata=effective_metadata, **kwargs)
+                return client.snapshots.list_paginated(
+                    metadata=effective_metadata, **kwargs
+                )
 
             def format_item(snap):
                 created = unix_timestamp_to_datetime(snap.created)
@@ -1003,11 +1040,15 @@ def list_instances(metadata, page, limit, interactive, json_mode):
 
             def get_data(**kwargs):
                 effective_metadata = {**base_metadata, **search_filter}
-                return client.instances.list_paginated(metadata=effective_metadata, **kwargs)
+                return client.instances.list_paginated(
+                    metadata=effective_metadata, **kwargs
+                )
 
             def format_item(inst):
                 created = unix_timestamp_to_datetime(inst.created)
-                http_services = ",".join(f"{svc.name}:{svc.port}" for svc in inst.networking.http_services)
+                http_services = ",".join(
+                    f"{svc.name}:{svc.port}" for svc in inst.networking.http_services
+                )
                 return (
                     f"   🖥  {inst.id:<24} | {created:<22} | {inst.status:<8} | "
                     f"vCPU {inst.spec.vcpus:<2} | Mem {inst.spec.memory:<6} | Disk {inst.spec.disk_size:<6} | Snapshot {inst.refs.snapshot_id} | {http_services}"
@@ -2005,9 +2046,6 @@ def chat(instance_id, conversation_file, instructions):
             handle_api_error(e)
     except Exception as e:
         handle_api_error(e)
-
-
- 
 
 
 @instance.command("boot")

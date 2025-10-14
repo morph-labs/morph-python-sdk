@@ -422,7 +422,10 @@ class SnapshotAPI:
             digest: Optional digest to filter snapshots by
             metadata: Optional metadata to filter snapshots by
         """
-        params: typing.Dict[str, typing.Union[str, int]] = {"page": page, "limit": limit}
+        params: typing.Dict[str, typing.Union[str, int]] = {
+            "page": page,
+            "limit": limit,
+        }
         if digest is not None:
             params["digest"] = digest
         if metadata is not None:
@@ -431,7 +434,8 @@ class SnapshotAPI:
         response = self._client._http_client.get("/snapshot/list", params=params)
         payload = response.json()
         snapshots = [
-            Snapshot.model_validate(s)._set_api(self) for s in payload.get("snapshots", [])
+            Snapshot.model_validate(s)._set_api(self)
+            for s in payload.get("snapshots", [])
         ]
         return SnapshotAPI.ListPaginatedResponse(
             snapshots=snapshots,
@@ -1416,14 +1420,18 @@ class InstanceAPI(BaseAPI):
             limit: Page size
             metadata: Optional metadata to filter instances by
         """
-        params: typing.Dict[str, typing.Union[str, int]] = {"page": page, "limit": limit}
+        params: typing.Dict[str, typing.Union[str, int]] = {
+            "page": page,
+            "limit": limit,
+        }
         if metadata is not None:
             for k, v in metadata.items():
                 params[f"metadata[{k}]"] = v
         response = self._client._http_client.get("/instance/list", params=params)
         payload = response.json()
         instances = [
-            Instance.model_validate(i)._set_api(self) for i in payload.get("instances", [])
+            Instance.model_validate(i)._set_api(self)
+            for i in payload.get("instances", [])
         ]
         return InstanceAPI.ListPaginatedResponse(
             instances=instances,
