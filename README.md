@@ -185,8 +185,6 @@ morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 # Start an interactive chat session with an instance
 # Note: Requires ANTHROPIC_API_KEY environment variable
 morphcloud instance chat <instance-id> [instructions]
-
-# (Removed) Computer MCP session command has been deprecated
 ```
 
 ### Development Installation
@@ -201,7 +199,7 @@ cd morphcloud
 # Install in development mode with dev dependencies
 uv pip install -e ".[dev]"
 
-# Computer SDK extras have been removed
+ 
 ```
 
 ### Configuration
@@ -375,9 +373,7 @@ with client.instances.start(snapshot_id=postgres_snapshot.id) as instance:
         ssh.run("psql -U postgres")
 ```
 
-### Experimental: Computer SDK
-
-This section has been removed. The Computer API is no longer part of the SDK.
+ 
 
 ### Asynchronous API
 
