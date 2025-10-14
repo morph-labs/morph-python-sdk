@@ -2007,9 +2007,7 @@ def chat(instance_id, conversation_file, instructions):
         handle_api_error(e)
 
 
-"""Computer-related CLI command removed."""
-    except Exception as e:
-        handle_api_error(e)
+ 
 
 
 @instance.command("boot")
