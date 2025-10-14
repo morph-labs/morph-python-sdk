@@ -28,16 +28,12 @@ dependencies = [
     "packaging>=24.2",
     "toml>=0.10.2",
     "websocket-client>=1.8.0",
-    "mcp>=1.6.0",
     "pyyaml>=6.0.2"
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff>=0.11.4",
-]
-computer = [
-    "playwright>=1.51.0",
 ]
 
 [project.scripts]

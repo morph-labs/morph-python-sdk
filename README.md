@@ -186,9 +186,7 @@ morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 # Note: Requires ANTHROPIC_API_KEY environment variable
 morphcloud instance chat <instance-id> [instructions]
 
-# Start a computer MCP session with an instance
-# Note: Requires "morphcloud[computer]" installation
-morphcloud instance computer-mcp <instance-id>
+# (Removed) Computer MCP session command has been deprecated
 ```
 
 ### Development Installation
@@ -203,8 +201,7 @@ cd morphcloud
 # Install in development mode with dev dependencies
 uv pip install -e ".[dev]"
 
-# To also include Computer SDK for development
-uv pip install -e ".[dev,computer]"
+# Computer SDK extras have been removed
 ```
 
 ### Configuration
@@ -380,34 +377,7 @@ with client.instances.start(snapshot_id=postgres_snapshot.id) as instance:
 
 ### Experimental: Computer SDK
 
-The Computer SDK provides advanced browser automation and interactive capabilities for instances. Contact the [Morph team](mailto:jesse@morph.so) for preview access to the Morph Cloud Computer snapshot. This requires installing the `computer` extra:
-
-```python
-# First ensure you've installed: uv pip install "morphcloud[computer]"
-
-from morphcloud.api import MorphCloudClient
-from morphcloud.computer import Computer
-
-# Initialize the client
-client = MorphCloudClient()
-
-# Use an existing instance
-instance = client.instances.get("your_instance_id")
-
-# Convert to a Computer instance
-computer = Computer(instance)
-
-# Use the browser automation
-browser = computer.browser
-browser.connect()
-browser.goto("https://example.com")
-screenshot = browser.screenshot()
-browser.click(100, 200)
-browser.type("Hello World")
-
-# Clean up when done
-browser.close()
-```
+This section has been removed. The Computer API is no longer part of the SDK.
 
 ### Asynchronous API
 

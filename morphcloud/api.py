@@ -189,10 +189,8 @@ class MorphCloudClient:
     # Add this property to the MorphCloudClient class
     @property
     def computers(self):
-        """Access the API for enhanced instance capabilities."""
-        from morphcloud.computer import ComputerAPI
-
-        return ComputerAPI(self)
+        """Deprecated: Computer API has been removed."""
+        raise AttributeError("The Computer API has been removed from the SDK.")
 
     @property
     def user(self) -> "UserAPI":
