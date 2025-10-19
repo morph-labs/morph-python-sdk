@@ -1575,17 +1575,84 @@ class InstanceAPI(BaseAPI):
         )
         response.raise_for_status()
 
-    def reboot(self, instance_id: str) -> None:
-        """Reboot an instance by its ID."""
-        response = self._client._http_client.post(f"/instance/{instance_id}/reboot")
-        response.raise_for_status()
+    def reboot(
+        self,
+        instance_id: str,
+        *,
+        vcpus: typing.Optional[int] = None,
+        memory: typing.Optional[int] = None,
+        disk_size: typing.Optional[int] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> Instance:
+        """
+        Reboot an instance by its ID, optionally applying a new machine configuration.
 
-    async def areboot(self, instance_id: str) -> None:
-        """Reboot an instance by its ID."""
-        response = await self._client._async_http_client.post(
-            f"/instance/{instance_id}/reboot"
-        )
+        Note: Providing vcpus/memory/disk_size triggers a cold reboot with the updated
+        resources while preserving the instance filesystem.
+        """
+        body: typing.Dict[str, typing.Any] = {}
+        if vcpus is not None:
+            body["vcpus"] = vcpus
+        if memory is not None:
+            body["memory"] = memory
+        if disk_size is not None:
+            body["disk_size"] = disk_size
+        if metadata is not None:
+            body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
+
+        if body:
+            response = self._client._http_client.post(
+                f"/instance/{instance_id}/reboot", json=body
+            )
+        else:
+            response = self._client._http_client.post(f"/instance/{instance_id}/reboot")
         response.raise_for_status()
+        return Instance.model_validate(response.json())._set_api(self)
+
+    async def areboot(
+        self,
+        instance_id: str,
+        *,
+        vcpus: typing.Optional[int] = None,
+        memory: typing.Optional[int] = None,
+        disk_size: typing.Optional[int] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> Instance:
+        """
+        Async reboot of an instance, optionally applying a new machine configuration.
+        """
+        body: typing.Dict[str, typing.Any] = {}
+        if vcpus is not None:
+            body["vcpus"] = vcpus
+        if memory is not None:
+            body["memory"] = memory
+        if disk_size is not None:
+            body["disk_size"] = disk_size
+        if metadata is not None:
+            body["metadata"] = metadata
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if ttl_action is not None:
+            body["ttl_action"] = ttl_action
+
+        if body:
+            response = await self._client._async_http_client.post(
+                f"/instance/{instance_id}/reboot", json=body
+            )
+        else:
+            response = await self._client._async_http_client.post(
+                f"/instance/{instance_id}/reboot"
+            )
+        response.raise_for_status()
+        return Instance.model_validate(response.json())._set_api(self)
 
     def boot(
         self,
@@ -2557,18 +2624,52 @@ class Instance(BaseModel):
             self._api._client.snapshots
         )
 
-    def reboot(self) -> None:
-        """Reboot the instance."""
-        response = self._api._client._http_client.post(f"/instance/{self.id}/reboot")
-        response.raise_for_status()
+    def reboot(
+        self,
+        *,
+        vcpus: typing.Optional[int] = None,
+        memory: typing.Optional[int] = None,
+        disk_size: typing.Optional[int] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> None:
+        """
+        Reboot the instance, optionally applying a new machine configuration.
+        """
+        self._api.reboot(
+            self.id,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
+            metadata=metadata,
+            ttl_seconds=ttl_seconds,
+            ttl_action=ttl_action,
+        )
         self._refresh()
 
-    async def areboot(self) -> None:
-        """Reboot the instance."""
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/reboot"
+    async def areboot(
+        self,
+        *,
+        vcpus: typing.Optional[int] = None,
+        memory: typing.Optional[int] = None,
+        disk_size: typing.Optional[int] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
+        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
+    ) -> None:
+        """
+        Async reboot of the instance, optionally applying a new machine configuration.
+        """
+        await self._api.areboot(
+            self.id,
+            vcpus=vcpus,
+            memory=memory,
+            disk_size=disk_size,
+            metadata=metadata,
+            ttl_seconds=ttl_seconds,
+            ttl_action=ttl_action,
         )
-        response.raise_for_status()
         await self._refresh_async()
 
     def branch(self, count: int) -> typing.Tuple[Snapshot, typing.List[Instance]]:
