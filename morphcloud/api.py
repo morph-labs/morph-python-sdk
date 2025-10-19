@@ -1575,6 +1575,18 @@ class InstanceAPI(BaseAPI):
         )
         response.raise_for_status()
 
+    def reboot(self, instance_id: str) -> None:
+        """Reboot an instance by its ID."""
+        response = self._client._http_client.post(f"/instance/{instance_id}/reboot")
+        response.raise_for_status()
+
+    async def areboot(self, instance_id: str) -> None:
+        """Reboot an instance by its ID."""
+        response = await self._client._async_http_client.post(
+            f"/instance/{instance_id}/reboot"
+        )
+        response.raise_for_status()
+
     def boot(
         self,
         snapshot_id: str,

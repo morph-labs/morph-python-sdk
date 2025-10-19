@@ -1308,6 +1308,35 @@ def resume_instance(instance_id):
         handle_api_error(e)
 
 
+@instance.command("reboot")
+@click.argument("instance_id")
+def reboot_instance(instance_id):
+    """Reboot a running instance."""
+    client = get_client()
+    try:
+        instance_obj = client.instances.get(instance_id)
+        with Spinner(
+            text=f"Rebooting instance {instance_id}...",
+            success_text=f"Instance rebooted: {instance_id}",
+            success_emoji="🔄",
+        ):
+            instance_obj.reboot()
+    except api.ApiError as e:
+        if e.status_code == 404:
+            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
+            sys.exit(1)
+        elif e.status_code == 409:
+            click.echo(
+                f"Error: Instance '{instance_id}' cannot be rebooted ({e.response_body}).",
+                err=True,
+            )
+            sys.exit(1)
+        else:
+            handle_api_error(e)
+    except Exception as e:
+        handle_api_error(e)
+
+
 @instance.command("get")
 @click.argument("instance_id")
 def get_instance(instance_id):
