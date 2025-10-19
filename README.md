@@ -129,6 +129,9 @@ morphcloud instance pause <instance-id>
 # Resume a paused instance
 morphcloud instance resume <instance-id>
 
+# Reboot an instance
+morphcloud instance reboot <instance-id>
+
 # Stop an instance
 morphcloud instance stop <instance-id>
 
