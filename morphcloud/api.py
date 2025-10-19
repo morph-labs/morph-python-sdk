@@ -1611,9 +1611,7 @@ class InstanceAPI(BaseAPI):
                 f"/instance/{instance_id}/reboot", json=body
             )
         else:
-            response = self._client._http_client.post(
-                f"/instance/{instance_id}/reboot"
-            )
+            response = self._client._http_client.post(f"/instance/{instance_id}/reboot")
         response.raise_for_status()
         return Instance.model_validate(response.json())._set_api(self)
 

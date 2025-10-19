@@ -1310,17 +1310,49 @@ def resume_instance(instance_id):
 
 @instance.command("reboot")
 @click.argument("instance_id")
-def reboot_instance(instance_id):
-    """Reboot a running instance."""
+@click.option("--vcpus", type=int, required=False)
+@click.option("--memory", type=int, required=False)
+@click.option("--disk-size", type=int, required=False)
+@click.option("--ttl-seconds", type=int, required=False)
+@click.option(
+    "--ttl-action",
+    type=click.Choice(["stop", "pause"]),
+    required=False,
+)
+@click.option("--metadata", "-m", "metadata_options", multiple=True)
+def reboot_instance(
+    instance_id,
+    vcpus,
+    memory,
+    disk_size,
+    ttl_seconds,
+    ttl_action,
+    metadata_options,
+):
+    """Reboot a running instance, optionally updating resources and settings."""
     client = get_client()
     try:
         instance_obj = client.instances.get(instance_id)
+        metadata_dict = {}
+        for meta in metadata_options:
+            if "=" not in meta:
+                raise click.UsageError("Metadata must be key=value.")
+            k, v = meta.split("=", 1)
+            metadata_dict[k] = v
+
         with Spinner(
             text=f"Rebooting instance {instance_id}...",
             success_text=f"Instance rebooted: {instance_id}",
             success_emoji="🔄",
         ):
-            instance_obj.reboot()
+            instance_obj.reboot(
+                vcpus=vcpus,
+                memory=memory,
+                disk_size=disk_size,
+                metadata=metadata_dict if metadata_dict else None,
+                ttl_seconds=ttl_seconds,
+                ttl_action=ttl_action,
+            )
     except api.ApiError as e:
         if e.status_code == 404:
             click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
