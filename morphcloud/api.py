@@ -232,6 +232,55 @@ class UserAPI(BaseAPI):
         await self._client._async_http_client.delete(f"/user/api-key/{api_key_id}")
 
     # ────────────────────────────────
+    # Secrets
+    # ────────────────────────────────
+    def list_secrets(self) -> typing.List["Secret"]:
+        response = self._client._http_client.get("/user/secret")
+        secret_list = SecretList.model_validate(response.json())
+        return secret_list.data
+
+    async def alist_secrets(self) -> typing.List["Secret"]:
+        response = await self._client._async_http_client.get("/user/secret")
+        secret_list = SecretList.model_validate(response.json())
+        return secret_list.data
+
+    def create_secret(
+        self,
+        name: str,
+        value: str,
+        description: typing.Optional[str] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> "Secret":
+        request_body = CreateSecretRequest(
+            name=name, value=value, description=description, metadata=metadata
+        )
+        response = self._client._http_client.post(
+            "/user/secret", json=request_body.model_dump(exclude_none=True)
+        )
+        return Secret.model_validate(response.json())
+
+    async def acreate_secret(
+        self,
+        name: str,
+        value: str,
+        description: typing.Optional[str] = None,
+        metadata: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> "Secret":
+        request_body = CreateSecretRequest(
+            name=name, value=value, description=description, metadata=metadata
+        )
+        response = await self._client._async_http_client.post(
+            "/user/secret", json=request_body.model_dump(exclude_none=True)
+        )
+        return Secret.model_validate(response.json())
+
+    def delete_secret(self, secret_name: str) -> None:
+        self._client._http_client.delete(f"/user/secret/{secret_name}")
+
+    async def adelete_secret(self, secret_name: str) -> None:
+        await self._client._async_http_client.delete(f"/user/secret/{secret_name}")
+
+    # ────────────────────────────────
     # SSH Key
     # ────────────────────────────────
     def get_ssh_key(self) -> "UserSSHKey":
@@ -302,6 +351,27 @@ class CreateAPIKeyResponse(BaseModel):
     key: str
     key_prefix: str
     created: int
+
+
+class Secret(BaseModel):
+    id: str
+    name: str
+    description: typing.Optional[str] = None
+    metadata: typing.Dict[str, str] = Field(default_factory=dict)
+    created: int
+    updated: int
+
+
+class SecretList(BaseModel):
+    object: typing.Literal["list"] = "list"
+    data: typing.List[Secret]
+
+
+class CreateSecretRequest(BaseModel):
+    name: str
+    value: str
+    description: typing.Optional[str] = None
+    metadata: typing.Optional[typing.Dict[str, str]] = None
 
 
 class UserSSHKey(BaseModel):
