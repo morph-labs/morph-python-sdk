@@ -9,6 +9,7 @@ import termios
 import threading
 import time
 import tty
+import typing
 
 import click
 import requests
@@ -595,6 +596,111 @@ def user_api_key_delete(api_key_id):
             success_emoji="🗑",
         ):
             client.user.delete_api_key(api_key_id)
+    except Exception as e:
+        handle_api_error(e)
+
+
+# ── Secrets ─────────────────────────────────────────────────
+
+
+@user.group(cls=AliasedGroup, name="secret")
+def user_secret():
+    """Manage user secrets."""
+    pass
+
+
+@user_secret.command(name="list", aliases=["ls"])
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_secret_list(json_mode):
+    client = get_client()
+    try:
+        secrets = client.user.list_secrets()
+        if json_mode:
+            for secret in secrets:
+                click.echo(format_json(secret))
+        else:
+            headers = ["Name", "Description", "Metadata", "Created", "Updated"]
+            rows = []
+            for secret in secrets:
+                metadata_str = (
+                    ", ".join(f"{k}={v}" for k, v in secret.metadata.items())
+                    if secret.metadata
+                    else ""
+                )
+                rows.append(
+                    [
+                        secret.name,
+                        secret.description or "",
+                        metadata_str,
+                        unix_timestamp_to_datetime(secret.created),
+                        unix_timestamp_to_datetime(secret.updated),
+                    ]
+                )
+            print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_secret.command(name="create", aliases=["new"])
+@click.option("--name", required=True, help="Unique secret name.")
+@click.option("--value", required=True, help="Secret value.")
+@click.option("--description", default=None, help="Optional description.")
+@click.option(
+    "--metadata",
+    "-m",
+    "metadata_options",
+    multiple=True,
+    help="Optional metadata (key=value).",
+)
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_secret_create(name, value, description, metadata_options, json_mode):
+    metadata_dict: typing.Optional[typing.Dict[str, str]] = None
+    if metadata_options:
+        metadata_dict = {}
+        for option in metadata_options:
+            if "=" not in option:
+                raise click.ClickException(
+                    "Metadata must be in key=value format."
+                )
+            key, val = option.split("=", 1)
+            if not key:
+                raise click.ClickException("Metadata key cannot be empty.")
+            metadata_dict[key] = val
+
+    client = get_client()
+    try:
+        with Spinner(
+            text=f"Creating secret {name}...",
+            success_text="Secret created",
+            success_emoji="🔐",
+        ):
+            secret = client.user.create_secret(
+                name=name,
+                value=value,
+                description=description,
+                metadata=metadata_dict,
+            )
+        if json_mode:
+            click.echo(format_json(secret))
+        else:
+            click.secho("Secret created.", fg="green")
+            click.echo(f"Name: {secret.name}")
+            click.echo(f"Created: {unix_timestamp_to_datetime(secret.created)}")
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_secret.command(name="delete", aliases=["rm"])
+@click.argument("name")
+def user_secret_delete(name):
+    client = get_client()
+    try:
+        with Spinner(
+            text=f"Deleting secret {name}...",
+            success_text="Secret deleted",
+            success_emoji="🗑",
+        ):
+            client.user.delete_secret(name)
     except Exception as e:
         handle_api_error(e)
 
