@@ -608,6 +608,6 @@ You have one tool available: "run_command" which takes a command to run and retu
             messages.append({"role": "assistant", "content": response_msg["content"]})
             save_conversation()
 
-        print()  # maintain original blank-line behaviour
+        print()
 
-    save_conversation()  # final flush on exit
+    save_conversation()
