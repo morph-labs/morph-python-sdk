@@ -14,7 +14,6 @@ from functools import lru_cache
 
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
-
 # Import Rich for fancy printing
 from rich.console import Console
 
@@ -3270,9 +3269,10 @@ class Instance(BaseModel):
 
     def ssh_connect(self):
         """Create a paramiko SSHClient and connect to the instance"""
-        import paramiko
         import random
         import socket
+
+        import paramiko
 
         hostname = os.environ.get("MORPH_SSH_HOSTNAME", "ssh.cloud.morph.so")
         port = int(os.environ.get("MORPH_SSH_PORT") or 22)

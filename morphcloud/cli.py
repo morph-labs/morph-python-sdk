@@ -659,9 +659,7 @@ def user_secret_create(name, value, description, metadata_options, json_mode):
         metadata_dict = {}
         for option in metadata_options:
             if "=" not in option:
-                raise click.ClickException(
-                    "Metadata must be in key=value format."
-                )
+                raise click.ClickException("Metadata must be in key=value format.")
             key, val = option.split("=", 1)
             if not key:
                 raise click.ClickException("Metadata key cannot be empty.")
