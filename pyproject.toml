@@ -1,6 +1,6 @@
 [project]
 name = "morphcloud"
-version = "0.1.98"
+version = "0.1.99"
 description = "A Python SDK and CLI tool for creating, managing, and interacting with Morph Cloud VMs."
 authors = [
     {name = "Morph Labs", email = "jobs@morph.so"}
