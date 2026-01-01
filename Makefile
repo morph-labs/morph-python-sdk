@@ -1,4 +1,4 @@
-.PHONY: deploy format commit-format check-undefined increment-version release trigger-workflow get-version
+.PHONY: deploy format commit-format check-undefined increment-version release trigger-workflow get-version check-gh-auth
 
 # Default Python interpreter
 PYTHON := uv run python
@@ -7,7 +7,22 @@ GIT_FILES := $(shell git ls-files "./morphcloud")
 # Helper function to extract the version, defined once and reusable
 get_current_version = $(shell grep -oP 'version = "\K[^"]+' pyproject.toml)
 
-deploy: format commit-format check-undefined increment-version release trigger-workflow
+deploy: check-gh-auth format commit-format check-undefined increment-version release trigger-workflow
+
+# Check that GitHub CLI is installed and user is authenticated
+check-gh-auth:
+	@echo "Checking GitHub CLI authentication..."
+	@if ! command -v gh &> /dev/null; then \
+		echo "Error: GitHub CLI (gh) is not installed."; \
+		echo "Please install it from https://cli.github.com/"; \
+		exit 1; \
+	fi
+	@if ! gh auth status &> /dev/null; then \
+		echo "Error: You are not authenticated with GitHub CLI."; \
+		echo "Please run 'gh auth login' to authenticate."; \
+		exit 1; \
+	fi
+	@echo "GitHub CLI authentication verified!"
 
 # Format code with black and isort
 format:

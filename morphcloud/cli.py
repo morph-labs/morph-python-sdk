@@ -1705,38 +1705,54 @@ def hide_http_service(instance_id, name):
 
 @instance.command("exec")
 @click.argument("instance_id")
+@click.option(
+    "--stream",
+    is_flag=True,
+    default=False,
+    help="Stream output incrementally as it arrives instead of waiting for completion.",
+)
 @click.argument("command_args", nargs=-1, required=True)
-def exec_command(instance_id, command_args):
+def exec_command(instance_id, stream, command_args):
     """
     Execute a command inside an instance and print output.
+
+    Use --stream to see output incrementally as the command runs.
+
+    Example: morphcloud instance exec $INSTANCE_ID --stream -- sudo apt update
     """
     client = get_client()
     try:
         instance_obj = client.instances.get(instance_id)
-        # if instance_obj.status != api.InstanceStatus.READY:
-        #     click.echo(
-        #         f"Error: Instance must be READY to execute commands. Current: {instance_obj.status.value}",
-        #         err=True,
-        #     )
-        #     sys.exit(1)
 
-        cmd_str = " ".join(command_args)
-        with Spinner(
-            text=f"Executing: {cmd_str} on {instance_id}...",
-            success_text="Command execution complete!",
-            success_emoji="🏁",
-        ):
-            result = instance_obj.exec(list(command_args))
+        if stream:
+            # Streaming mode: print output as it arrives
+            result = instance_obj.exec(
+                list(command_args),
+                on_stdout=lambda chunk: print(chunk, end="", flush=True),
+                on_stderr=lambda chunk: print(
+                    chunk, end="", file=sys.stderr, flush=True
+                ),
+            )
+            sys.exit(result.exit_code)
+        else:
+            # Traditional mode: wait for completion, then print
+            cmd_str = " ".join(command_args)
+            with Spinner(
+                text=f"Executing: {cmd_str} on {instance_id}...",
+                success_text="Command execution complete!",
+                success_emoji="🏁",
+            ):
+                result = instance_obj.exec(list(command_args))
 
-        if result.stdout:
-            click.echo("--- Stdout ---")
-            click.echo(result.stdout.strip())
-        if result.stderr:
-            click.echo("--- Stderr ---", err=True)
-            click.echo(result.stderr.strip(), err=True)
+            if result.stdout:
+                click.echo("--- Stdout ---")
+                click.echo(result.stdout.strip())
+            if result.stderr:
+                click.echo("--- Stderr ---", err=True)
+                click.echo(result.stderr.strip(), err=True)
 
-        click.echo(f"--- Exit Code: {result.exit_code} ---")
-        sys.exit(result.exit_code)
+            click.echo(f"--- Exit Code: {result.exit_code} ---")
+            sys.exit(result.exit_code)
     except api.ApiError as e:
         if e.status_code == 404:
             click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
