@@ -197,7 +197,7 @@ class MorphCloudClient:
         self._exec_retries = (
             exec_retries
             if exec_retries is not None
-            else _env_int("MORPH_EXEC_RETRIES", 0)
+            else _env_int("MORPH_EXEC_RETRIES", 1)
         )
         self._exec_retry_backoff_s = (
             exec_retry_backoff_s
@@ -2962,22 +2962,25 @@ class Instance(BaseModel):
         self,
         command: typing.Union[str, typing.List[str]],
         timeout: typing.Optional[float] = None,
-        retries: typing.Optional[int] = None,
-        retry_backoff_s: typing.Optional[float] = None,
         on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
+        retries: typing.Optional[int] = None,
+        retry_backoff_s: typing.Optional[float] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance.
 
         Args:
             command: Command to execute (string or list of strings)
             timeout: Optional timeout in seconds
-            retries: Optional retry count for transient transport failures.
-                NOTE: Retrying may execute the command more than once in rare cases.
-                Only enable for idempotent/safe commands.
-            retry_backoff_s: Optional base backoff (seconds) between retries.
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
+            retries: Optional retry count for transient transport failures.
+                Default is controlled by `MORPH_EXEC_RETRIES` (default: 1). Set to 0
+                to disable retries.
+
+                NOTE: Retrying may execute the command more than once in rare cases.
+                If you require strict exactly-once semantics, pass `retries=0`.
+            retry_backoff_s: Optional base backoff (seconds) between retries.
 
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
@@ -3135,6 +3138,8 @@ class Instance(BaseModel):
         timeout: typing.Optional[float] = None,
         on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
+        retries: typing.Optional[int] = None,
+        retry_backoff_s: typing.Optional[float] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance asynchronously.
 
@@ -3143,6 +3148,13 @@ class Instance(BaseModel):
             timeout: Optional timeout in seconds
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
+            retries: Optional retry count for transient transport failures.
+                Default is controlled by `MORPH_EXEC_RETRIES` (default: 1). Set to 0
+                to disable retries.
+
+                NOTE: Retrying may execute the command more than once in rare cases.
+                If you require strict exactly-once semantics, pass `retries=0`.
+            retry_backoff_s: Optional base backoff (seconds) between retries.
 
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
@@ -3158,21 +3170,51 @@ class Instance(BaseModel):
             return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            try:
-                response = await self._api._client._async_http_client.post(
-                    f"/instance/{self.id}/exec",
-                    json={"command": command},
-                    timeout=timeout,
-                )
-                return InstanceExecResponse.model_validate(response.json())
-            except Exception as e:
-                # Convert HTTP timeout errors to more user-friendly TimeoutError
-                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(
-                        f"Command execution timed out after {timeout} seconds"
-                    ) from e
-                # Re-raise other exceptions as-is
-                raise
+            effective_retries = (
+                retries
+                if retries is not None
+                else getattr(self._api._client, "_exec_retries", 0)
+            )
+            effective_backoff = (
+                retry_backoff_s
+                if retry_backoff_s is not None
+                else getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+            )
+
+            transient_errors: tuple[type[BaseException], ...] = (
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+            )
+
+            attempt = 0
+            while True:
+                try:
+                    response = await self._api._client._async_http_client.post(
+                        f"/instance/{self.id}/exec",
+                        json={"command": command},
+                        timeout=timeout,
+                    )
+                    return InstanceExecResponse.model_validate(response.json())
+                except Exception as e:
+                    # Convert HTTP timeout errors to more user-friendly TimeoutError
+                    if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                        raise TimeoutError(
+                            f"Command execution timed out after {timeout} seconds"
+                        ) from e
+
+                    if attempt < int(effective_retries or 0) and isinstance(
+                        e, transient_errors
+                    ):
+                        delay = float(effective_backoff) * (2**attempt)
+                        await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
+
+                    # Re-raise other exceptions as-is
+                    raise
 
     async def _aexec_streaming(
         self,
