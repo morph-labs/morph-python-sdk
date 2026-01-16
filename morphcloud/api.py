@@ -130,6 +130,14 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
+        *,
+        http_max_connections: typing.Optional[int] = None,
+        http_max_keepalive_connections: typing.Optional[int] = None,
+        http_keepalive_expiry: typing.Optional[float] = None,
+        http_transport_retries: typing.Optional[int] = None,
+        http2: typing.Optional[bool] = None,
+        exec_retries: typing.Optional[int] = None,
+        exec_retry_backoff_s: typing.Optional[float] = None,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
@@ -140,6 +148,71 @@ class MorphCloudClient:
                 "API key must be provided or set in MORPH_API_KEY environment variable"
             )
 
+        def _env_int(name: str, default: int) -> int:
+            value = os.environ.get(name)
+            if value is None or value == "":
+                return default
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            value = os.environ.get(name)
+            if value is None or value == "":
+                return default
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        def _env_bool(name: str, default: bool) -> bool:
+            value = os.environ.get(name)
+            if value is None or value == "":
+                return default
+            return value.strip().lower() in ("1", "true", "t", "yes", "y", "on")
+
+        max_connections = (
+            http_max_connections
+            if http_max_connections is not None
+            else _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
+        )
+        max_keepalive_connections = (
+            http_max_keepalive_connections
+            if http_max_keepalive_connections is not None
+            else _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
+        )
+        keepalive_expiry = (
+            http_keepalive_expiry
+            if http_keepalive_expiry is not None
+            else _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
+        )
+        transport_retries = (
+            http_transport_retries
+            if http_transport_retries is not None
+            else _env_int("MORPH_HTTP_TRANSPORT_RETRIES", 0)
+        )
+        use_http2 = http2 if http2 is not None else _env_bool("MORPH_HTTP2", False)
+
+        self._exec_retries = (
+            exec_retries
+            if exec_retries is not None
+            else _env_int("MORPH_EXEC_RETRIES", 0)
+        )
+        self._exec_retry_backoff_s = (
+            exec_retry_backoff_s
+            if exec_retry_backoff_s is not None
+            else _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
+        )
+
+        limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+            keepalive_expiry=keepalive_expiry,
+        )
+        transport = httpx.HTTPTransport(retries=transport_retries, limits=limits, http2=use_http2)
+        async_transport = httpx.AsyncHTTPTransport(retries=transport_retries, limits=limits, http2=use_http2)
+
         self._http_client = ApiClient(
             base_url=self.base_url,
             headers={
@@ -147,6 +220,7 @@ class MorphCloudClient:
                 "Content-Type": "application/json",
             },
             timeout=None,
+            transport=transport,
         )
         self._async_http_client = AsyncApiClient(
             base_url=self.base_url,
@@ -155,6 +229,7 @@ class MorphCloudClient:
                 "Content-Type": "application/json",
             },
             timeout=None,
+            transport=async_transport,
         )
 
         self._load_sdk_plugins()
@@ -2887,6 +2962,8 @@ class Instance(BaseModel):
         self,
         command: typing.Union[str, typing.List[str]],
         timeout: typing.Optional[float] = None,
+        retries: typing.Optional[int] = None,
+        retry_backoff_s: typing.Optional[float] = None,
         on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
     ) -> InstanceExecResponse:
@@ -2895,6 +2972,10 @@ class Instance(BaseModel):
         Args:
             command: Command to execute (string or list of strings)
             timeout: Optional timeout in seconds
+            retries: Optional retry count for transient transport failures.
+                NOTE: Retrying may execute the command more than once in rare cases.
+                Only enable for idempotent/safe commands.
+            retry_backoff_s: Optional base backoff (seconds) between retries.
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
 
@@ -2912,21 +2993,49 @@ class Instance(BaseModel):
             return self._exec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            try:
-                response = self._api._client._http_client.post(
-                    f"/instance/{self.id}/exec",
-                    json={"command": command},
-                    timeout=timeout,
-                )
-                return InstanceExecResponse.model_validate(response.json())
-            except Exception as e:
-                # Convert HTTP timeout errors to more user-friendly TimeoutError
-                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(
-                        f"Command execution timed out after {timeout} seconds"
-                    ) from e
-                # Re-raise other exceptions as-is
-                raise
+            effective_retries = (
+                retries
+                if retries is not None
+                else getattr(self._api._client, "_exec_retries", 0)
+            )
+            effective_backoff = (
+                retry_backoff_s
+                if retry_backoff_s is not None
+                else getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+            )
+
+            transient_errors: tuple[type[BaseException], ...] = (
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+            )
+
+            attempt = 0
+            while True:
+                try:
+                    response = self._api._client._http_client.post(
+                        f"/instance/{self.id}/exec",
+                        json={"command": command},
+                        timeout=timeout,
+                    )
+                    return InstanceExecResponse.model_validate(response.json())
+                except Exception as e:
+                    # Convert HTTP timeout errors to more user-friendly TimeoutError
+                    if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                        raise TimeoutError(
+                            f"Command execution timed out after {timeout} seconds"
+                        ) from e
+
+                    if attempt < int(effective_retries or 0) and isinstance(e, transient_errors):
+                        delay = float(effective_backoff) * (2 ** attempt)
+                        time.sleep(delay)
+                        attempt += 1
+                        continue
+
+                    # Re-raise other exceptions as-is
+                    raise
 
     def _exec_streaming(
         self,
