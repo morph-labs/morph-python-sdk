@@ -158,19 +158,13 @@ class MorphCloudClient:
             except Exception:
                 return default
 
-        def _env_bool(name: str, default: bool) -> bool:
-            value = os.environ.get(name)
-            if value is None or value == "":
-                return default
-            return value.strip().lower() in ("1", "true", "t", "yes", "y", "on")
-
         max_connections = _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
         max_keepalive_connections = _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
         keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
-        transport_retries = _env_int("MORPH_HTTP_TRANSPORT_RETRIES", 0)
-        use_http2 = _env_bool("MORPH_HTTP2", False)
 
-        self._exec_retries = _env_int("MORPH_EXEC_RETRIES", 1)
+        # Always retry once on transient transport errors for instance.exec/instance.aexec.
+        # Use `MORPH_EXEC_RETRY_BACKOFF_S` to tune the (small) backoff.
+        self._exec_retries = 1
         self._exec_retry_backoff_s = _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
 
         limits = httpx.Limits(
@@ -178,8 +172,8 @@ class MorphCloudClient:
             max_keepalive_connections=max_keepalive_connections,
             keepalive_expiry=keepalive_expiry,
         )
-        transport = httpx.HTTPTransport(retries=transport_retries, limits=limits, http2=use_http2)
-        async_transport = httpx.AsyncHTTPTransport(retries=transport_retries, limits=limits, http2=use_http2)
+        transport = httpx.HTTPTransport(limits=limits)
+        async_transport = httpx.AsyncHTTPTransport(limits=limits)
 
         self._http_client = ApiClient(
             base_url=self.base_url,
