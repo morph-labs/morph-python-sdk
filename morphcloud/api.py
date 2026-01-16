@@ -140,6 +140,41 @@ class MorphCloudClient:
                 "API key must be provided or set in MORPH_API_KEY environment variable"
             )
 
+        def _env_int(name: str, default: int) -> int:
+            value = os.environ.get(name)
+            if value is None or value == "":
+                return default
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            value = os.environ.get(name)
+            if value is None or value == "":
+                return default
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        max_connections = _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
+        max_keepalive_connections = _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
+        keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
+
+        # Always retry once on transient transport errors for instance.exec/instance.aexec.
+        # Use `MORPH_EXEC_RETRY_BACKOFF_S` to tune the (small) backoff.
+        self._exec_retries = 1
+        self._exec_retry_backoff_s = _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
+
+        limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+            keepalive_expiry=keepalive_expiry,
+        )
+        transport = httpx.HTTPTransport(limits=limits)
+        async_transport = httpx.AsyncHTTPTransport(limits=limits)
+
         self._http_client = ApiClient(
             base_url=self.base_url,
             headers={
@@ -147,6 +182,7 @@ class MorphCloudClient:
                 "Content-Type": "application/json",
             },
             timeout=None,
+            transport=transport,
         )
         self._async_http_client = AsyncApiClient(
             base_url=self.base_url,
@@ -155,6 +191,7 @@ class MorphCloudClient:
                 "Content-Type": "application/json",
             },
             timeout=None,
+            transport=async_transport,
         )
 
         self._load_sdk_plugins()
@@ -2912,21 +2949,43 @@ class Instance(BaseModel):
             return self._exec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            try:
-                response = self._api._client._http_client.post(
-                    f"/instance/{self.id}/exec",
-                    json={"command": command},
-                    timeout=timeout,
-                )
-                return InstanceExecResponse.model_validate(response.json())
-            except Exception as e:
-                # Convert HTTP timeout errors to more user-friendly TimeoutError
-                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(
-                        f"Command execution timed out after {timeout} seconds"
-                    ) from e
-                # Re-raise other exceptions as-is
-                raise
+            effective_retries = getattr(self._api._client, "_exec_retries", 0)
+            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+
+            transient_errors: tuple[type[BaseException], ...] = (
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+            )
+
+            attempt = 0
+            while True:
+                try:
+                    response = self._api._client._http_client.post(
+                        f"/instance/{self.id}/exec",
+                        json={"command": command},
+                        timeout=timeout,
+                    )
+                    return InstanceExecResponse.model_validate(response.json())
+                except Exception as e:
+                    # Convert HTTP timeout errors to more user-friendly TimeoutError
+                    if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                        raise TimeoutError(
+                            f"Command execution timed out after {timeout} seconds"
+                        ) from e
+
+                    if attempt < int(effective_retries or 0) and isinstance(
+                        e, transient_errors
+                    ):
+                        delay = float(effective_backoff) * (2 ** attempt)
+                        time.sleep(delay)
+                        attempt += 1
+                        continue
+
+                    # Re-raise other exceptions as-is
+                    raise
 
     def _exec_streaming(
         self,
@@ -3049,21 +3108,43 @@ class Instance(BaseModel):
             return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            try:
-                response = await self._api._client._async_http_client.post(
-                    f"/instance/{self.id}/exec",
-                    json={"command": command},
-                    timeout=timeout,
-                )
-                return InstanceExecResponse.model_validate(response.json())
-            except Exception as e:
-                # Convert HTTP timeout errors to more user-friendly TimeoutError
-                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                    raise TimeoutError(
-                        f"Command execution timed out after {timeout} seconds"
-                    ) from e
-                # Re-raise other exceptions as-is
-                raise
+            effective_retries = getattr(self._api._client, "_exec_retries", 0)
+            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+
+            transient_errors: tuple[type[BaseException], ...] = (
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+            )
+
+            attempt = 0
+            while True:
+                try:
+                    response = await self._api._client._async_http_client.post(
+                        f"/instance/{self.id}/exec",
+                        json={"command": command},
+                        timeout=timeout,
+                    )
+                    return InstanceExecResponse.model_validate(response.json())
+                except Exception as e:
+                    # Convert HTTP timeout errors to more user-friendly TimeoutError
+                    if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                        raise TimeoutError(
+                            f"Command execution timed out after {timeout} seconds"
+                        ) from e
+
+                    if attempt < int(effective_retries or 0) and isinstance(
+                        e, transient_errors
+                    ):
+                        delay = float(effective_backoff) * (2**attempt)
+                        await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
+
+                    # Re-raise other exceptions as-is
+                    raise
 
     async def _aexec_streaming(
         self,
