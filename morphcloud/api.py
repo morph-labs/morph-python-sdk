@@ -130,14 +130,6 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
-        *,
-        http_max_connections: typing.Optional[int] = None,
-        http_max_keepalive_connections: typing.Optional[int] = None,
-        http_keepalive_expiry: typing.Optional[float] = None,
-        http_transport_retries: typing.Optional[int] = None,
-        http2: typing.Optional[bool] = None,
-        exec_retries: typing.Optional[int] = None,
-        exec_retry_backoff_s: typing.Optional[float] = None,
     ):
         self.base_url = base_url or os.environ.get(
             "MORPH_BASE_URL", "https://cloud.morph.so/api"
@@ -172,38 +164,14 @@ class MorphCloudClient:
                 return default
             return value.strip().lower() in ("1", "true", "t", "yes", "y", "on")
 
-        max_connections = (
-            http_max_connections
-            if http_max_connections is not None
-            else _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
-        )
-        max_keepalive_connections = (
-            http_max_keepalive_connections
-            if http_max_keepalive_connections is not None
-            else _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
-        )
-        keepalive_expiry = (
-            http_keepalive_expiry
-            if http_keepalive_expiry is not None
-            else _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
-        )
-        transport_retries = (
-            http_transport_retries
-            if http_transport_retries is not None
-            else _env_int("MORPH_HTTP_TRANSPORT_RETRIES", 0)
-        )
-        use_http2 = http2 if http2 is not None else _env_bool("MORPH_HTTP2", False)
+        max_connections = _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
+        max_keepalive_connections = _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
+        keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
+        transport_retries = _env_int("MORPH_HTTP_TRANSPORT_RETRIES", 0)
+        use_http2 = _env_bool("MORPH_HTTP2", False)
 
-        self._exec_retries = (
-            exec_retries
-            if exec_retries is not None
-            else _env_int("MORPH_EXEC_RETRIES", 1)
-        )
-        self._exec_retry_backoff_s = (
-            exec_retry_backoff_s
-            if exec_retry_backoff_s is not None
-            else _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
-        )
+        self._exec_retries = _env_int("MORPH_EXEC_RETRIES", 1)
+        self._exec_retry_backoff_s = _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
 
         limits = httpx.Limits(
             max_connections=max_connections,
@@ -2964,8 +2932,6 @@ class Instance(BaseModel):
         timeout: typing.Optional[float] = None,
         on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-        retries: typing.Optional[int] = None,
-        retry_backoff_s: typing.Optional[float] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance.
 
@@ -2974,13 +2940,6 @@ class Instance(BaseModel):
             timeout: Optional timeout in seconds
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
-            retries: Optional retry count for transient transport failures.
-                Default is controlled by `MORPH_EXEC_RETRIES` (default: 1). Set to 0
-                to disable retries.
-
-                NOTE: Retrying may execute the command more than once in rare cases.
-                If you require strict exactly-once semantics, pass `retries=0`.
-            retry_backoff_s: Optional base backoff (seconds) between retries.
 
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
@@ -2996,16 +2955,8 @@ class Instance(BaseModel):
             return self._exec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            effective_retries = (
-                retries
-                if retries is not None
-                else getattr(self._api._client, "_exec_retries", 0)
-            )
-            effective_backoff = (
-                retry_backoff_s
-                if retry_backoff_s is not None
-                else getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
-            )
+            effective_retries = getattr(self._api._client, "_exec_retries", 0)
+            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
 
             transient_errors: tuple[type[BaseException], ...] = (
                 httpx.ReadError,
@@ -3031,7 +2982,9 @@ class Instance(BaseModel):
                             f"Command execution timed out after {timeout} seconds"
                         ) from e
 
-                    if attempt < int(effective_retries or 0) and isinstance(e, transient_errors):
+                    if attempt < int(effective_retries or 0) and isinstance(
+                        e, transient_errors
+                    ):
                         delay = float(effective_backoff) * (2 ** attempt)
                         time.sleep(delay)
                         attempt += 1
@@ -3138,8 +3091,6 @@ class Instance(BaseModel):
         timeout: typing.Optional[float] = None,
         on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
         on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-        retries: typing.Optional[int] = None,
-        retry_backoff_s: typing.Optional[float] = None,
     ) -> InstanceExecResponse:
         """Execute a command on the instance asynchronously.
 
@@ -3148,13 +3099,6 @@ class Instance(BaseModel):
             timeout: Optional timeout in seconds
             on_stdout: Optional callback for stdout chunks during streaming execution
             on_stderr: Optional callback for stderr chunks during streaming execution
-            retries: Optional retry count for transient transport failures.
-                Default is controlled by `MORPH_EXEC_RETRIES` (default: 1). Set to 0
-                to disable retries.
-
-                NOTE: Retrying may execute the command more than once in rare cases.
-                If you require strict exactly-once semantics, pass `retries=0`.
-            retry_backoff_s: Optional base backoff (seconds) between retries.
 
         Returns:
             InstanceExecResponse with exit_code, stdout, and stderr
@@ -3170,16 +3114,8 @@ class Instance(BaseModel):
             return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
         else:
             # Use traditional endpoint
-            effective_retries = (
-                retries
-                if retries is not None
-                else getattr(self._api._client, "_exec_retries", 0)
-            )
-            effective_backoff = (
-                retry_backoff_s
-                if retry_backoff_s is not None
-                else getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
-            )
+            effective_retries = getattr(self._api._client, "_exec_retries", 0)
+            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
 
             transient_errors: tuple[type[BaseException], ...] = (
                 httpx.ReadError,
