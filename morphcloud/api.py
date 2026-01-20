@@ -158,9 +158,14 @@ class MorphCloudClient:
             except Exception:
                 return default
 
+        # Defaults tuned for moderate concurrency without excessive TLS connection churn.
+        # Override via env vars if you need to constrain socket usage.
         max_connections = _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
-        max_keepalive_connections = _env_int("MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS", 20)
-        keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 5.0)
+        max_keepalive_connections = _env_int(
+            "MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS",
+            max_connections,
+        )
+        keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 60.0)
 
         # Always retry once on transient transport errors for instance.exec/instance.aexec.
         # Use `MORPH_EXEC_RETRY_BACKOFF_S` to tune the (small) backoff.
