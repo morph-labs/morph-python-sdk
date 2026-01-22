@@ -17,12 +17,15 @@ check-gh-auth:
 		echo "Please install it from https://cli.github.com/"; \
 		exit 1; \
 	fi
-	@if ! gh auth status &> /dev/null; then \
+	@if gh auth status &> /dev/null; then \
+		echo "GitHub CLI authentication verified!"; \
+	elif gh repo view &> /dev/null; then \
+		echo "GitHub CLI token verified (repo access)."; \
+	else \
 		echo "Error: You are not authenticated with GitHub CLI."; \
-		echo "Please run 'gh auth login' to authenticate."; \
+		echo "Set GH_TOKEN/GITHUB_TOKEN or run 'gh auth login' to authenticate."; \
 		exit 1; \
 	fi
-	@echo "GitHub CLI authentication verified!"
 
 # Format code with black and isort
 format:
@@ -54,8 +57,7 @@ check-undefined:
 # Increment version if current is less than the latest on PyPI
 increment-version:
 	@echo "Checking current version against PyPI..."
-	@chmod +x ./scripts/increment_version.py
-	@./scripts/increment_version.py
+	uv run python ./scripts/increment_version.py
 
 # Display the current version
 get-version:
