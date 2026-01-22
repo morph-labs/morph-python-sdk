@@ -641,9 +641,20 @@ def user_secret_list(json_mode):
         handle_api_error(e)
 
 
-@user_secret.command(name="create", aliases=["new"])
+@user_secret.command(name="create", aliases=["new", "set"])
 @click.option("--name", required=True, help="Unique secret name.")
-@click.option("--value", required=True, help="Secret value.")
+@click.option(
+    "--value",
+    default=None,
+    help="Secret value. Prefer --value-stdin or interactive prompt to avoid shell history leaks.",
+)
+@click.option(
+    "--value-stdin",
+    "value_stdin",
+    is_flag=True,
+    default=False,
+    help="Read secret value from stdin.",
+)
 @click.option("--description", default=None, help="Optional description.")
 @click.option(
     "--metadata",
@@ -653,7 +664,25 @@ def user_secret_list(json_mode):
     help="Optional metadata (key=value).",
 )
 @click.option("--json", "json_mode", is_flag=True, default=False)
-def user_secret_create(name, value, description, metadata_options, json_mode):
+def user_secret_create(
+    name, value, value_stdin, description, metadata_options, json_mode
+):
+    if value_stdin and value is not None:
+        raise click.ClickException("Use either --value or --value-stdin, not both.")
+
+    if value_stdin:
+        value = sys.stdin.read()
+
+    if value is None:
+        if sys.stdin.isatty():
+            value = click.prompt(
+                "Secret value", hide_input=True, confirmation_prompt=True
+            )
+        else:
+            raise click.ClickException(
+                "Secret value is required. Provide --value or pipe via --value-stdin."
+            )
+
     metadata_dict: typing.Optional[typing.Dict[str, str]] = None
     if metadata_options:
         metadata_dict = {}
@@ -701,6 +730,11 @@ def user_secret_delete(name):
             client.user.delete_secret(name)
     except Exception as e:
         handle_api_error(e)
+
+
+# Expose user secrets as a top-level command for convenience:
+#   morphcloud secrets ...
+cli.add_command(user_secret, name="secrets")
 
 
 # ── SSH Key ─────────────────────────────────────────────────
