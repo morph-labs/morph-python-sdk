@@ -2955,7 +2955,9 @@ class Instance(BaseModel):
         else:
             # Use traditional endpoint
             effective_retries = getattr(self._api._client, "_exec_retries", 0)
-            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+            effective_backoff = getattr(
+                self._api._client, "_exec_retry_backoff_s", 0.05
+            )
 
             transient_errors: tuple[type[BaseException], ...] = (
                 httpx.ReadError,
@@ -2984,7 +2986,7 @@ class Instance(BaseModel):
                     if attempt < int(effective_retries or 0) and isinstance(
                         e, transient_errors
                     ):
-                        delay = float(effective_backoff) * (2 ** attempt)
+                        delay = float(effective_backoff) * (2**attempt)
                         time.sleep(delay)
                         attempt += 1
                         continue
@@ -3114,7 +3116,9 @@ class Instance(BaseModel):
         else:
             # Use traditional endpoint
             effective_retries = getattr(self._api._client, "_exec_retries", 0)
-            effective_backoff = getattr(self._api._client, "_exec_retry_backoff_s", 0.05)
+            effective_backoff = getattr(
+                self._api._client, "_exec_retry_backoff_s", 0.05
+            )
 
             transient_errors: tuple[type[BaseException], ...] = (
                 httpx.ReadError,
