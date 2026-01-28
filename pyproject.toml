@@ -39,6 +39,9 @@ dev = [
 [project.scripts]
 morphcloud = "morphcloud.cli:cli"
 
+[project.entry-points."morphcloud.cli_plugins"]
+aws-sim = "morphcloud.cli_plugins.aws_sim:load"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
