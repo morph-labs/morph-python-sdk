@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import subprocess
 from typing import Any
 
 import click
@@ -236,9 +237,25 @@ def load(cli_group: click.Group) -> None:
         show_default=True,
         help="Write the connect bundle to this path.",
     )
-    def connect(env_id: str, output_path: str) -> None:
+    @click.option(
+        "--container-name",
+        default="sim-aws-connector",
+        show_default=True,
+        help="Name for the detached connector container.",
+    )
+    @click.option(
+        "--replace",
+        is_flag=True,
+        help="If set, delete any existing container with --container-name before starting.",
+    )
+    @click.option(
+        "--no-run",
+        is_flag=True,
+        help="If set, do not start the detached connector container; only write the bundle and print commands.",
+    )
+    def connect(env_id: str, output_path: str, container_name: str, replace: bool, no_run: bool) -> None:
         """
-        Fetch a connect bundle, write it to a file, and print a connector `docker run` command.
+        Fetch a connect bundle, write it to a file, and start a detached connector container.
 
         The connect bundle is sensitive (WireGuard private key); keep the output file safe.
         """
@@ -251,25 +268,76 @@ def load(cli_group: click.Group) -> None:
         except Exception:
             pass
         click.echo(f"Wrote connect bundle to: {output}")
-        click.echo(_docker_run_template(str(output)))
-        click.echo("")
-        click.echo("# To run the connector in the background and exec AWS commands against it:")
+
         default_region = ""
-        try:
-            aws = bundle.get("aws") or {}
-            regions = aws.get("regions") or []
+        aws = bundle.get("aws") if isinstance(bundle, dict) else None
+        if isinstance(aws, dict):
+            regions = aws.get("regions")
             if isinstance(regions, list) and regions:
                 default_region = str(regions[0] or "").strip()
-        except Exception:
-            default_region = ""
 
-        cmd = _docker_run_detached_template(str(output))
+        image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
+        bundle_path_abs = str(output.expanduser().resolve())
+
+        # Always include dummy creds + pager off for smoother UX.
+        run_args: list[str] = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "--cap-add=NET_ADMIN",
+            "--device",
+            "/dev/net/tun",
+            "--sysctl",
+            SRC_VALID_MARK_SYSCTL,
+            "-e",
+            "MORPH_API_KEY",
+            "-e",
+            "AWS_PAGER=",
+            "-e",
+            "AWS_EC2_METADATA_DISABLED=true",
+            "-e",
+            "AWS_ACCESS_KEY_ID=test",
+            "-e",
+            "AWS_SECRET_ACCESS_KEY=test",
+        ]
         if default_region:
-            cmd = cmd.replace(
-                "-e AWS_PAGER= ",
-                f"-e AWS_REGION={default_region} -e AWS_DEFAULT_REGION={default_region} -e AWS_PAGER= ",
-                1,
-            )
-        click.echo(cmd)
+            run_args += [
+                "-e",
+                f"AWS_REGION={default_region}",
+                "-e",
+                f"AWS_DEFAULT_REGION={default_region}",
+            ]
+        run_args += [
+            "-v",
+            f"{bundle_path_abs}:/run/connect-bundle.json:ro",
+            image,
+            "sleep",
+            "infinity",
+        ]
+
+        click.echo("")
+        click.echo("# Detached connector container command:")
+        click.echo(" ".join(run_args))
         click.echo("# Example:")
-        click.echo("docker exec -it sim-aws-connector aws sqs list-queues --region us-east-1")
+        click.echo(f"docker exec -it {container_name} aws sqs list-queues --region us-east-1")
+
+        if no_run:
+            return
+
+        if replace:
+            subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        try:
+            p = subprocess.run(run_args, text=True, capture_output=True)
+        except FileNotFoundError as e:
+            raise click.ClickException("docker is required but was not found on PATH") from e
+
+        if p.returncode != 0:
+            msg = (p.stderr or p.stdout or "").strip()
+            raise click.ClickException(f"Failed to start connector container (docker run exit {p.returncode}):\n{msg}")
+
+        container_id = (p.stdout or "").strip()
+        if container_id:
+            click.echo(f"Started connector container: {container_name} ({container_id[:12]})")
