@@ -79,15 +79,16 @@ def _print_json(data: Any) -> None:
 def _docker_run_template(bundle_path: str) -> str:
     bundle_path_abs = str(pathlib.Path(bundle_path).expanduser().resolve())
     image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
+    bundle_container_path = "/run/connect-bundle.json"
     return (
         "docker run --rm -it "
         "--cap-add=NET_ADMIN "
         "--device /dev/net/tun "
         f"--sysctl {SRC_VALID_MARK_SYSCTL} "
         "-e MORPH_API_KEY "
-        f"-v {bundle_path_abs}:/bundle.json:ro "
+        f"-v {bundle_path_abs}:{bundle_container_path}:ro "
         f"{image} "
-        "--bundle /bundle.json"
+        "bash"
     )
 
 
