@@ -422,13 +422,6 @@ def load(cli_group: click.Group) -> None:
         click.echo(f"Wrote helper scripts: {env_path} and {wrapper_path}")
         click.echo(f"To enable `aws ...` in your current shell: source {env_path}")
 
-        click.echo("")
-        click.echo("# Detached connector container command:")
-        click.echo(docker_run_cmd)
-        click.echo("# (CONNECT_BUNDLE_JSON is provided by this command at runtime; re-run connect to start a new container.)")
-        click.echo("# Example:")
-        click.echo(f"docker exec -it {container_name} aws sqs list-queues --region us-east-1")
-
         if no_run:
             return
 
