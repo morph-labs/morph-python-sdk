@@ -102,6 +102,10 @@ def _docker_run_detached_template(bundle_path: str, *, container_name: str = "si
         "--device /dev/net/tun "
         f"--sysctl {SRC_VALID_MARK_SYSCTL} "
         "-e MORPH_API_KEY "
+        "-e AWS_PAGER= "
+        "-e AWS_EC2_METADATA_DISABLED=true "
+        "-e AWS_ACCESS_KEY_ID=test "
+        "-e AWS_SECRET_ACCESS_KEY=test "
         f"-v {bundle_path_abs}:{bundle_container_path}:ro "
         f"{image} "
         "sleep infinity"
@@ -250,6 +254,22 @@ def load(cli_group: click.Group) -> None:
         click.echo(_docker_run_template(str(output)))
         click.echo("")
         click.echo("# To run the connector in the background and exec AWS commands against it:")
-        click.echo(_docker_run_detached_template(str(output)))
+        default_region = ""
+        try:
+            aws = bundle.get("aws") or {}
+            regions = aws.get("regions") or []
+            if isinstance(regions, list) and regions:
+                default_region = str(regions[0] or "").strip()
+        except Exception:
+            default_region = ""
+
+        cmd = _docker_run_detached_template(str(output))
+        if default_region:
+            cmd = cmd.replace(
+                "-e AWS_PAGER= ",
+                f"-e AWS_REGION={default_region} -e AWS_DEFAULT_REGION={default_region} -e AWS_PAGER= ",
+                1,
+            )
+        click.echo(cmd)
         click.echo("# Example:")
         click.echo("docker exec -it sim-aws-connector aws sqs list-queues --region us-east-1")
