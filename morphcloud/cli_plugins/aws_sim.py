@@ -12,6 +12,9 @@ DEFAULT_SIM_AWS_BASE_URL = "https://sim-aws.svc.cloud.morph.so"
 DEFAULT_CONNECTOR_IMAGE = "ghcr.io/morph-labs/sim-aws-connector:latest"
 DEFAULT_CONNECT_BUNDLE_FILENAME = "aws-sim-connect-bundle.json"
 SRC_VALID_MARK_SYSCTL = "net.ipv4.conf.all.src_valid_mark=1"
+DEFAULT_CONNECTOR_CONTAINER_NAME = "sim-aws-connector"
+DEFAULT_CONNECT_HELPERS_ENV = "aws-env.sh"
+DEFAULT_CONNECT_HELPERS_WRAPPER = "aws"
 
 
 def _get_sim_aws_base_url() -> str:
@@ -111,6 +114,84 @@ def _docker_run_detached_template(bundle_path: str, *, container_name: str = "si
         f"{image} "
         "sleep infinity"
     )
+
+def _default_region_from_bundle(bundle: Any) -> str:
+    aws = bundle.get("aws") if isinstance(bundle, dict) else None
+    if not isinstance(aws, dict):
+        return ""
+    regions = aws.get("regions")
+    if not isinstance(regions, list) or not regions:
+        return ""
+    return str(regions[0] or "").strip()
+
+
+def _emit_connect_helpers(
+    *,
+    dir_path: pathlib.Path,
+    container_name: str,
+    docker_run_detached_cmd: str,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    env_path = dir_path / DEFAULT_CONNECT_HELPERS_ENV
+    wrapper_path = dir_path / DEFAULT_CONNECT_HELPERS_WRAPPER
+
+    env_path.write_text(
+        "\n".join(
+            [
+                "# Source this file to make `aws` call the local ./aws wrapper (relative to this file).",
+                '_simaws_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"',
+                f'export AWS_SIM_CONNECTOR_CONTAINER="${{AWS_SIM_CONNECTOR_CONTAINER:-{container_name}}}"',
+                'aws() { "$_simaws_dir/aws" "$@"; }',
+                "",
+                "# Detached connector container command (CONNECT_BUNDLE_JSON is provided by morphcloud at runtime):",
+                f"# {docker_run_detached_cmd}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wrapper_path.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                "",
+                'CONTAINER="${AWS_SIM_CONNECTOR_CONTAINER:-sim-aws-connector}"',
+                "",
+                'if ! docker ps --format "{{.Names}}" | grep -qx "$CONTAINER"; then',
+                '  echo "ERROR: connector container \'$CONTAINER\' is not running." >&2',
+                "  exit 1",
+                "fi",
+                "",
+                "tty=()",
+                '[[ -t 0 && -t 1 ]] && tty=(-t)',
+                "",
+                'exec docker exec -i "${tty[@]}" "$CONTAINER" bash -lc \'',
+                "  set -euo pipefail",
+                "  # Import AWS_* (and CA bundle vars) from PID1 env (set by connector entrypoint).",
+                "  while IFS= read -r kv; do",
+                "    case \"$kv\" in",
+                "      AWS_*=*|SSL_CERT_FILE=*|REQUESTS_CA_BUNDLE=*|CURL_CA_BUNDLE=*)",
+                "        export \"$kv\"",
+                "        ;;",
+                "    esac",
+                "  done < <(tr \"\\0\" \"\\n\" </proc/1/environ)",
+                "",
+                '  exec aws "$@"',
+                "' -- \"$@\"",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(wrapper_path, 0o755)
+    except Exception:
+        pass
+
+    return env_path, wrapper_path
 
 
 def _split_csv_args(values: tuple[str, ...]) -> list[str]:
@@ -233,13 +314,13 @@ def load(cli_group: click.Group) -> None:
     @click.option(
         "--output",
         "output_path",
-        default=DEFAULT_CONNECT_BUNDLE_FILENAME,
-        show_default=True,
-        help="Write the connect bundle to this path.",
+        default=None,
+        show_default=False,
+        help="Optional: write the connect bundle to this path (sensitive).",
     )
     @click.option(
         "--container-name",
-        default="sim-aws-connector",
+        default=DEFAULT_CONNECTOR_CONTAINER_NAME,
         show_default=True,
         help="Name for the detached connector container.",
     )
@@ -251,33 +332,47 @@ def load(cli_group: click.Group) -> None:
     @click.option(
         "--no-run",
         is_flag=True,
-        help="If set, do not start the detached connector container; only write the bundle and print commands.",
+        help="If set, do not start the detached connector container; only print commands and emit helper scripts.",
     )
-    def connect(env_id: str, output_path: str, container_name: str, replace: bool, no_run: bool) -> None:
+    @click.option(
+        "--emit-dir",
+        default=".",
+        show_default=True,
+        help="Directory to write helper scripts (aws-env.sh + aws wrapper).",
+    )
+    def connect(
+        env_id: str,
+        output_path: str | None,
+        container_name: str,
+        replace: bool,
+        no_run: bool,
+        emit_dir: str,
+    ) -> None:
         """
-        Fetch a connect bundle, write it to a file, and start a detached connector container.
+        Fetch a connect bundle and start a detached connector container.
 
-        The connect bundle is sensitive (WireGuard private key); keep the output file safe.
+        By default this does NOT write the bundle to disk. Instead, it passes the bundle to the
+        connector via the CONNECT_BUNDLE_JSON environment variable.
+
+        If you want a bundle file for debugging, pass --output.
         """
 
         bundle = _request_json("POST", f"/v1/envs/{env_id}/connect")
-        output = pathlib.Path(output_path).expanduser()
-        output.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
-        try:
-            os.chmod(output, 0o600)
-        except Exception:
-            pass
-        click.echo(f"Wrote connect bundle to: {output}")
 
-        default_region = ""
-        aws = bundle.get("aws") if isinstance(bundle, dict) else None
-        if isinstance(aws, dict):
-            regions = aws.get("regions")
-            if isinstance(regions, list) and regions:
-                default_region = str(regions[0] or "").strip()
+        output = None
+        if output_path:
+            output = pathlib.Path(output_path).expanduser()
+            output.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+            try:
+                os.chmod(output, 0o600)
+            except Exception:
+                pass
+            click.echo(f"Wrote connect bundle to: {output}")
+
+        default_region = _default_region_from_bundle(bundle)
 
         image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
-        bundle_path_abs = str(output.expanduser().resolve())
+        requires_morph_api_key = bool(bundle.get("auth")) if isinstance(bundle, dict) else True
 
         # Always include dummy creds + pager off for smoother UX.
         run_args: list[str] = [
@@ -292,7 +387,7 @@ def load(cli_group: click.Group) -> None:
             "--sysctl",
             SRC_VALID_MARK_SYSCTL,
             "-e",
-            "MORPH_API_KEY",
+            "CONNECT_BUNDLE_JSON",
             "-e",
             "AWS_PAGER=",
             "-e",
@@ -302,6 +397,8 @@ def load(cli_group: click.Group) -> None:
             "-e",
             "AWS_SECRET_ACCESS_KEY=test",
         ]
+        if requires_morph_api_key:
+            run_args += ["-e", "MORPH_API_KEY"]
         if default_region:
             run_args += [
                 "-e",
@@ -310,16 +407,25 @@ def load(cli_group: click.Group) -> None:
                 f"AWS_DEFAULT_REGION={default_region}",
             ]
         run_args += [
-            "-v",
-            f"{bundle_path_abs}:/run/connect-bundle.json:ro",
             image,
             "sleep",
             "infinity",
         ]
 
+        helpers_dir = pathlib.Path(emit_dir).expanduser().resolve()
+        docker_run_cmd = " ".join(run_args)
+        env_path, wrapper_path = _emit_connect_helpers(
+            dir_path=helpers_dir,
+            container_name=container_name,
+            docker_run_detached_cmd=docker_run_cmd,
+        )
+        click.echo(f"Wrote helper scripts: {env_path} and {wrapper_path}")
+        click.echo(f"To enable `aws ...` in your current shell: source {env_path}")
+
         click.echo("")
         click.echo("# Detached connector container command:")
-        click.echo(" ".join(run_args))
+        click.echo(docker_run_cmd)
+        click.echo("# (CONNECT_BUNDLE_JSON is provided by this command at runtime; re-run connect to start a new container.)")
         click.echo("# Example:")
         click.echo(f"docker exec -it {container_name} aws sqs list-queues --region us-east-1")
 
@@ -330,7 +436,10 @@ def load(cli_group: click.Group) -> None:
             subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         try:
-            p = subprocess.run(run_args, text=True, capture_output=True)
+            env = dict(os.environ)
+            # Compact JSON to avoid newlines; passed to docker via `-e CONNECT_BUNDLE_JSON`.
+            env["CONNECT_BUNDLE_JSON"] = json.dumps(bundle, separators=(",", ":"), sort_keys=True)
+            p = subprocess.run(run_args, text=True, capture_output=True, env=env)
         except FileNotFoundError as e:
             raise click.ClickException("docker is required but was not found on PATH") from e
 
