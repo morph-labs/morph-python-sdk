@@ -92,6 +92,22 @@ def _docker_run_template(bundle_path: str) -> str:
     )
 
 
+def _docker_run_detached_template(bundle_path: str, *, container_name: str = "sim-aws-connector") -> str:
+    bundle_path_abs = str(pathlib.Path(bundle_path).expanduser().resolve())
+    image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
+    bundle_container_path = "/run/connect-bundle.json"
+    return (
+        f"docker run -d --name {container_name} "
+        "--cap-add=NET_ADMIN "
+        "--device /dev/net/tun "
+        f"--sysctl {SRC_VALID_MARK_SYSCTL} "
+        "-e MORPH_API_KEY "
+        f"-v {bundle_path_abs}:{bundle_container_path}:ro "
+        f"{image} "
+        "sleep infinity"
+    )
+
+
 def _split_csv_args(values: tuple[str, ...]) -> list[str]:
     items: list[str] = []
     for raw in values:
@@ -232,3 +248,8 @@ def load(cli_group: click.Group) -> None:
             pass
         click.echo(f"Wrote connect bundle to: {output}")
         click.echo(_docker_run_template(str(output)))
+        click.echo("")
+        click.echo("# To run the connector in the background and exec AWS commands against it:")
+        click.echo(_docker_run_detached_template(str(output)))
+        click.echo("# Example:")
+        click.echo("docker exec -it sim-aws-connector aws sqs list-queues --region us-east-1")
