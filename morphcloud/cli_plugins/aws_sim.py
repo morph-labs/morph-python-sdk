@@ -129,7 +129,6 @@ def _emit_connect_helpers(
     *,
     dir_path: pathlib.Path,
     container_name: str,
-    docker_run_detached_cmd: str,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -143,10 +142,6 @@ def _emit_connect_helpers(
                 '_simaws_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"',
                 f'export AWS_SIM_CONNECTOR_CONTAINER="${{AWS_SIM_CONNECTOR_CONTAINER:-{container_name}}}"',
                 'aws() { "$_simaws_dir/aws" "$@"; }',
-                "",
-                "# Detached connector container command (CONNECT_BUNDLE_JSON is provided by morphcloud at runtime):",
-                f"# {docker_run_detached_cmd}",
-                "",
             ]
         ),
         encoding="utf-8",
@@ -413,11 +408,9 @@ def load(cli_group: click.Group) -> None:
         ]
 
         helpers_dir = pathlib.Path(emit_dir).expanduser().resolve()
-        docker_run_cmd = " ".join(run_args)
         env_path, wrapper_path = _emit_connect_helpers(
             dir_path=helpers_dir,
             container_name=container_name,
-            docker_run_detached_cmd=docker_run_cmd,
         )
         click.echo(f"Wrote helper scripts: {env_path} and {wrapper_path}")
         click.echo(f"To enable `aws ...` in your current shell: source {env_path}")
