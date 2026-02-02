@@ -416,11 +416,11 @@ def load(cli_group: click.Group) -> None:
         click.echo(f"Wrote helper scripts: {env_path} and {wrapper_path}")
         click.echo(f"To enable `aws ...` in your current shell: source {env_path}")
 
-        if no_run:
-            return
-
         if replace:
             subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if no_run:
+            return
 
         try:
             env = dict(os.environ)
