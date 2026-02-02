@@ -393,6 +393,17 @@ def load(cli_group: click.Group) -> None:
             "-e",
             "AWS_SECRET_ACCESS_KEY=test",
         ]
+        # Use the environment-provided DNS nameserver so vanilla AWS endpoints resolve to the
+        # in-env gateway IP (no --endpoint-url needed).
+        dns_nameserver = ""
+        try:
+            dns = bundle.get("dns") if isinstance(bundle, dict) else None
+            if isinstance(dns, dict):
+                dns_nameserver = str(dns.get("nameserver") or "").strip()
+        except Exception:
+            dns_nameserver = ""
+        if dns_nameserver:
+            run_args += ["--dns", dns_nameserver]
         if requires_morph_api_key:
             run_args += ["-e", "MORPH_API_KEY"]
         if default_region:
