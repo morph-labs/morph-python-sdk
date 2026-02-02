@@ -463,9 +463,9 @@ def load(cli_group: click.Group) -> None:
         # Best-effort readiness: wait for LocalStack edge to answer over the tunnel before
         # returning to the user (avoids first-command flakiness).
         wait_s = float(os.environ.get("AWS_SIM_CONNECT_WAIT_S", "20") or "20")
-        if default_region and wait_s > 0:
+        if wait_s > 0:
             deadline = time.time() + wait_s
-            target = f"https://s3.{default_region}.amazonaws.com/_localstack/health"
+            target = "https://localhost.localstack.cloud:4566/_localstack/health"
             while time.time() < deadline:
                 probe = subprocess.run(
                     [
