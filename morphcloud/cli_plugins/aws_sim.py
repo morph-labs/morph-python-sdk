@@ -32,10 +32,11 @@ def _get_morph_api_key() -> str:
 
 
 def _http_client() -> httpx.Client:
+    timeout_s = float(os.environ.get("SIM_AWS_HTTP_TIMEOUT_S", "180"))
     return httpx.Client(
         base_url=_get_sim_aws_base_url(),
         headers={"Authorization": f"Bearer {_get_morph_api_key()}"},
-        timeout=httpx.Timeout(30.0),
+        timeout=httpx.Timeout(timeout_s),
     )
 
 
