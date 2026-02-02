@@ -332,7 +332,7 @@ def load(cli_group: click.Group) -> None:
     )
     @click.option(
         "--emit-dir",
-        default=".",
+        default="./run",
         show_default=True,
         help="Directory to write helper scripts (aws-env.sh + aws wrapper).",
     )
