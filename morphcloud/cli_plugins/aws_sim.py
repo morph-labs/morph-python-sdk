@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import subprocess
+import time
 from typing import Any
 
 import click
@@ -458,3 +459,35 @@ def load(cli_group: click.Group) -> None:
                 f"Try: docker logs {container_name}\n\n"
                 f"{tail}"
             )
+
+        # Best-effort readiness: wait for LocalStack edge to answer over the tunnel before
+        # returning to the user (avoids first-command flakiness).
+        wait_s = float(os.environ.get("AWS_SIM_CONNECT_WAIT_S", "20") or "20")
+        if default_region and wait_s > 0:
+            deadline = time.time() + wait_s
+            target = f"https://s3.{default_region}.amazonaws.com/_localstack/health"
+            while time.time() < deadline:
+                probe = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "-i",
+                        container_name,
+                        "bash",
+                        "-lc",
+                        # Import TLS/DNS settings from PID1 env, then probe LocalStack edge.
+                        "set -euo pipefail\n"
+                        "while IFS= read -r kv; do\n"
+                        "  case \"$kv\" in\n"
+                        "    AWS_*=*|SSL_CERT_FILE=*|REQUESTS_CA_BUNDLE=*|CURL_CA_BUNDLE=*)\n"
+                        "      export \"$kv\";;\n"
+                        "  esac\n"
+                        "done < <(tr \"\\0\" \"\\n\" </proc/1/environ)\n"
+                        f"curl -fsS {target!r} >/dev/null\n",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                if probe.returncode == 0:
+                    break
+                time.sleep(0.25)
