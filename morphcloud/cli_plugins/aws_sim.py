@@ -1,9 +1,7 @@
 import json
 import os
 import pathlib
-import socket
 import subprocess
-import urllib.parse
 from typing import Any
 
 import click
@@ -118,6 +116,7 @@ def _docker_run_detached_template(bundle_path: str, *, container_name: str = "si
         "sleep infinity"
     )
 
+
 def _default_region_from_bundle(bundle: Any) -> str:
     aws = bundle.get("aws") if isinstance(bundle, dict) else None
     if not isinstance(aws, dict):
@@ -126,15 +125,6 @@ def _default_region_from_bundle(bundle: Any) -> str:
     if not isinstance(regions, list) or not regions:
         return ""
     return str(regions[0] or "").strip()
-
-def _resolve_ipv4(hostname: str) -> str:
-    try:
-        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
-        if infos:
-            return str(infos[0][4][0] or "").strip()
-    except Exception:
-        return ""
-    return ""
 
 
 def _emit_connect_helpers(
@@ -404,29 +394,6 @@ def load(cli_group: click.Group) -> None:
             "-e",
             "AWS_SECRET_ACCESS_KEY=test",
         ]
-        # Use the environment-provided DNS nameserver so vanilla AWS endpoints resolve to the
-        # in-env gateway IP (no --endpoint-url needed).
-        dns_nameserver = ""
-        try:
-            dns = bundle.get("dns") if isinstance(bundle, dict) else None
-            if isinstance(dns, dict):
-                dns_nameserver = str(dns.get("nameserver") or "").strip()
-        except Exception:
-            dns_nameserver = ""
-        if dns_nameserver:
-            run_args += ["--dns", dns_nameserver]
-            # IMPORTANT: the env DNS lives behind the tunnel/WireGuard, so it's not reachable until
-            # after the connector connects. Seed the tunnel hostname via /etc/hosts to avoid a
-            # startup DNS deadlock when using --dns.
-            try:
-                tunnel_ws_url = str(bundle.get("tunnel_ws_url") or "").strip()
-                if tunnel_ws_url:
-                    host = urllib.parse.urlparse(tunnel_ws_url).hostname or ""
-                    ip = _resolve_ipv4(host) if host else ""
-                    if host and ip:
-                        run_args += ["--add-host", f"{host}:{ip}"]
-            except Exception:
-                pass
         if requires_morph_api_key:
             run_args += ["-e", "MORPH_API_KEY"]
         if default_region:
