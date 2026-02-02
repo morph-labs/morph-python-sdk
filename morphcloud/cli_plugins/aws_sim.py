@@ -438,3 +438,23 @@ def load(cli_group: click.Group) -> None:
         container_id = (p.stdout or "").strip()
         if container_id:
             click.echo(f"Started connector container: {container_name} ({container_id[:12]})")
+
+        # If the entrypoint fails fast, docker still returns a container id. Catch that here and
+        # surface container logs to the user.
+        insp = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+            text=True,
+            capture_output=True,
+        )
+        if insp.returncode == 0 and (insp.stdout or "").strip() != "true":
+            logs = subprocess.run(
+                ["docker", "logs", "--tail", "200", container_name],
+                text=True,
+                capture_output=True,
+            )
+            tail = (logs.stdout or logs.stderr or "").strip()
+            raise click.ClickException(
+                f"Connector container '{container_name}' exited immediately.\n"
+                f"Try: docker logs {container_name}\n\n"
+                f"{tail}"
+            )
