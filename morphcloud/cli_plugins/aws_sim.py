@@ -84,6 +84,7 @@ def _print_json(data: Any) -> None:
 
 def _docker_run_template(bundle_path: str) -> str:
     bundle_path_abs = str(pathlib.Path(bundle_path).expanduser().resolve())
+    cwd_abs = str(pathlib.Path.cwd().resolve())
     image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
     bundle_container_path = "/run/connect-bundle.json"
     return (
@@ -93,6 +94,7 @@ def _docker_run_template(bundle_path: str) -> str:
         f"--sysctl {SRC_VALID_MARK_SYSCTL} "
         "-e MORPH_API_KEY "
         f"-v {bundle_path_abs}:{bundle_container_path}:ro "
+        f"-v {cwd_abs}:/workspace "
         f"{image} "
         "bash"
     )
@@ -100,6 +102,7 @@ def _docker_run_template(bundle_path: str) -> str:
 
 def _docker_run_detached_template(bundle_path: str, *, container_name: str = "sim-aws-connector") -> str:
     bundle_path_abs = str(pathlib.Path(bundle_path).expanduser().resolve())
+    cwd_abs = str(pathlib.Path.cwd().resolve())
     image = os.environ.get("AWS_SIM_CONNECTOR_IMAGE", DEFAULT_CONNECTOR_IMAGE)
     bundle_container_path = "/run/connect-bundle.json"
     return (
@@ -113,6 +116,7 @@ def _docker_run_detached_template(bundle_path: str, *, container_name: str = "si
         "-e AWS_ACCESS_KEY_ID=test "
         "-e AWS_SECRET_ACCESS_KEY=test "
         f"-v {bundle_path_abs}:{bundle_container_path}:ro "
+        f"-v {cwd_abs}:/workspace "
         f"{image} "
         "sleep infinity"
     )
@@ -404,6 +408,11 @@ def load(cli_group: click.Group) -> None:
                 "-e",
                 f"AWS_DEFAULT_REGION={default_region}",
             ]
+
+        # Mount the current working directory into the container at /workspace
+        cwd_abs = str(pathlib.Path.cwd().resolve())
+        run_args += ["-v", f"{cwd_abs}:/workspace"]
+
         run_args += [
             image,
             "sleep",
