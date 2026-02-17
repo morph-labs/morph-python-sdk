@@ -4,6 +4,7 @@ import datetime
 import importlib.metadata
 import json
 import os
+import shlex
 import sys
 import termios
 import threading
@@ -16,6 +17,7 @@ import requests
 from packaging import version
 
 import morphcloud.api as api
+import morphcloud.config as config
 from morphcloud._utils import Spinner
 from morphcloud.api import copy_into_or_from_instance
 
@@ -170,11 +172,18 @@ def load_cli_plugins(cli_group: click.Group):
 
 @click.group(cls=VersionCheckGroup)
 @click.version_option(version=__version__, package_name="morphcloud")
-def cli():
+@click.option(
+    "--profile",
+    default=None,
+    help="Use a named profile for this command (overrides active profile).",
+)
+@click.pass_context
+def cli(ctx, profile):
     """
     Morph Cloud CLI - A tool for creating, managing, and interacting with Morph Cloud resources.
     """
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["profile"] = profile
 
 
 # ─────────────────────────────────────────────────────────────
@@ -239,10 +248,21 @@ def unix_timestamp_to_datetime(timestamp):
             return "Invalid Timestamp"
 
 
-def get_client():
+def _get_profile_override():
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return None
+    obj = getattr(ctx, "obj", None) or {}
+    return obj.get("profile")
+
+
+def get_client(profile_override: typing.Optional[str] = None):
     """Get or create a MorphCloudClient instance. Raises error if API key is missing."""
     try:
-        return api.MorphCloudClient()
+        profile_override = (
+            profile_override if profile_override is not None else _get_profile_override()
+        )
+        return api.MorphCloudClient(profile=profile_override)
     except ValueError as e:
         if "API key must be provided" in str(e):
             click.echo(
@@ -250,6 +270,10 @@ def get_client():
             )
             click.echo(
                 "Please set it, e.g., with: export MORPH_API_KEY='your_api_key'",
+                err=True,
+            )
+            click.echo(
+                "Or configure a profile, e.g., morphcloud profile set default --api-key '<key>'",
                 err=True,
             )
             click.echo(
@@ -270,6 +294,165 @@ def handle_api_error(error):
     else:
         click.echo(f"An unexpected error occurred: {error}", err=True)
     sys.exit(1)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Profiles
+# ─────────────────────────────────────────────────────────────
+
+
+def _mask_secret(value: typing.Optional[str]) -> typing.Optional[str]:
+    if not value:
+        return value
+    if len(value) <= 8:
+        return "********"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+@cli.group("profile")
+def profile_group():
+    """Manage MorphCloud CLI profiles."""
+    pass
+
+
+@profile_group.command("list")
+def profile_list():
+    cfg = config.load_config()
+    profiles = cfg.get("profiles", {}) if isinstance(cfg, dict) else {}
+    active = cfg.get("active_profile") if isinstance(cfg, dict) else None
+    if not profiles:
+        click.echo("No profiles configured.")
+        return
+    for name in sorted(profiles.keys()):
+        prefix = "* " if active == name else "  "
+        click.echo(f"{prefix}{name}")
+
+
+@profile_group.command("current")
+def profile_current():
+    cfg = config.load_config()
+    active = cfg.get("active_profile") if isinstance(cfg, dict) else None
+    if not active:
+        click.echo("No active profile.")
+        return
+    click.echo(active)
+
+
+@profile_group.command("show")
+@click.argument("name", required=True)
+def profile_show(name):
+    cfg = config.load_config()
+    profile = config.resolve_profile(name, cfg)
+    if not profile:
+        raise click.ClickException(f"Profile '{name}' not found.")
+    display = dict(profile)
+    if "api_key" in display:
+        display["api_key"] = _mask_secret(str(display.get("api_key") or ""))
+    click.echo(json.dumps(display, indent=2))
+
+
+@profile_group.command("set")
+@click.argument("name", required=True)
+@click.option("--api-key", default=None, help="API key for this profile.")
+@click.option("--base-url", default=None, help="Override the API base URL.")
+@click.option("--api-host", default=None, help="API host used to derive defaults.")
+@click.option("--ssh-hostname", default=None, help="Override SSH hostname.")
+@click.option("--ssh-port", default=None, type=int, help="Override SSH port.")
+@click.option(
+    "--service-base-url", default=None, help="Override the services API base URL."
+)
+@click.option(
+    "--admin-base-url", default=None, help="Override the admin API base URL."
+)
+@click.option("--db-base-url", default=None, help="Override the db API base URL.")
+def profile_set(
+    name,
+    api_key,
+    base_url,
+    api_host,
+    ssh_hostname,
+    ssh_port,
+    service_base_url,
+    admin_base_url,
+    db_base_url,
+):
+    updates = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "api_host": api_host,
+        "ssh_hostname": ssh_hostname,
+        "ssh_port": ssh_port,
+        "service_base_url": service_base_url,
+        "admin_base_url": admin_base_url,
+        "db_base_url": db_base_url,
+    }
+    updates = {k: v for k, v in updates.items() if v is not None}
+    if not updates:
+        raise click.ClickException("No profile fields provided to set.")
+
+    cfg = config.load_config()
+    if not isinstance(cfg, dict):
+        cfg = {}
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profile_data = profiles.get(name)
+    if not isinstance(profile_data, dict):
+        profile_data = {}
+
+    profile_data.update(updates)
+    profiles[name] = profile_data
+    cfg["profiles"] = profiles
+    cfg.setdefault("version", 1)
+
+    config.save_config(cfg)
+    click.echo(f"Profile '{name}' updated.")
+
+
+@profile_group.command("use")
+@click.argument("name", required=True)
+def profile_use(name):
+    cfg = config.load_config()
+    profiles = cfg.get("profiles", {}) if isinstance(cfg, dict) else {}
+    if name not in profiles:
+        raise click.ClickException(f"Profile '{name}' not found.")
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["active_profile"] = name
+    cfg.setdefault("version", 1)
+    config.save_config(cfg)
+    click.echo(f"Active profile set to '{name}'.")
+
+
+@profile_group.command("delete")
+@click.argument("name", required=True)
+def profile_delete(name):
+    cfg = config.load_config()
+    if not isinstance(cfg, dict):
+        raise click.ClickException(f"Profile '{name}' not found.")
+    profiles = cfg.get("profiles", {})
+    if not isinstance(profiles, dict) or name not in profiles:
+        raise click.ClickException(f"Profile '{name}' not found.")
+    profiles.pop(name, None)
+    cfg["profiles"] = profiles
+    if cfg.get("active_profile") == name:
+        cfg.pop("active_profile", None)
+    config.save_config(cfg)
+    click.echo(f"Profile '{name}' deleted.")
+
+
+@profile_group.command("env")
+@click.argument("name", required=False)
+@click.option(
+    "--include-api-key/--no-api-key",
+    default=True,
+    help="Include MORPH_API_KEY in the output.",
+)
+def profile_env(name, include_api_key):
+    settings = config.resolve_settings(profile=name)
+    env = settings.as_env(include_api_key=include_api_key)
+    for key, value in env.items():
+        click.echo(f"export {key}={shlex.quote(str(value))}")
 
 
 # Interactive pagination helpers (reused for list -i)

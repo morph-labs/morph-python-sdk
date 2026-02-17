@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from rich.console import Console
 
 from morphcloud._utils import StrEnum
+from morphcloud.config import resolve_settings
 
 # Global console instance
 console = Console()
@@ -130,11 +131,37 @@ class MorphCloudClient:
         self,
         api_key: typing.Optional[str] = None,
         base_url: typing.Optional[str] = None,
+        profile: typing.Optional[str] = None,
+        api_host: typing.Optional[str] = None,
+        service_base_url: typing.Optional[str] = None,
+        admin_base_url: typing.Optional[str] = None,
+        db_base_url: typing.Optional[str] = None,
+        ssh_hostname: typing.Optional[str] = None,
+        ssh_port: typing.Optional[int] = None,
     ):
-        self.base_url = base_url or os.environ.get(
-            "MORPH_BASE_URL", "https://cloud.morph.so/api"
+        settings = resolve_settings(
+            profile=profile,
+            overrides={
+                "api_key": api_key,
+                "base_url": base_url,
+                "api_host": api_host,
+                "service_base_url": service_base_url,
+                "admin_base_url": admin_base_url,
+                "db_base_url": db_base_url,
+                "ssh_hostname": ssh_hostname,
+                "ssh_port": ssh_port,
+            },
         )
-        self.api_key = api_key or os.environ.get("MORPH_API_KEY")
+
+        self.base_url = settings.base_url
+        self.api_key = settings.api_key
+        self.api_host = settings.api_host
+        self.ssh_hostname = settings.ssh_hostname
+        self.ssh_port = settings.ssh_port
+        self.service_base_url = settings.service_base_url
+        self.admin_base_url = settings.admin_base_url
+        self.db_base_url = settings.db_base_url
+        self.profile = settings.profile
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
@@ -3364,8 +3391,8 @@ class Instance(BaseModel):
 
         import paramiko
 
-        hostname = os.environ.get("MORPH_SSH_HOSTNAME", "ssh.cloud.morph.so")
-        port = int(os.environ.get("MORPH_SSH_PORT") or 22)
+        hostname = self._api._client.ssh_hostname
+        port = int(self._api._client.ssh_port)
 
         connect_timeout = float(os.getenv("MORPH_SSH_CONNECT_TIMEOUT_SECS", 5.0))
         banner_timeout = float(os.getenv("MORPH_SSH_BANNER_TIMEOUT_SECS", 5.0))

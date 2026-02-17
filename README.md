@@ -438,12 +438,40 @@ morphcloud user usage --interval 3h
 
 ## Advanced Features
 
+### Profiles
+
+The CLI/SDK support named profiles for switching between prod/stage/dev environments
+without constantly exporting env vars.
+
+```bash
+# Create a profile
+morphcloud profile set stage \
+  --api-key "$MORPH_API_KEY" \
+  --api-host "stage.morph.so"
+
+# Use it for one command (kubectl-style)
+morphcloud --profile stage instance list
+
+# Or set it as the active profile
+morphcloud profile use stage
+```
+
+To export env vars for other services/scripts:
+```bash
+eval "$(morphcloud profile env stage)"
+```
+
 ### Environment Variables
 
 - `MORPH_API_KEY`: Your Morph Cloud API key
+- `MORPH_PROFILE`: Select a named profile
 - `MORPH_BASE_URL`: Override the default API URL (defaults to "https://cloud.morph.so/api")
+- `MORPH_API_HOST`: Override API host used to derive defaults (e.g., "stage.morph.so")
 - `MORPH_SSH_HOSTNAME`: Override the SSH hostname (defaults to "ssh.cloud.morph.so")
 - `MORPH_SSH_PORT`: Override the SSH port (defaults to 22)
+- `MORPH_SERVICE_BASE_URL`: Override the services API base URL
+- `MORPH_ADMIN_BASE_URL`: Override the admin API base URL
+- `MORPH_DB_BASE_URL`: Override the db API base URL
 
 ## Support
 
