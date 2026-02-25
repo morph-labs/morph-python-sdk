@@ -104,6 +104,18 @@ class TTL(BaseModel):
     )
 
 
+class SnapshotTTL(BaseModel):
+    """Represents the Time-To-Live configuration for a snapshot."""
+
+    ttl_seconds: typing.Optional[int] = Field(
+        None,
+        description="Time in seconds until the snapshot expires (based on last_used_at).",
+    )
+    ttl_expire_at: typing.Optional[int] = Field(
+        None, description="Unix timestamp when the snapshot is set to expire."
+    )
+
+
 class WakeOn(BaseModel):
     """Represents the wake-on-event configuration for an instance."""
 
@@ -613,6 +625,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -623,6 +636,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -634,6 +648,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -649,6 +665,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -659,6 +676,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -670,6 +688,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -705,6 +725,7 @@ class Snapshot(BaseModel):
     metadata: typing.Dict[str, str] = Field(
         default_factory=dict, description="User provided metadata"
     )
+    ttl: SnapshotTTL = Field(default_factory=SnapshotTTL)
 
     _api: SnapshotAPI = PrivateAttr()
 
@@ -740,6 +761,34 @@ class Snapshot(BaseModel):
         )
         response.raise_for_status()
         await self._refresh_async()
+
+    def set_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
+        """Set (or clear) snapshot TTL.
+
+        Parameters:
+            ttl_seconds: TTL in seconds. Use None to clear TTL.
+        """
+        response = self._api._client._http_client.post(
+            f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
+        )
+        response.raise_for_status()
+        self._refresh()
+
+    async def aset_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
+        """Async set (or clear) snapshot TTL."""
+        response = await self._api._client._async_http_client.post(
+            f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
+        )
+        response.raise_for_status()
+        await self._refresh_async()
+
+    def clear_ttl(self) -> None:
+        """Clear snapshot TTL."""
+        self.set_ttl(None)
+
+    async def aclear_ttl(self) -> None:
+        """Async clear snapshot TTL."""
+        await self.aset_ttl(None)
 
     def _refresh(self) -> None:
         refreshed = self._api.get(self.id)
@@ -2739,13 +2788,16 @@ class Instance(BaseModel):
         self,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
     ) -> Snapshot:
         """Save the instance as a snapshot."""
         params = {}
         if digest is not None:
             params["digest"] = digest
         response = self._api._client._http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=dict(metadata=metadata)
+            f"/instance/{self.id}/snapshot",
+            params=params,
+            json={"metadata": metadata, "ttl_seconds": ttl_seconds},
         )
         return Snapshot.model_validate(response.json())._set_api(
             self._api._client.snapshots,
@@ -2755,13 +2807,16 @@ class Instance(BaseModel):
         self,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
     ) -> Snapshot:
         """Save the instance as a snapshot."""
         params = {}
         if digest is not None:
             params = {"digest": digest}
         response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=dict(metadata=metadata)
+            f"/instance/{self.id}/snapshot",
+            params=params,
+            json={"metadata": metadata, "ttl_seconds": ttl_seconds},
         )
         return Snapshot.model_validate(response.json())._set_api(
             self._api._client.snapshots

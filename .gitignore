@@ -23,6 +23,7 @@ wheels/
 # Poetry
 poetry.lock
 .venv/
+.venv_snapshot_ttl/
 venv/
 
 # IDE

@@ -14,7 +14,13 @@ def _make_test_instance():
         refs=InstanceRefs(snapshot_id="snap_test", image_id="img_test"),
         networking=InstanceNetworking(internal_ip=None, http_services=[]),
     )
-    inst._api = types.SimpleNamespace(_client=types.SimpleNamespace(api_key="test_api_key"))  # type: ignore[attr-defined]
+    inst._api = types.SimpleNamespace(  # type: ignore[attr-defined]
+        _client=types.SimpleNamespace(
+            api_key="test_api_key",
+            ssh_hostname="ssh.test.morph.so",
+            ssh_port=22,
+        )
+    )
     return inst
 
 
