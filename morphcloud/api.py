@@ -23,6 +23,29 @@ from morphcloud.config import resolve_settings
 # Global console instance
 console = Console()
 
+DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
+CHAIN_SNAPSHOT_TTL_ENV_VAR = "MORPH_CHAIN_SNAPSHOT_TTL_SECONDS"
+
+
+@lru_cache
+def default_chain_snapshot_ttl_seconds() -> int:
+    """
+    Default TTL (seconds) for snapshots created via the SDK's chained build/cache helpers.
+
+    Override by setting MORPH_CHAIN_SNAPSHOT_TTL_SECONDS to a positive integer.
+    """
+    raw = os.getenv(CHAIN_SNAPSHOT_TTL_ENV_VAR)
+    if raw is not None:
+        raw = raw.strip()
+        if raw:
+            try:
+                value = int(raw)
+            except Exception:
+                value = None
+            if value is not None and value > 0:
+                return value
+    return DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS
+
 
 @lru_cache
 def _dummy_key():
@@ -790,6 +813,18 @@ class Snapshot(BaseModel):
         """Async clear snapshot TTL."""
         await self.aset_ttl(None)
 
+    def touch(self) -> None:
+        """Heartbeat snapshot TTL by updating last_used_at."""
+        response = self._api._client._http_client.post(f"/snapshot/{self.id}/touch")
+        response.raise_for_status()
+
+    async def atouch(self) -> None:
+        """Async heartbeat snapshot TTL by updating last_used_at."""
+        response = await self._api._client._async_http_client.post(
+            f"/snapshot/{self.id}/touch"
+        )
+        response.raise_for_status()
+
     def _refresh(self) -> None:
         refreshed = self._api.get(self.id)
         updated = type(self).model_validate(refreshed.model_dump())
@@ -1000,7 +1035,19 @@ class Snapshot(BaseModel):
                 f"with digest [white]{new_chain_hash}[/white] "
                 f"for effect [yellow]{fn.__name__}[/yellow]."
             )
-            return candidates[0]
+            cached = candidates[0]
+            # Best-effort heartbeat: cached chain snapshots shouldn't expire while they're
+            # actively being referenced (cache hits won't boot an instance, so last_used_at
+            # won't naturally be updated).
+            try:
+                self.touch()
+            except Exception:
+                pass
+            try:
+                cached.touch()
+            except Exception:
+                pass
+            return cached
 
         # 6) Otherwise, apply the effect on a fresh instance from this snapshot
         console.print(
@@ -1012,7 +1059,10 @@ class Snapshot(BaseModel):
             instance.wait_until_ready(timeout=300)
             fn(instance, *args, **kwargs)  # Actually run the effect
             # 7) Snapshot the instance, passing digest=new_chain_hash to store the chain hash
-            new_snapshot = instance.snapshot(digest=new_chain_hash)
+            new_snapshot = instance.snapshot(
+                digest=new_chain_hash,
+                ttl_seconds=default_chain_snapshot_ttl_seconds(),
+            )
         finally:
             instance.stop()
 
@@ -1388,6 +1438,17 @@ class Snapshot(BaseModel):
 
         # Fully cached build
         if cached_len == len(steps):
+            # Best-effort heartbeat on full cache hits: no instance will be started, so
+            # last_used_at won't naturally update.
+            try:
+                self.touch()
+            except Exception:
+                pass
+            if last_cached is not None:
+                try:
+                    last_cached.touch()
+                except Exception:
+                    pass
             return last_cached  # type: ignore[return-value]
 
         # 3) Start ONE instance from the end of the cached prefix (or from self)
@@ -1423,7 +1484,10 @@ class Snapshot(BaseModel):
                     f"[magenta]• Snapshotting step {idx + 1} with digest "
                     f"[white]{desired_digest}[/white] ...[/magenta]"
                 )
-                current_snapshot = instance.snapshot(digest=desired_digest)
+                current_snapshot = instance.snapshot(
+                    digest=desired_digest,
+                    ttl_seconds=default_chain_snapshot_ttl_seconds(),
+                )
 
             assert current_snapshot is not None
             console.print(
@@ -1486,6 +1550,17 @@ class Snapshot(BaseModel):
 
         # Fully cached build
         if cached_len == len(steps):
+            # Best-effort heartbeat on full cache hits: no instance will be started, so
+            # last_used_at won't naturally update.
+            try:
+                await self.atouch()
+            except Exception:
+                pass
+            if last_cached is not None:
+                try:
+                    await last_cached.atouch()
+                except Exception:
+                    pass
             return last_cached  # type: ignore[return-value]
 
         # 3) Start ONE instance from the end of the cached prefix (or from self)
@@ -1525,7 +1600,10 @@ class Snapshot(BaseModel):
                     f"[magenta]• Snapshotting step {idx + 1} with digest "
                     f"[white]{desired_digest}[/white] ...[/magenta]"
                 )
-                current_snapshot = await instance.asnapshot(digest=desired_digest)
+                current_snapshot = await instance.asnapshot(
+                    digest=desired_digest,
+                    ttl_seconds=default_chain_snapshot_ttl_seconds(),
+                )
 
             assert current_snapshot is not None
             console.print(

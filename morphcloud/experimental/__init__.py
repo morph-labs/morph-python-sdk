@@ -15,6 +15,7 @@ import paramiko
 
 from morphcloud.api import Instance, MorphCloudClient
 from morphcloud.api import Snapshot as _Snapshot
+from morphcloud.api import default_chain_snapshot_ttl_seconds
 
 # Configure logging for the experimental module
 logger = logging.getLogger(__name__)
@@ -354,7 +355,18 @@ class Snapshot:
                         valid.append(s)
                 snaps = valid
             if snaps:
-                return Snapshot(snaps[0])
+                cached = snaps[0]
+                # Best-effort heartbeat: cache hits don't boot an instance, so last_used_at
+                # won't naturally update.
+                try:
+                    self.snapshot.touch()
+                except Exception:
+                    pass
+                try:
+                    cached.touch()
+                except Exception:
+                    pass
+                return Snapshot(cached)
 
         if start_fn is None:
             context_manager = self.start(ttl_seconds=24 * 60 * 60, ttl_action="stop")
@@ -370,7 +382,10 @@ class Snapshot:
                 inst = inst if res is None else res
 
                 new_snapshot = Snapshot(
-                    inst.snapshot(digest=self.key_to_digest(key) if key else None)
+                    inst.snapshot(
+                        digest=self.key_to_digest(key) if key else None,
+                        ttl_seconds=default_chain_snapshot_ttl_seconds(),
+                    )
                 )
 
                 logger.info(
@@ -391,7 +406,10 @@ class Snapshot:
                 res = func(inst)
                 inst = inst if res is None else res
                 return Snapshot(
-                    inst.snapshot(digest=self.key_to_digest(key) if key else None)
+                    inst.snapshot(
+                        digest=self.key_to_digest(key) if key else None,
+                        ttl_seconds=default_chain_snapshot_ttl_seconds(),
+                    )
                 )
 
     # -------------- run with stream between CMD/RET -------------- #
