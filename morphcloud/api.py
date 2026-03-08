@@ -14,11 +14,15 @@ from functools import lru_cache
 
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
+
 # Import Rich for fancy printing
 from rich.console import Console
 
 from morphcloud._utils import StrEnum
 from morphcloud.config import resolve_settings
+
+if typing.TYPE_CHECKING:
+    from morphcloud.devbox.client import AsyncDevboxClient, DevboxClient
 
 # Global console instance
 console = Console()
@@ -138,6 +142,7 @@ class MorphCloudClient:
         db_base_url: typing.Optional[str] = None,
         ssh_hostname: typing.Optional[str] = None,
         ssh_port: typing.Optional[int] = None,
+        devbox_base_url: typing.Optional[str] = None,
     ):
         settings = resolve_settings(
             profile=profile,
@@ -146,6 +151,7 @@ class MorphCloudClient:
                 "base_url": base_url,
                 "api_host": api_host,
                 "service_base_url": service_base_url,
+                "devbox_base_url": devbox_base_url,
                 "admin_base_url": admin_base_url,
                 "db_base_url": db_base_url,
                 "ssh_hostname": ssh_hostname,
@@ -159,9 +165,12 @@ class MorphCloudClient:
         self.ssh_hostname = settings.ssh_hostname
         self.ssh_port = settings.ssh_port
         self.service_base_url = settings.service_base_url
+        self.devbox_base_url = settings.devbox_base_url
         self.admin_base_url = settings.admin_base_url
         self.db_base_url = settings.db_base_url
         self.profile = settings.profile
+        self._devbox_client = None
+        self._devbox_async_client = None
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
@@ -227,6 +236,9 @@ class MorphCloudClient:
         )
 
         self._load_sdk_plugins()
+        # Ensure first-party devbox clients win even if an external plugin attempted to attach them.
+        self._devbox_client = None
+        self._devbox_async_client = None
 
     def _load_sdk_plugins(self):
         """Load SDK plugins from entry points."""
@@ -253,6 +265,38 @@ class MorphCloudClient:
     @property
     def images(self) -> ImageAPI:
         return ImageAPI(self)
+
+    @property
+    def devbox(self) -> "DevboxClient":
+        if self._devbox_client is None:
+            from morphcloud.devbox.client import DevboxClient
+
+            client = DevboxClient(token=self.api_key, base_url=self.devbox_base_url)
+            client.ssh_hostname = self.ssh_hostname
+            client.ssh_port = self.ssh_port
+            self._devbox_client = client
+        return self._devbox_client
+
+    @devbox.setter
+    def devbox(self, value: "DevboxClient") -> None:
+        self._devbox_client = value
+
+    @property
+    def devbox_async(self) -> "AsyncDevboxClient":
+        if self._devbox_async_client is None:
+            from morphcloud.devbox.client import AsyncDevboxClient
+
+            client = AsyncDevboxClient(
+                token=self.api_key, base_url=self.devbox_base_url
+            )
+            client.ssh_hostname = self.ssh_hostname
+            client.ssh_port = self.ssh_port
+            self._devbox_async_client = client
+        return self._devbox_async_client
+
+    @devbox_async.setter
+    def devbox_async(self, value: "AsyncDevboxClient") -> None:
+        self._devbox_async_client = value
 
     # Add this property to the MorphCloudClient class
     @property

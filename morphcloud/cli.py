@@ -20,6 +20,12 @@ import morphcloud.api as api
 import morphcloud.config as config
 from morphcloud._utils import Spinner
 from morphcloud.api import copy_into_or_from_instance
+from morphcloud.cli_helpers import (
+    format_json,
+    get_client,
+    handle_api_error,
+    print_docker_style_table,
+)
 
 # ─────────────────────────────────────────────────────────────
 #  Version & CLI Setup
@@ -191,48 +197,6 @@ def cli(ctx, profile):
 # ─────────────────────────────────────────────────────────────
 
 
-def format_json(obj):
-    """Helper to pretty print Pydantic models or other objects as JSON."""
-    if hasattr(obj, "model_dump"):
-        data_to_dump = obj.model_dump()
-    elif hasattr(obj, "dict"):
-        data_to_dump = obj.dict()
-    else:
-        data_to_dump = obj
-    return json.dumps(data_to_dump, indent=2)
-
-
-def print_docker_style_table(headers, rows):
-    """Print a table in Docker ps style with dynamic column widths using Click's echo."""
-    if not headers:
-        return
-
-    widths = []
-    for i in range(len(headers)):
-        width = len(str(headers[i]))
-        if rows:
-            column_values = [str(row[i]) if i < len(row) else "" for row in rows]
-            width = max(width, max(len(val) for val in column_values))
-        widths.append(width)
-
-    header_line = ""
-    separator_line = ""
-    for i, header in enumerate(headers):
-        header_line += f"{str(header):<{widths[i]}}  "
-        separator_line += "-" * widths[i] + "  "
-
-    click.echo(header_line.rstrip())
-    click.echo(separator_line.rstrip())
-
-    if rows:
-        for row in rows:
-            line = ""
-            for i in range(len(headers)):
-                value = str(row[i]) if i < len(row) else ""
-                line += f"{value:<{widths[i]}}  "
-            click.echo(line.rstrip())
-
-
 def unix_timestamp_to_datetime(timestamp):
     """Convert a Unix timestamp to a human-readable UTC datetime string."""
     try:
@@ -246,54 +210,6 @@ def unix_timestamp_to_datetime(timestamp):
             return dt_object.strftime("%Y-%m-%d %H:%M:%S UTC")
         except Exception:
             return "Invalid Timestamp"
-
-
-def _get_profile_override():
-    ctx = click.get_current_context(silent=True)
-    if ctx is None:
-        return None
-    obj = getattr(ctx, "obj", None) or {}
-    return obj.get("profile")
-
-
-def get_client(profile_override: typing.Optional[str] = None):
-    """Get or create a MorphCloudClient instance. Raises error if API key is missing."""
-    try:
-        profile_override = (
-            profile_override if profile_override is not None else _get_profile_override()
-        )
-        return api.MorphCloudClient(profile=profile_override)
-    except ValueError as e:
-        if "API key must be provided" in str(e):
-            click.echo(
-                "Error: MORPH_API_KEY environment variable is not set.", err=True
-            )
-            click.echo(
-                "Please set it, e.g., with: export MORPH_API_KEY='your_api_key'",
-                err=True,
-            )
-            click.echo(
-                "Or configure a profile, e.g., morphcloud profile set default --api-key '<key>'",
-                err=True,
-            )
-            click.echo(
-                "You can generate API keys at: https://cloud.morph.so/web/keys",
-                err=True,
-            )
-            sys.exit(1)
-        raise
-
-
-def handle_api_error(error):
-    """Handle API errors with user-friendly messages."""
-    if isinstance(error, api.ApiError):
-        click.echo(f"API Error (Status Code: {error.status_code})", err=True)
-        click.echo(f"Response Body: {error.response_body}", err=True)
-    elif isinstance(error, click.ClickException):
-        raise error
-    else:
-        click.echo(f"An unexpected error occurred: {error}", err=True)
-    sys.exit(1)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -361,9 +277,7 @@ def profile_show(name):
 @click.option(
     "--service-base-url", default=None, help="Override the services API base URL."
 )
-@click.option(
-    "--admin-base-url", default=None, help="Override the admin API base URL."
-)
+@click.option("--admin-base-url", default=None, help="Override the admin API base URL.")
 @click.option("--db-base-url", default=None, help="Override the db API base URL.")
 def profile_set(
     name,
@@ -2677,6 +2591,11 @@ def cleanup_instances(
 
 # Load CLI plugins
 load_cli_plugins(cli)
+
+# Register built-in devbox commands last (so they win over any external plugin).
+from morphcloud.devbox.cli import devbox as devbox_group
+
+cli.add_command(devbox_group)
 
 
 if __name__ == "__main__":

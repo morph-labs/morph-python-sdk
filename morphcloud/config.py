@@ -13,6 +13,7 @@ DEFAULT_BASE_URL = "https://cloud.morph.so/api"
 DEFAULT_SSH_HOSTNAME = "ssh.cloud.morph.so"
 DEFAULT_SSH_PORT = 22
 DEFAULT_SERVICE_BASE_URL = "https://service.svc.cloud.morph.so"
+DEFAULT_DEVBOX_BASE_URL = "https://devbox.svc.cloud.morph.so"
 DEFAULT_ADMIN_BASE_URL = "https://admin.svc.cloud.morph.so"
 DEFAULT_DB_BASE_URL = "https://db.svc.cloud.morph.so"
 
@@ -26,6 +27,7 @@ class ResolvedSettings:
     ssh_port: int
     api_host: str
     service_base_url: str
+    devbox_base_url: str
     admin_base_url: str
     db_base_url: str
 
@@ -36,6 +38,7 @@ class ResolvedSettings:
             "MORPH_SSH_HOSTNAME": self.ssh_hostname,
             "MORPH_SSH_PORT": str(self.ssh_port),
             "MORPH_SERVICE_BASE_URL": self.service_base_url,
+            "MORPH_DEVBOX_BASE_URL": self.devbox_base_url,
             "MORPH_ADMIN_BASE_URL": self.admin_base_url,
             "MORPH_DB_BASE_URL": self.db_base_url,
         }
@@ -88,6 +91,30 @@ def _api_host_from_base_url(base_url: Optional[str]) -> Optional[str]:
     return parsed.hostname
 
 
+def _default_api_host_from_morph_env(morph_env: Any) -> Optional[str]:
+    morph_env = _clean(morph_env)
+    if not morph_env:
+        return None
+    if not isinstance(morph_env, str):
+        return None
+    morph_env = morph_env.lower()
+
+    if morph_env in {"prod", "production"}:
+        return "cloud.morph.so"
+    if morph_env in {"stage", "staging"}:
+        return "stage.morph.so"
+    return None
+
+
+def _looks_like_devbox_base_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip().lower()
+    if not candidate:
+        return False
+    return "devbox.svc." in candidate
+
+
 def _config_paths() -> list[pathlib.Path]:
     env_path = _clean(os.getenv("MORPH_CONFIG_PATH"))
     if env_path:
@@ -124,7 +151,9 @@ def load_config(path: Optional[pathlib.Path] = None) -> Dict[str, Any]:
     return {}
 
 
-def save_config(config: Mapping[str, Any], path: Optional[pathlib.Path] = None) -> pathlib.Path:
+def save_config(
+    config: Mapping[str, Any], path: Optional[pathlib.Path] = None
+) -> pathlib.Path:
     target = pathlib.Path(path or get_config_path())
     target.parent.mkdir(parents=True, exist_ok=True)
     rendered = toml.dumps(dict(config))
@@ -136,7 +165,9 @@ def save_config(config: Mapping[str, Any], path: Optional[pathlib.Path] = None) 
     return target
 
 
-def resolve_profile(name: Optional[str], config: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+def resolve_profile(
+    name: Optional[str], config: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
     config = config or load_config()
     profiles = config.get("profiles", {}) if isinstance(config, dict) else {}
     if not name:
@@ -193,6 +224,19 @@ def resolve_settings(
         env.get("MORPH_SERVICE_BASE_URL"),
         profile_data.get("service_base_url"),
     )
+    devbox_base_url = _coalesce(
+        overrides.get("devbox_base_url"),
+        env.get("MORPH_DEVBOX_BASE_URL"),
+        profile_data.get("devbox_base_url"),
+    )
+    if devbox_base_url is None:
+        legacy_candidate = _coalesce(
+            overrides.get("service_base_url"),
+            env.get("MORPH_SERVICE_BASE_URL"),
+            profile_data.get("service_base_url"),
+        )
+        if _looks_like_devbox_base_url(legacy_candidate):
+            devbox_base_url = legacy_candidate
     admin_base_url = _coalesce(
         overrides.get("admin_base_url"),
         env.get("MORPH_ADMIN_BASE_URL"),
@@ -207,6 +251,9 @@ def resolve_settings(
     if not api_host:
         api_host = _api_host_from_base_url(base_url)
 
+    if not api_host and not base_url:
+        api_host = _default_api_host_from_morph_env(env.get("MORPH_ENV"))
+
     if api_host:
         if not base_url:
             base_url = f"https://{api_host}/api"
@@ -214,6 +261,8 @@ def resolve_settings(
             ssh_hostname = f"ssh.{api_host}"
         if not service_base_url:
             service_base_url = f"https://service.svc.{api_host}"
+        if not devbox_base_url:
+            devbox_base_url = f"https://devbox.svc.{api_host}"
         if not admin_base_url:
             admin_base_url = f"https://admin.svc.{api_host}"
         if not db_base_url:
@@ -223,6 +272,7 @@ def resolve_settings(
     ssh_hostname = ssh_hostname or DEFAULT_SSH_HOSTNAME
     ssh_port = ssh_port or DEFAULT_SSH_PORT
     service_base_url = service_base_url or DEFAULT_SERVICE_BASE_URL
+    devbox_base_url = devbox_base_url or DEFAULT_DEVBOX_BASE_URL
     admin_base_url = admin_base_url or DEFAULT_ADMIN_BASE_URL
     db_base_url = db_base_url or DEFAULT_DB_BASE_URL
 
@@ -237,6 +287,7 @@ def resolve_settings(
         ssh_port=int(ssh_port),
         api_host=api_host,
         service_base_url=service_base_url,
+        devbox_base_url=devbox_base_url,
         admin_base_url=admin_base_url,
         db_base_url=db_base_url,
     )

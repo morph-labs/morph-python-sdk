@@ -19,6 +19,7 @@ def test_resolve_settings_derives_from_api_host():
     assert settings.base_url == "https://stage.morph.so/api"
     assert settings.ssh_hostname == "ssh.stage.morph.so"
     assert settings.service_base_url == "https://service.svc.stage.morph.so"
+    assert settings.devbox_base_url == "https://devbox.svc.stage.morph.so"
     assert settings.admin_base_url == "https://admin.svc.stage.morph.so"
     assert settings.db_base_url == "https://db.svc.stage.morph.so"
 

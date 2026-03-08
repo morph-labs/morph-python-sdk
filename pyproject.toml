@@ -48,3 +48,9 @@ dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
 ]
+
+[tool.black]
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
