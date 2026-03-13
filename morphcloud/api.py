@@ -657,6 +657,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -667,6 +668,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -678,6 +680,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -693,6 +697,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -703,6 +708,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -714,6 +720,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -748,6 +756,9 @@ class Snapshot(BaseModel):
     )
     metadata: typing.Dict[str, str] = Field(
         default_factory=dict, description="User provided metadata"
+    )
+    ttl: typing.Optional[TTL] = Field(
+        default=None, description="Time-To-Live configuration for the snapshot"
     )
 
     _api: SnapshotAPI = PrivateAttr()
