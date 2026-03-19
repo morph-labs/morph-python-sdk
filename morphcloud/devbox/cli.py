@@ -397,15 +397,43 @@ def delete_template(template_id: str, json_output: bool) -> None:
     multiple=True,
     help="Runtime secret to provide during build (key=value). Repeat for multiple secrets.",
 )
+@click.option(
+    "--workflow-context",
+    "--param",
+    "workflow_context_items",
+    multiple=True,
+    help="Per-run workflow input to provide during build (key=value). Repeat for multiple values.",
+)
+@click.option(
+    "--force",
+    "force_rebuild",
+    is_flag=True,
+    help="Bypass template cache reuse for the run created by this command.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Output raw JSON response")
 def cache_template(
-    template_id: str, secret_items: _t.Tuple[str, ...], json_output: bool
+    template_id: str,
+    secret_items: _t.Tuple[str, ...],
+    workflow_context_items: _t.Tuple[str, ...],
+    force_rebuild: bool,
+    json_output: bool,
 ) -> None:
     """Start caching/building a template."""
     _, devbox_client = _get_devbox_client()
     secrets = _parse_key_value_items(secret_items, label="Secret entries")
+    workflow_context = _parse_key_value_items(
+        workflow_context_items, label="Workflow context entries"
+    )
 
-    request = TemplateCacheRequest(runtime_secrets=secrets or None) if secrets else None
+    request = (
+        TemplateCacheRequest(
+            runtime_secrets=secrets or None,
+            workflow_context=workflow_context or None,
+            force=(True if force_rebuild else None),
+        )
+        if secrets or workflow_context or force_rebuild
+        else None
+    )
     try:
         with Spinner(
             text=f"Starting cache build for template {template_id}...",

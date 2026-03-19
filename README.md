@@ -141,6 +141,7 @@ Devboxes are managed, template-based environments (see the Devboxes section abov
 # Templates
 morphcloud devbox template list [--json]
 morphcloud devbox template get <template-id> [--json]
+morphcloud devbox template cache <template-id> [--secret KEY=VALUE] [--workflow-context KEY=VALUE | --param KEY=VALUE] [--force] [--json]
 
 # Start + connect
 morphcloud devbox start <template-id> [--name <name>] [--metadata KEY=VALUE] [--json]
@@ -153,6 +154,15 @@ morphcloud devbox hide-http <devbox-id> <name> [--json]
 # Save / cleanup
 morphcloud devbox save <devbox-id> <name> [--json]
 morphcloud devbox delete <devbox-id> [--json]
+```
+
+Template cache example with launch-scoped workflow inputs:
+
+```bash
+morphcloud devbox template cache tpl_123 \
+  --workflow-context REPO_URL=https://github.com/morph-labs/frontend-v2 \
+  --param REPO_REF=main \
+  --force
 ```
 
 ### Images

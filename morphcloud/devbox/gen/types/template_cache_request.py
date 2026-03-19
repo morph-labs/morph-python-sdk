@@ -9,6 +9,8 @@ from ..core.pydantic_utilities import IS_PYDANTIC_V2, UniversalBaseModel
 
 class TemplateCacheRequest(UniversalBaseModel):
     runtime_secrets: typing.Optional[typing.Dict[str, typing.Optional[str]]] = None
+    workflow_context: typing.Optional[typing.Dict[str, typing.Optional[str]]] = None
+    force: typing.Optional[bool] = None
 
     if IS_PYDANTIC_V2:
         model_config: typing.ClassVar[pydantic.ConfigDict] = pydantic.ConfigDict(extra="allow", frozen=True)  # type: ignore # Pydantic v2
