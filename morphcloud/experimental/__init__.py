@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import stat
 import threading
 import time
@@ -9,7 +10,6 @@ import typing
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Literal, Tuple, Union
 
 import paramiko
 
@@ -18,6 +18,20 @@ from morphcloud.api import Snapshot as _Snapshot
 
 # Configure logging for the experimental module
 logger = logging.getLogger(__name__)
+
+DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _chain_snapshot_ttl_seconds() -> int:
+    raw = os.getenv("MORPH_CHAIN_SNAPSHOT_TTL_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except Exception:
+            pass
+    return DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS
 
 
 # ──────────────────────────── Logging System ─────────────────────────── #
@@ -137,64 +151,18 @@ class VerificationPanel:
 
 # ───────────────────── Anthropic / agent setup ─────────────────── #
 
-StreamTuple = Union[
-    Tuple[Literal["stdout"], str],
-    Tuple[Literal["stdin"], str],
-    Tuple[Literal["exit_code"], int],
-]
-
-
-def ssh_stream(
-    ssh: paramiko.SSHClient,
-    command: str,
-    *,
-    encoding: str = "utf-8",
-    chunk_size: int = 4096,
-    poll: float = 0.01,
-) -> Iterator[StreamTuple]:
-    transport = ssh.get_transport()
-    assert transport is not None, "SSH transport must be connected"
-    chan = transport.open_session()
-    chan.exec_command(command)
-
-    while True:
-        while chan.recv_ready():
-            data = chan.recv(chunk_size)
-            if data:
-                yield ("stdout", data.decode(encoding, errors="replace"))
-        while chan.recv_stderr_ready():
-            data = chan.recv_stderr(chunk_size)
-            if data:
-                yield ("stderr", data.decode(encoding, errors="replace"))
-        if (
-            chan.exit_status_ready()
-            and not chan.recv_ready()
-            and not chan.recv_stderr_ready()
-        ):
-            break
-        time.sleep(poll)
-
-    yield ("exit_code", chan.recv_exit_status())
-    chan.close()
-
-
 def instance_exec(
     instance,
     command: str,
     on_stdout: typing.Callable[[str], None],
     on_stderr: typing.Callable[[str], None],
 ) -> int:
-    with instance.ssh() as ssh:
-        ssh_client = ssh._client  # type: ignore[attr-defined]
-        for msg in ssh_stream(ssh_client, command):
-            match msg:
-                case ("stdout", txt):
-                    on_stdout(txt)
-                case ("stderr", txt):
-                    on_stderr(txt)
-                case ("exit_code", code):
-                    return code
-    raise RuntimeError("SSH stream did not yield exit code.")
+    response = instance.exec(
+        command,
+        on_stdout=on_stdout,
+        on_stderr=on_stderr,
+    )
+    return response.exit_code
 
 
 client = MorphCloudClient()
@@ -222,6 +190,7 @@ class Snapshot:
         memory: int = 4096,
         disk_size: int = 8192,
         invalidate: InvalidateFn | bool = False,
+        ttl_seconds: typing.Optional[int] = None,
     ) -> "Snapshot":
         logger.info(
             "🖼  Snapshot.create()",
@@ -244,6 +213,10 @@ class Snapshot:
                 if invalidate_fn(Snapshot(s)):
                     s.delete()
         digest = f"{name}-{image_id}-{vcpus}-{memory}-{disk_size}"
+        if ttl_seconds is None:
+            ttl_seconds = _chain_snapshot_ttl_seconds()
+        if ttl_seconds is not None and ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be greater than zero")
         snap = client.snapshots.create(
             image_id=image_id,
             vcpus=vcpus,
@@ -251,6 +224,7 @@ class Snapshot:
             disk_size=disk_size,
             digest=digest,
             metadata={"name": name},
+            ttl_seconds=ttl_seconds,
         )
         return cls(snap)
 
@@ -342,6 +316,7 @@ class Snapshot:
             if isinstance(invalidate, typing.Callable)
             else lambda _: invalidate
         )
+        chain_ttl = _chain_snapshot_ttl_seconds()
         if key:
             digest = self.key_to_digest(key)
             snaps = client.snapshots.list(digest=digest)
@@ -354,6 +329,12 @@ class Snapshot:
                         valid.append(s)
                 snaps = valid
             if snaps:
+                try:
+                    snaps[0].touch()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to touch cached snapshot", extra={"error": str(exc)}
+                    )
                 return Snapshot(snaps[0])
 
         if start_fn is None:
@@ -370,7 +351,10 @@ class Snapshot:
                 inst = inst if res is None else res
 
                 new_snapshot = Snapshot(
-                    inst.snapshot(digest=self.key_to_digest(key) if key else None)
+                    inst.snapshot(
+                        digest=self.key_to_digest(key) if key else None,
+                        ttl_seconds=chain_ttl,
+                    )
                 )
 
                 logger.info(
@@ -391,7 +375,10 @@ class Snapshot:
                 res = func(inst)
                 inst = inst if res is None else res
                 return Snapshot(
-                    inst.snapshot(digest=self.key_to_digest(key) if key else None)
+                    inst.snapshot(
+                        digest=self.key_to_digest(key) if key else None,
+                        ttl_seconds=chain_ttl,
+                    )
                 )
 
     # -------------- run with stream between CMD/RET -------------- #
