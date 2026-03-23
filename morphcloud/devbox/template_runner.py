@@ -52,9 +52,7 @@ class TemplateStepSummary:
             title=_coerce_optional_str(payload.get("title")),
             command=_coerce_optional_str(payload.get("command")),
             session_name=_coerce_optional_str(_get_mapping_value(tmux_session, "name")),
-            secret_name=_coerce_optional_str(
-                _get_mapping_value(export_secret, "name")
-            ),
+            secret_name=_coerce_optional_str(_get_mapping_value(export_secret, "name")),
             service_name=_coerce_optional_str(_get_mapping_value(http_service, "name")),
             service_port=_coerce_optional_int(_get_mapping_value(http_service, "port")),
         )
@@ -114,13 +112,13 @@ class TemplateTarget:
             description=_coerce_optional_str(payload.get("description")),
             status=_coerce_str(payload.get("status"), default="unknown"),
             step_count=_coerce_int(payload.get("step_count"), default=len(steps)),
-            cached_step_count=_coerce_int(
-                payload.get("cached_step_count"), default=0
-            ),
+            cached_step_count=_coerce_int(payload.get("cached_step_count"), default=0),
             final_snapshot_id=_coerce_optional_str(payload.get("final_snapshot_id")),
             run_id=_coerce_optional_str(payload.get("run_id")),
             alias=alias or _coerce_optional_str(payload.get("alias")),
-            is_shared=bool(payload.get("is_shared") if "is_shared" in payload else is_shared),
+            is_shared=bool(
+                payload.get("is_shared") if "is_shared" in payload else is_shared
+            ),
             steps=steps,
         )
 
@@ -310,11 +308,19 @@ class TemplateRunEvent:
                 default="",
             )
             normalized["hasSaved"] = _coerce_bool(
-                payload.get("hasSaved") if "hasSaved" in payload else payload.get("has_saved"),
+                (
+                    payload.get("hasSaved")
+                    if "hasSaved" in payload
+                    else payload.get("has_saved")
+                ),
                 default=False,
             )
             normalized["optional"] = _coerce_bool(
-                payload.get("optional") if "optional" in payload else payload.get("isOptional"),
+                (
+                    payload.get("optional")
+                    if "optional" in payload
+                    else payload.get("isOptional")
+                ),
                 default=False,
             )
             default_action = payload.get("defaultAction")
@@ -432,7 +438,9 @@ class TemplateRunResult:
             "devbox_id": self.devbox_id,
             "devbox": self.devbox,
             "awaiting_input": (
-                self.awaiting_input.as_dict() if self.awaiting_input is not None else None
+                self.awaiting_input.as_dict()
+                if self.awaiting_input is not None
+                else None
             ),
             "availability": (
                 self.availability.as_dict() if self.availability is not None else None
@@ -446,9 +454,7 @@ class TemplateRunResult:
 class TemplateWorkflowTransport:
     """Typed transport wrapper around the template workflow endpoints."""
 
-    def __init__(
-        self, client: t.Any, devbox_client: t.Any, *, anonymous: bool = False
-    ):
+    def __init__(self, client: t.Any, devbox_client: t.Any, *, anonymous: bool = False):
         self._client = client
         self._devbox_client = devbox_client
         self._anonymous = anonymous
@@ -488,9 +494,7 @@ class TemplateWorkflowTransport:
     def get_shared_template_detail(
         self, template_id: str, *, alias: str | None = None
     ) -> TemplateTarget:
-        response = self._request(
-            "GET", f"api/templates/shared/{_quote(template_id)}"
-        )
+        response = self._request("GET", f"api/templates/shared/{_quote(template_id)}")
         payload = self._json_body(
             response,
             fallback=f"Failed to fetch shared template detail for {template_id}.",
@@ -507,7 +511,9 @@ class TemplateWorkflowTransport:
             response, fallback=f"Failed to resolve alias '{alias}'."
         )
         if not isinstance(payload, dict):
-            raise TemplateRunnerError(f"Alias response for '{alias}' was not an object.")
+            raise TemplateRunnerError(
+                f"Alias response for '{alias}' was not an object."
+            )
         return payload
 
     def search_aliases(self, query: str, *, limit: int = 10) -> list[AliasSearchResult]:
@@ -558,9 +564,7 @@ class TemplateWorkflowTransport:
             )
         return self.get_shared_template_detail(template_id, alias=candidate)
 
-    def start_cache_run(
-        self, template_id: str, options: TemplateRunOptions
-    ) -> str:
+    def start_cache_run(self, template_id: str, options: TemplateRunOptions) -> str:
         response = self._request(
             "POST",
             f"api/templates/{_quote(template_id)}/cache",
@@ -586,7 +590,9 @@ class TemplateWorkflowTransport:
             )
         return run_id
 
-    def submit_secret(self, template_id: str, run_id: str, value_by_name: dict[str, str]) -> None:
+    def submit_secret(
+        self, template_id: str, run_id: str, value_by_name: dict[str, str]
+    ) -> None:
         response = self._request(
             "POST",
             f"api/templates/{_quote(template_id)}/cache/{_quote(run_id)}/secrets",
@@ -723,9 +729,7 @@ class TemplateWorkflowTransport:
         except ValueError as exc:
             raise TemplateRunnerError(fallback) from exc
 
-    def _response_error(
-        self, response: t.Any, *, fallback: str
-    ) -> TemplateRunnerError:
+    def _response_error(self, response: t.Any, *, fallback: str) -> TemplateRunnerError:
         message = fallback
         try:
             payload = response.json()
@@ -882,10 +886,14 @@ class TemplateWorkflowRunner:
                             raise TemplateRunnerError(
                                 "Saved secrets are unavailable for anonymous template runs."
                             )
-                        if submission.value not in {
-                            USE_SAVED_SECRET_TOKEN,
-                            SKIP_OPTIONAL_SECRET_TOKEN,
-                        } and submission.save_to_account:
+                        if (
+                            submission.value
+                            not in {
+                                USE_SAVED_SECRET_TOKEN,
+                                SKIP_OPTIONAL_SECRET_TOKEN,
+                            }
+                            and submission.save_to_account
+                        ):
                             try:
                                 self.transport.save_secret(
                                     state.waiting_for_secret.secret_name,
@@ -904,9 +912,7 @@ class TemplateWorkflowRunner:
                             {state.waiting_for_secret.secret_name: submission.value},
                         )
                         state.status = "running"
-                        state.last_message = (
-                            f"Submitted {state.waiting_for_secret.secret_name}; waiting for build to resume."
-                        )
+                        state.last_message = f"Submitted {state.waiting_for_secret.secret_name}; waiting for build to resume."
                         state.waiting_for_secret = None
                         presenter.update(state)
                     if state.status in {"completed", "cancelled", "error"}:
@@ -931,9 +937,7 @@ class TemplateWorkflowRunner:
 
             if reconnect_attempt >= _MAX_STREAM_RECONNECTS:
                 state.status = "error"
-                state.error_message = (
-                    "Template event stream ended before the workflow reached a terminal state."
-                )
+                state.error_message = "Template event stream ended before the workflow reached a terminal state."
                 state.last_message = state.error_message
                 presenter.update(state)
                 return
@@ -1006,7 +1010,10 @@ class TemplateWorkflowRunner:
 
         if event_type == "base_selected":
             state.status = "running"
-            state.last_message = _coerce_optional_str(payload.get("message")) or "Base snapshot selected."
+            state.last_message = (
+                _coerce_optional_str(payload.get("message"))
+                or "Base snapshot selected."
+            )
             return
 
         if event_type == "step_started":
@@ -1014,7 +1021,9 @@ class TemplateWorkflowRunner:
                 state.current_step_index = event.step_index
                 state.step_statuses[event.step_index] = "executing"
                 state.output_by_step.setdefault(event.step_index, [])
-                state.last_message = f"Running {state.target.step_label(event.step_index)}."
+                state.last_message = (
+                    f"Running {state.target.step_label(event.step_index)}."
+                )
             return
 
         if event_type == "output":
@@ -1031,14 +1040,18 @@ class TemplateWorkflowRunner:
             if event.step_index is not None:
                 state.step_statuses[event.step_index] = "cached"
                 state.current_step_index = event.step_index
-                state.last_message = f"Cache hit for {state.target.step_label(event.step_index)}."
+                state.last_message = (
+                    f"Cache hit for {state.target.step_label(event.step_index)}."
+                )
             return
 
         if event_type == "step_completed":
             if event.step_index is not None:
                 state.step_statuses[event.step_index] = "completed"
                 state.current_step_index = event.step_index
-                state.last_message = f"Completed {state.target.step_label(event.step_index)}."
+                state.last_message = (
+                    f"Completed {state.target.step_label(event.step_index)}."
+                )
             return
 
         if event_type == "awaiting_input":
@@ -1105,7 +1118,9 @@ class TemplateWorkflowRunner:
         if event_type == "cancelled":
             state.status = "cancelled"
             state.finished_at = time.time()
-            state.error_message = _coerce_optional_str(payload.get("message")) or "Workflow cancelled."
+            state.error_message = (
+                _coerce_optional_str(payload.get("message")) or "Workflow cancelled."
+            )
             state.last_message = state.error_message
             return
 
@@ -1232,7 +1247,11 @@ class PlainTemplatePresenter(BaseTemplatePresenter):
             if lowered in {"q", "quit", "exit"}:
                 raise click.Abort()
             if lowered.startswith("/search ") or lowered.startswith("?"):
-                query = answer[8:].strip() if lowered.startswith("/search ") else answer[1:].strip()
+                query = (
+                    answer[8:].strip()
+                    if lowered.startswith("/search ")
+                    else answer[1:].strip()
+                )
                 if not query:
                     raise TemplateRunnerError("Search query cannot be empty.")
                 current_search = search_fn(query)
@@ -1270,7 +1289,9 @@ class PlainTemplatePresenter(BaseTemplatePresenter):
             click.echo(content, nl=not content.endswith("\n"))
             return
         if event_type == "step_started" and event.step_index is not None:
-            click.echo(f"[step {event.step_index}] {state.target.step_label(event.step_index)}")
+            click.echo(
+                f"[step {event.step_index}] {state.target.step_label(event.step_index)}"
+            )
             return
         if event_type == "step_completed" and event.step_index is not None:
             click.echo(
@@ -1425,7 +1446,9 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
         try:
             from prompt_toolkit.shortcuts import (
                 PromptSession,
-                clear as prompt_toolkit_clear,
+            )
+            from prompt_toolkit.shortcuts import clear as prompt_toolkit_clear
+            from prompt_toolkit.shortcuts import (
                 print_formatted_text as prompt_toolkit_print,
             )
         except ImportError as exc:
@@ -1478,23 +1501,19 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
     def update(
         self, state: TemplateRunState, event: TemplateRunEvent | None = None
     ) -> None:
-        force = (
-            event is None
-            or event.event_type
-            in {
-                "started",
-                "base_selected",
-                "step_started",
-                "step_completed",
-                "cache",
-                "awaiting_input",
-                "post_secret_instance",
-                "completed",
-                "cancelled",
-                "step_failed",
-                "error",
-            }
-        )
+        force = event is None or event.event_type in {
+            "started",
+            "base_selected",
+            "step_started",
+            "step_completed",
+            "cache",
+            "awaiting_input",
+            "post_secret_instance",
+            "completed",
+            "cancelled",
+            "step_failed",
+            "error",
+        }
         self._render_state(state, force=force)
 
     def prompt_for_secret(
@@ -1533,23 +1552,23 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
                 return SecretSubmission(value, save)
             if prompt.optional:
                 return SecretSubmission(SKIP_OPTIONAL_SECRET_TOKEN, False)
-            self._print(
-                "This secret is required. Enter a value or interrupt the run."
-            )
+            self._print("This secret is required. Enter a value or interrupt the run.")
 
     def finish(self, state: TemplateRunState) -> None:
         self._render_state(state, force=True)
 
-    def _prompt_choice(
-        self, message: str, choices: list[str], *, default: str
-    ) -> str:
+    def _prompt_choice(self, message: str, choices: list[str], *, default: str) -> str:
         expected = {choice.lower(): choice.lower() for choice in choices}
         options = "/".join(choices)
         while True:
-            answer = self._session.prompt(
-                f"{message} [{options}]: ",
-                default=default,
-            ).strip().lower()
+            answer = (
+                self._session.prompt(
+                    f"{message} [{options}]: ",
+                    default=default,
+                )
+                .strip()
+                .lower()
+            )
             if answer in expected:
                 return expected[answer]
             self._print(f"Expected one of: {', '.join(choices)}")
@@ -1587,11 +1606,15 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
                     f"{idx:>2}. {item.name} ({item.template_id}) [{item.cached_step_count}/{item.step_count}] {item.status}"
                 )
         else:
-            lines.extend(["Owned Templates", "---------------", "No owned templates found."])
+            lines.extend(
+                ["Owned Templates", "---------------", "No owned templates found."]
+            )
 
         if search_results:
             lines.extend(["", "Shared Alias Search", "-------------------"])
-            for offset, item in enumerate(search_results, start=len(owned_templates) + 1):
+            for offset, item in enumerate(
+                search_results, start=len(owned_templates) + 1
+            ):
                 choices[offset] = item.alias
                 description = f" ({item.description})" if item.description else ""
                 lines.append(
@@ -1657,7 +1680,9 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
             state.current_step_index is not None
             and state.current_step_index in state.output_by_step
         ):
-            body = "".join(state.output_by_step[state.current_step_index][-40:]).splitlines()
+            body = "".join(
+                state.output_by_step[state.current_step_index][-40:]
+            ).splitlines()
         else:
             body = list(state.recent_output[-40:])
         if not body:
@@ -1676,7 +1701,9 @@ class PromptToolkitTemplatePresenter(BaseTemplatePresenter):
             if prompt.optional:
                 lines.append("Optional secret. Choose a value or skip.")
             else:
-                lines.append("Required secret. The workflow is paused until you respond.")
+                lines.append(
+                    "Required secret. The workflow is paused until you respond."
+                )
             if prompt.has_saved:
                 lines.append("A saved secret is available for this name.")
             countdown = _format_secret_countdown(prompt)
@@ -1716,9 +1743,9 @@ RichTemplatePresenter = PromptToolkitTemplatePresenter
 
 
 def build_presenter(*, plain: bool, json_output: bool) -> BaseTemplatePresenter:
-    interactive = bool(getattr(click.get_text_stream("stdin"), "isatty", lambda: False)()) and bool(
-        getattr(click.get_text_stream("stdout"), "isatty", lambda: False)()
-    )
+    interactive = bool(
+        getattr(click.get_text_stream("stdin"), "isatty", lambda: False)()
+    ) and bool(getattr(click.get_text_stream("stdout"), "isatty", lambda: False)())
     if json_output:
         return PlainTemplatePresenter(interactive=False, quiet=True)
     if plain or not interactive:
@@ -1864,9 +1891,7 @@ def _extract_single_http_service(
     http_service = payload.get("http_service")
     source = http_service if isinstance(http_service, dict) else payload
     name = _coerce_optional_str(
-        source.get("name")
-        or payload.get("serviceName")
-        or payload.get("service_name")
+        source.get("name") or payload.get("serviceName") or payload.get("service_name")
     )
     port = _coerce_optional_int(
         source.get("port") or payload.get("servicePort") or payload.get("service_port")

@@ -49,7 +49,9 @@ def build_tmux_attach_command(
     return f"tmux new-session -A -s {sh_quote(session)} {sh_quote(command)}"
 
 
-def _parse_optional_bool_header(headers: _t.Mapping[str, str], name: str) -> bool | None:
+def _parse_optional_bool_header(
+    headers: _t.Mapping[str, str], name: str
+) -> bool | None:
     for key, value in (headers or {}).items():
         if key.lower() != name.lower():
             continue
@@ -94,7 +96,10 @@ class TerminalStartResult:
                 return obj.dict()
             return obj
 
-        return {"install": _dump(self.install) if self.install is not None else None, "session": _dump(self.session)}
+        return {
+            "install": _dump(self.install) if self.install is not None else None,
+            "session": _dump(self.session),
+        }
 
 
 class DevboxTerminals:

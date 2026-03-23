@@ -17,18 +17,18 @@ import httpx
 import yaml
 
 from .template_runner import (
-    BaseTemplatePresenter,
     SKIP_OPTIONAL_SECRET_TOKEN,
+    USE_SAVED_SECRET_TOKEN,
+    BaseTemplatePresenter,
     SecretPromptState,
     SecretSubmission,
     TemplateRunEvent,
+    TemplateRunnerError,
     TemplateRunOptions,
     TemplateRunResult,
     TemplateRunState,
-    TemplateRunnerError,
     TemplateStepSummary,
     TemplateTarget,
-    USE_SAVED_SECRET_TOKEN,
 )
 
 
@@ -134,9 +134,7 @@ class ExperimentalLocalTemplateRunner:
                             value = env.get(step.summary.secret_name or "", "")
                             if not value and not step.optional:
                                 state.status = "error"
-                                state.error_message = (
-                                    f"No local environment value exists for {step.summary.secret_name}."
-                                )
+                                state.error_message = f"No local environment value exists for {step.summary.secret_name}."
                                 presenter.update(
                                     state,
                                     TemplateRunEvent(
@@ -179,9 +177,7 @@ class ExperimentalLocalTemplateRunner:
                         state.warnings.append(
                             f"Service {step.service_name or 'service'} is not listening on port {port}."
                         )
-                    state.last_message = (
-                        f"Local service {step.service_name or 'service'} available at {url or 'unknown'}."
-                    )
+                    state.last_message = f"Local service {step.service_name or 'service'} available at {url or 'unknown'}."
                     state.exposed_services.append(
                         {
                             "name": step.service_name,
@@ -333,9 +329,7 @@ class ExperimentalLocalTemplateRunner:
             state.status = "error"
             state.finished_at = time.time()
             state.step_statuses[step.summary.index] = "failed"
-            state.error_message = (
-                f"Local step '{step.summary.label}' failed with exit code {return_code}."
-            )
+            state.error_message = f"Local step '{step.summary.label}' failed with exit code {return_code}."
             presenter.update(
                 state,
                 TemplateRunEvent(
@@ -387,9 +381,7 @@ class ExperimentalLocalTemplateRunner:
         )
         state.waiting_for_secret = prompt
         state.status = "awaiting_input"
-        state.last_message = (
-            f"Waiting for {'optional' if step.optional else 'required'} local secret {secret_name}."
-        )
+        state.last_message = f"Waiting for {'optional' if step.optional else 'required'} local secret {secret_name}."
         presenter.update(
             state,
             TemplateRunEvent(
@@ -467,9 +459,7 @@ class ExperimentalLocalTemplateRunner:
             state.status = "error"
             state.finished_at = time.time()
             state.step_statuses[step.summary.index] = "failed"
-            state.error_message = (
-                f"tmuxSession {session_name} failed locally with exit code {result.returncode}."
-            )
+            state.error_message = f"tmuxSession {session_name} failed locally with exit code {result.returncode}."
             presenter.update(
                 state,
                 TemplateRunEvent(
@@ -499,9 +489,13 @@ def load_local_template_spec(yaml_path: str) -> LocalTemplateSpec:
 
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
-        raise TemplateRunnerError("Template YAML must contain a non-empty 'steps' list.")
+        raise TemplateRunnerError(
+            "Template YAML must contain a non-empty 'steps' list."
+        )
 
-    steps = tuple(_parse_local_step(index, step) for index, step in enumerate(raw_steps))
+    steps = tuple(
+        _parse_local_step(index, step) for index, step in enumerate(raw_steps)
+    )
     target = TemplateTarget(
         template_id=source.template_id,
         name=_coerce_optional_str(data.get("name")) or source.default_name,
@@ -599,9 +593,7 @@ def _fetch_morph_new_template_yaml(alias: str) -> str:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         reason = exc.response.reason_phrase or "HTTP error"
-        raise TemplateRunnerError(
-            f"{exc.response.status_code} {reason}"
-        ) from exc
+        raise TemplateRunnerError(f"{exc.response.status_code} {reason}") from exc
     except httpx.HTTPError as exc:
         raise TemplateRunnerError(str(exc)) from exc
 
@@ -624,7 +616,9 @@ def _parse_local_step(index: int, payload: t.Any) -> LocalTemplateStep:
     if step_type == "command":
         command = _command_value(payload)
         if not command:
-            raise TemplateRunnerError(f"Step {index} command requires 'run' or 'command'.")
+            raise TemplateRunnerError(
+                f"Step {index} command requires 'run' or 'command'."
+            )
         summary = TemplateStepSummary(
             index=index,
             step_type=step_type,
@@ -655,7 +649,11 @@ def _parse_local_step(index: int, payload: t.Any) -> LocalTemplateStep:
         )
 
     if step_type == "exposeHttpService":
-        service_cfg = payload.get("http_service") if isinstance(payload.get("http_service"), dict) else payload
+        service_cfg = (
+            payload.get("http_service")
+            if isinstance(payload.get("http_service"), dict)
+            else payload
+        )
         service_name = _coerce_optional_str(_mapping_value(service_cfg, "name"))
         service_port = _coerce_optional_int(_mapping_value(service_cfg, "port"))
         if not service_name or service_port is None:
@@ -676,7 +674,11 @@ def _parse_local_step(index: int, payload: t.Any) -> LocalTemplateStep:
         )
 
     if step_type == "tmuxSession":
-        tmux_cfg = payload.get("tmux_session") if isinstance(payload.get("tmux_session"), dict) else payload
+        tmux_cfg = (
+            payload.get("tmux_session")
+            if isinstance(payload.get("tmux_session"), dict)
+            else payload
+        )
         session_name = _coerce_optional_str(_mapping_value(tmux_cfg, "name"))
         command = _command_value(payload)
         if not session_name or not command:
@@ -692,7 +694,9 @@ def _parse_local_step(index: int, payload: t.Any) -> LocalTemplateStep:
         )
         return LocalTemplateStep(summary=summary, command=command)
 
-    raise TemplateRunnerError(f"Unsupported template step type '{step_type}' in step {index}.")
+    raise TemplateRunnerError(
+        f"Unsupported template step type '{step_type}' in step {index}."
+    )
 
 
 def _command_value(payload: dict[str, t.Any]) -> str | None:

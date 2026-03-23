@@ -35,8 +35,8 @@ from .gen.types.devbox_response import DevboxResponse
 from .gen.types.http_service import HttpService
 from .template_local_runner import ExperimentalLocalTemplateRunner
 from .template_runner import (
-    TemplateRunOptions,
     TemplateRunnerError,
+    TemplateRunOptions,
     TemplateWorkflowRunner,
     TemplateWorkflowTransport,
     build_presenter,
@@ -956,7 +956,9 @@ def _ensure_devbox_ready_for_terminals(
     try:
         devbox = devbox_client.devboxes_core.get_devbox(devbox_id)
     except DevboxApiError as exc:
-        raise click.ClickException(_format_devbox_api_error(exc, context="Get devbox")) from exc
+        raise click.ClickException(
+            _format_devbox_api_error(exc, context="Get devbox")
+        ) from exc
     except Exception as exc:
         handle_api_error(exc)
 
@@ -982,7 +984,9 @@ def _ensure_devbox_ready_for_terminals(
                 success_text=f"Devbox {devbox_id} is ready",
                 success_emoji="✅",
             ):
-                devbox = _wait_for_devbox_ready(devbox_client, devbox_id, timeout=timeout)
+                devbox = _wait_for_devbox_ready(
+                    devbox_client, devbox_id, timeout=timeout
+                )
         except click.ClickException:
             raise
         except DevboxApiError as exc:
@@ -1009,7 +1013,9 @@ def _looks_like_tmux_session_id(value: str) -> bool:
     help="Seconds to wait for the devbox to become READY.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Output raw JSON response")
-def terminal_list(devbox_id: str, socket: _t.Optional[str], timeout: int, json_output: bool) -> None:
+def terminal_list(
+    devbox_id: str, socket: _t.Optional[str], timeout: int, json_output: bool
+) -> None:
     """List devbox terminals (tmux sessions)."""
     _, devbox_client = _get_devbox_client()
 
@@ -1045,10 +1051,18 @@ def terminal_list(devbox_id: str, socket: _t.Optional[str], timeout: int, json_o
             [
                 _truncate_text(session.name, _TERMINAL_LIST_COLUMN_WIDTHS["Name"]),
                 _truncate_text(session.id, _TERMINAL_LIST_COLUMN_WIDTHS["ID"]),
-                _truncate_text(session.windows, _TERMINAL_LIST_COLUMN_WIDTHS["Windows"]),
-                _truncate_text(session.clients, _TERMINAL_LIST_COLUMN_WIDTHS["Clients"]),
-                _truncate_text(session.created, _TERMINAL_LIST_COLUMN_WIDTHS["Created"]),
-                _truncate_text(session.activity, _TERMINAL_LIST_COLUMN_WIDTHS["Activity"]),
+                _truncate_text(
+                    session.windows, _TERMINAL_LIST_COLUMN_WIDTHS["Windows"]
+                ),
+                _truncate_text(
+                    session.clients, _TERMINAL_LIST_COLUMN_WIDTHS["Clients"]
+                ),
+                _truncate_text(
+                    session.created, _TERMINAL_LIST_COLUMN_WIDTHS["Created"]
+                ),
+                _truncate_text(
+                    session.activity, _TERMINAL_LIST_COLUMN_WIDTHS["Activity"]
+                ),
             ]
         )
 
@@ -1071,16 +1085,24 @@ def terminal_start(
     """Start a new devbox terminal (tmux session)."""
     _, devbox_client = _get_devbox_client()
 
-    devbox = _ensure_devbox_ready_for_terminals(devbox_client, devbox_id, timeout=timeout)
+    devbox = _ensure_devbox_ready_for_terminals(
+        devbox_client, devbox_id, timeout=timeout
+    )
     metadata = dict(getattr(devbox, "metadata", {}) or {})
 
-    requested = session_name if session_name is not None else f"tmux-{_resolve_name(metadata, devbox_id)}"
+    requested = (
+        session_name
+        if session_name is not None
+        else f"tmux-{_resolve_name(metadata, devbox_id)}"
+    )
     safe_name = sanitize_tmux_session_name(requested)
     if not safe_name:
         raise click.ClickException("Session name cannot be empty.")
 
     try:
-        result = devbox_client.terminals.start(devbox_id, name=safe_name, ensure_tmux=True, detached=True)
+        result = devbox_client.terminals.start(
+            devbox_id, name=safe_name, ensure_tmux=True, detached=True
+        )
     except DevboxApiError as exc:
         raise click.ClickException(
             _format_devbox_api_error(exc, context="Terminal start")
@@ -1102,7 +1124,9 @@ def terminal_start(
 
     click.secho(f"Terminal started: {safe_name}", fg="green")
     click.echo(f"Session ID: {result.session.id}")
-    click.echo(f"Connect with: morphcloud devbox terminal connect {devbox_id} {safe_name}")
+    click.echo(
+        f"Connect with: morphcloud devbox terminal connect {devbox_id} {safe_name}"
+    )
 
 
 @terminal_group.command("connect")
@@ -1127,7 +1151,11 @@ def terminal_start(
     help="Seconds between SSH keepalive packets.",
 )
 def terminal_connect(
-    devbox_id: str, session: str, initial_command: _t.Optional[str], timeout: int, keepalive: int
+    devbox_id: str,
+    session: str,
+    initial_command: _t.Optional[str],
+    timeout: int,
+    keepalive: int,
 ) -> None:
     """Connect to a devbox terminal (tmux session) over SSH."""
     if not sys.stdin.isatty():
@@ -1141,7 +1169,9 @@ def terminal_connect(
         raise click.ClickException("Session cannot be empty.")
 
     if initial_command and _looks_like_tmux_session_id(target):
-        raise click.UsageError("--command requires a session name (not a session id like $0).")
+        raise click.UsageError(
+            "--command requires a session name (not a session id like $0)."
+        )
 
     attach_cmd: str
     if _looks_like_tmux_session_id(target):
@@ -1201,7 +1231,9 @@ def terminal_connect(
         ) as ssh_wrapper:
             exit_code = ssh_wrapper.interactive_shell(command=attach_cmd)
     except paramiko.AuthenticationException as exc:
-        raise click.ClickException("Authentication failed while connecting to the devbox.") from exc
+        raise click.ClickException(
+            "Authentication failed while connecting to the devbox."
+        ) from exc
     except (paramiko.SSHException, OSError) as exc:
         raise click.ClickException(f"SSH connection failed: {exc}") from exc
 
