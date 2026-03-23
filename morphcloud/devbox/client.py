@@ -9,6 +9,7 @@ import paramiko
 
 from .gen.client import AsyncMorphLabsApi, MorphLabsApi
 from .gen.types.devbox_response import DevboxResponse
+from .terminals import AsyncDevboxTerminals, DevboxTerminals
 
 
 class CodexSessionError(Exception):
@@ -19,6 +20,20 @@ class CodexSessionError(Exception):
 
 class DevboxClient(MorphLabsApi):
     """Extended Devbox client with custom convenience methods."""
+
+    @property
+    def terminals(self) -> DevboxTerminals:
+        """
+        Devbox "terminals" (tmux sessions).
+
+        This is a thin convenience wrapper around `self.tmux.*`.
+        """
+
+        existing = getattr(self, "_terminals", None)
+        if existing is None:
+            existing = DevboxTerminals(self)
+            setattr(self, "_terminals", existing)
+        return typing.cast(DevboxTerminals, existing)
 
     def start(
         self,
@@ -207,6 +222,20 @@ class DevboxClient(MorphLabsApi):
 
 class AsyncDevboxClient(AsyncMorphLabsApi):
     """Extended async Devbox client with custom convenience methods."""
+
+    @property
+    def terminals(self) -> AsyncDevboxTerminals:
+        """
+        Devbox "terminals" (tmux sessions), async.
+
+        This is a thin convenience wrapper around `self.tmux.*`.
+        """
+
+        existing = getattr(self, "_terminals", None)
+        if existing is None:
+            existing = AsyncDevboxTerminals(self)
+            setattr(self, "_terminals", existing)
+        return typing.cast(AsyncDevboxTerminals, existing)
 
     async def start(
         self,

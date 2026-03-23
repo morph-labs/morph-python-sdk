@@ -2,20 +2,19 @@
 
 ## Overview
 
-[Morph Cloud](https://cloud.morph.so) lets you spin up remote dev environments (“runtimes”) and control them from Python or the `morphcloud` CLI.
+[Morph Cloud](https://cloud.morph.so) is a powerful platform for creating, managing, and interacting with remote AI development environments called runtimes. It provides a comprehensive Python SDK and CLI to:
 
-Use it to:
-
-- Start template-based Devboxes (the quickest way to get a working box)
-- Create snapshots and boot instances from them
-- Run commands over SSH and copy files in/out
-- Expose ports as public URLs (with optional auth)
-- Run Docker containers inside instances
-- Build snapshot chains when you want caching/reproducibility
+- Create and manage VM snapshots
+- Start, stop, pause, and resume VM instances
+- Execute commands via SSH
+- Transfer files between local and remote environments
+- Expose HTTP services with optional authentication
+- Create Docker containers within instances
+- Cache and reuse computational results with snapshot chains
 
 ### Documentation
 
-For the full docs, start here: [Morph Cloud Documentation](https://cloud.morph.so/docs/documentation/overview)
+For comprehensive documentation, visit the [Morph Cloud Documentation](https://cloud.morph.so/docs/documentation/overview)
 
 ### Getting Your API Key
 
@@ -75,53 +74,9 @@ uv pip install morphcloud --upgrade
 pip install morphcloud --upgrade
 ```
 
-## Devboxes (recommended)
-
-Devboxes are Morph’s batteries-included remote development environments. Start from a **template** and you get a ready-to-use machine in seconds: SSH in, run your app, expose a port as a URL, and (optionally) save your work.
-
-They’re great for interactive dev/debugging, demos, and “can you repro this?” collaboration—without first building snapshot chains.
-
-### A 60-second workflow: “make a shareable URL”
-
-This flow starts a devbox, runs a tiny web server inside it, and exposes it as a public URL you can paste into Slack.
-
-```bash
-# 1) Pick a template
-morphcloud devbox template list
-
-# 2) Start a devbox (instant start). Tip: --json writes clean JSON to stdout.
-morphcloud devbox start <template-id> --name "hello-devbox" --json > devbox.json
-export DEVBOX_ID="$(python3 -c 'import json; print(json.load(open("devbox.json"))["id"])')"
-
-# 3) Run a web server inside the devbox (background)
-morphcloud devbox ssh "$DEVBOX_ID" -- bash -lc \
-  'nohup python3 -m http.server 8000 --bind 0.0.0.0 >/tmp/http.log 2>&1 &'
-
-# 4) Expose port 8000 as a public URL
-morphcloud devbox expose-http "$DEVBOX_ID" --name hello --port 8000
-
-# 5) Optional: save your work, then clean up
-morphcloud devbox save "$DEVBOX_ID" "hello-webserver"
-morphcloud devbox delete "$DEVBOX_ID"
-```
-
-Python API:
-
-```python
-from morphcloud.api import MorphCloudClient
-
-client = MorphCloudClient()
-
-templates = client.devbox.templates.list_templates()
-template_id = templates.data[0].id  # pick a template you can access
-
-devbox = client.devbox.start(template_id=template_id, name="hello-devbox")
-print(devbox.id)
-```
-
 ## Command Line Interface
 
-The package ships a CLI too.
+The SDK includes a comprehensive command-line interface.
 
 ### Global Options
 
@@ -131,28 +86,6 @@ morphcloud --version
 
 # Get help
 morphcloud --help
-```
-
-### Devboxes
-
-Devboxes are managed, template-based environments (see the Devboxes section above for a quick walkthrough).
-
-```bash
-# Templates
-morphcloud devbox template list [--json]
-morphcloud devbox template get <template-id> [--json]
-
-# Start + connect
-morphcloud devbox start <template-id> [--name <name>] [--metadata KEY=VALUE] [--json]
-morphcloud devbox ssh <devbox-id> [command...]
-
-# Share a local port as a URL
-morphcloud devbox expose-http <devbox-id> --name <name> --port <port> [--auth-mode none|api_key] [--json]
-morphcloud devbox hide-http <devbox-id> <name> [--json]
-
-# Save / cleanup
-morphcloud devbox save <devbox-id> <name> [--json]
-morphcloud devbox delete <devbox-id> [--json]
 ```
 
 ### Images
@@ -257,19 +190,120 @@ morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 morphcloud instance chat <instance-id> [instructions]
 ```
 
+### Devboxes
+
+Devboxes are remote development environments managed by Morph Cloud (separate from instances).
+
+```bash
+# List devboxes
+morphcloud devbox list [--json]
+
+# Start a devbox from a template (instant start)
+morphcloud devbox start <template-id> [--name <name>] [--metadata KEY=VALUE] [--json]
+
+# SSH into a devbox
+morphcloud devbox ssh <devbox-id> [command...]
+```
+
+#### Devbox Template Workflows
+
+`morphcloud devbox template run` drives the full template workflow from the terminal. Targets that begin with `tpl_` resolve as template ids. Any other target resolves as a shared/public alias. If you omit the target entirely, the runner opens an interactive browser for owned templates plus shared-alias search.
+
+```bash
+# Run an owned template directly
+morphcloud devbox template run tpl_123
+
+# Run a shared/public alias directly
+morphcloud devbox template run demo-alias
+
+# Browse owned templates and search aliases interactively
+morphcloud devbox template run
+
+# Pass workflow params and runtime secrets for this run
+morphcloud devbox template run tpl_123 --param BRANCH=main --secret OPENAI_API_KEY=... --force
+
+# Attach to an in-flight workflow run
+morphcloud devbox template run tpl_123 --attach run_123
+
+# Script-friendly output modes
+morphcloud devbox template run tpl_123 --plain
+morphcloud devbox template run tpl_123 --json
+```
+
+When an `exportSecret` step pauses the workflow, the runner can:
+
+- use an already-saved Morph secret,
+- accept a one-off value for the current run,
+- save a newly entered value to your Morph secrets and continue,
+- or skip an optional secret immediately.
+
+Optional secrets surface the backend countdown in the TUI/plain prompt, and the completion view prints the created devbox id, exposed service URLs, and next-step commands such as `morphcloud devbox ssh ...` and `morphcloud devbox terminal connect ...`.
+
+Shared/public templates can be launched without `MORPH_API_KEY` as long as you provide a devbox-service key via `MNW_DEVBOX_SERVICE_API_KEY` or `MORPH_DEVBOX_SERVICE_API_KEY`. Anonymous runs still support per-run `--secret KEY=VALUE` overrides, but saved Morph secrets remain available only to authenticated user runs.
+
+`--experimental-run-locally` executes a local template YAML file with the same TUI/plain presenter stack. If `TARGET` is not a local file, the CLI fetches `https://morph.new/{alias}/yaml` and runs that YAML locally instead.
+
+```bash
+# Execute a local template YAML in the template TUI
+morphcloud devbox template run ./template.yaml --experimental-run-locally
+
+# Or execute a shared alias by fetching morph.new/{alias}/yaml first
+morphcloud devbox template run opengauss --experimental-run-locally
+
+# Local mode supports params and per-run secret values too
+morphcloud devbox template run ./template.yaml --experimental-run-locally --param BRANCH=main --secret TOKEN=abc123
+```
+
+#### Devbox Terminals (tmux)
+
+Devbox "terminals" are durable tmux sessions managed via the devbox service.
+
+```bash
+# List terminals (tmux sessions)
+morphcloud devbox terminal list <devbox-id> [--json]
+
+# Start a new terminal (auto-installs tmux if needed)
+morphcloud devbox terminal start <devbox-id> [--name <session-name>] [--json]
+
+# Connect to a terminal over SSH (requires a TTY)
+morphcloud devbox terminal connect <devbox-id> <session-name-or-id> [--command '<cmd>']
+```
+
+```python
+from morphcloud.api import MorphCloudClient
+
+client = MorphCloudClient()
+
+# List devboxes
+devboxes = client.devbox.devboxes_core.list_devboxes()
+print(devboxes)
+
+# Start a devbox from a template (instant start)
+devbox = client.devbox.start(template_id="tpl_123", name="my-devbox")
+print(devbox.id)
+
+# List terminals (tmux sessions)
+terminals = client.devbox.terminals.list(devbox.id)
+print(terminals.tmux_installed, terminals.sessions)
+
+# Start a terminal (tmux session)
+started = client.devbox.terminals.start(devbox.id, name="my-session")
+print(started.session.name)
+```
+
 ### Development Installation
 
-If you want to hack on the SDK/CLI locally:
+For developers who want to contribute to Morph Cloud:
 
 ```bash
 # Clone the repository
-git clone https://github.com/morph-labs/morph-python-sdk.git
-cd morph-python-sdk
+git clone https://github.com/your-org/morphcloud.git
+cd morphcloud
 
-# Install in editable mode (SDK + CLI)
-uv venv
-source .venv/bin/activate
-uv pip install -e . --extra dev --group dev
+# Install in development mode with dev dependencies
+uv pip install -e ".[dev]"
+
+
 ```
 
 ### Configuration
@@ -392,7 +426,7 @@ with client.instances.start(snapshot_id=snapshot.id) as instance:
 
 ### Advanced: Snapshot Chains and Caching
 
-Snapshot chains are the “build cache” part of Morph. Each `exec()` produces a new snapshot that includes the changes, so you can skip repeating expensive setup work.
+One of Morph Cloud's powerful features is the ability to create chains of snapshots with cached operations:
 
 ```python
 from morphcloud.api import MorphCloudClient
