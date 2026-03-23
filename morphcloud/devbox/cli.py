@@ -26,10 +26,22 @@ from morphcloud.cli_helpers import (
     handle_api_error,
     print_docker_style_table,
 )
+from morphcloud.config import resolve_settings
 
+from .client import DevboxClient
+from .gen.core.api_error import ApiError as DevboxApiError
 from .gen.types import TemplateCacheRequest
 from .gen.types.devbox_response import DevboxResponse
 from .gen.types.http_service import HttpService
+from .template_local_runner import ExperimentalLocalTemplateRunner
+from .template_runner import (
+    TemplateRunOptions,
+    TemplateRunnerError,
+    TemplateWorkflowRunner,
+    TemplateWorkflowTransport,
+    build_presenter,
+)
+from .terminals import build_tmux_attach_command, sanitize_tmux_session_name, sh_quote
 
 _READY_STATUS = "ready"
 _TRANSIENT_STATUSES = {"provisioning", "pending", "resuming", "rebooting", "starting"}
@@ -53,6 +65,16 @@ _TEMPLATE_LIST_COLUMN_WIDTHS = {
     "Status": 12,
     "Cached": 11,
     "Updated": 22,
+}
+
+_TERMINAL_LIST_HEADERS = ["Name", "ID", "Windows", "Clients", "Created", "Activity"]
+_TERMINAL_LIST_COLUMN_WIDTHS = {
+    "Name": 28,
+    "ID": 10,
+    "Windows": 7,
+    "Clients": 7,
+    "Created": 22,
+    "Activity": 22,
 }
 
 _INSTANT_REASON_HINTS = {
@@ -549,6 +571,146 @@ def share_template(
         click.secho(f"Template shared as alias '{alias}'", fg="green")
 
 
+@template_group.command("run")
+@click.argument("target", required=False)
+@click.option(
+    "--param",
+    "param_items",
+    multiple=True,
+    help="Workflow input to provide for this run (key=value). Repeat for multiple inputs.",
+)
+@click.option(
+    "--secret",
+    "secret_items",
+    multiple=True,
+    help="Runtime secret override for this run (key=value). Repeat for multiple secrets.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass cache and rebuild all non-secret steps for this run.",
+)
+@click.option(
+    "--attach",
+    "attach_run_id",
+    help="Attach to an existing template run instead of starting a new build.",
+)
+@click.option(
+    "--plain",
+    is_flag=True,
+    default=False,
+    help="Disable the interactive TUI and use plain text output.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output structured JSON")
+@click.option(
+    "--handoff-ttl-seconds",
+    type=int,
+    help="Set a handoff TTL on the created devbox.",
+)
+@click.option(
+    "--handoff-ttl-action",
+    type=click.Choice(["pause", "stop"]),
+    help="Action to take when the handoff TTL expires.",
+)
+@click.option(
+    "--experimental-run-locally",
+    is_flag=True,
+    default=False,
+    help="Treat TARGET as a local template YAML path or shared alias YAML and execute it locally in the template TUI.",
+)
+@click.option(
+    "--experimental-run-local",
+    "deprecated_experimental_run_local",
+    is_flag=True,
+    default=False,
+    hidden=True,
+)
+def run_template(
+    target: _t.Optional[str],
+    param_items: _t.Tuple[str, ...],
+    secret_items: _t.Tuple[str, ...],
+    force: bool,
+    attach_run_id: _t.Optional[str],
+    plain: bool,
+    json_output: bool,
+    handoff_ttl_seconds: _t.Optional[int],
+    handoff_ttl_action: _t.Optional[str],
+    experimental_run_locally: bool,
+    deprecated_experimental_run_local: bool,
+) -> None:
+    """Run a template workflow from a template id, shared alias, or interactive browser.
+
+    Targets beginning with ``tpl_`` resolve as template ids. Any other target resolves
+    as a shared/public alias. Omit TARGET to browse owned templates and search aliases
+    interactively. Use ``--experimental-run-locally`` to execute a local template YAML
+    or shared alias YAML with the same TUI/presenter stack.
+    """
+    experimental_run_local = (
+        experimental_run_locally or deprecated_experimental_run_local
+    )
+    params = _parse_key_value_items(param_items, label="Workflow params")
+    secrets = _parse_key_value_items(secret_items, label="Secret entries")
+    presenter = build_presenter(plain=plain, json_output=json_output)
+    options = TemplateRunOptions(
+        workflow_context=params,
+        runtime_secrets=secrets,
+        force=force,
+        attach_run_id=attach_run_id,
+        handoff_ttl_seconds=handoff_ttl_seconds,
+        handoff_ttl_action=handoff_ttl_action,
+    )
+
+    try:
+        if experimental_run_local:
+            if attach_run_id:
+                raise click.UsageError(
+                    "--attach is not supported with --experimental-run-locally."
+                )
+            if not target:
+                raise click.UsageError(
+                    "Provide a template YAML path or shared template alias as TARGET when using --experimental-run-locally."
+                )
+            result = ExperimentalLocalTemplateRunner().run(
+                target, options=options, presenter=presenter
+            )
+        else:
+            client, devbox_client, anonymous = _get_template_runner_backend()
+            runner = TemplateWorkflowRunner(
+                TemplateWorkflowTransport(
+                    client,
+                    devbox_client,
+                    anonymous=anonymous,
+                )
+            )
+            result = runner.run(target, options=options, presenter=presenter)
+    except TemplateRunnerError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except click.ClickException:
+        raise
+    except click.Abort:
+        raise
+    except Exception as exc:
+        handle_api_error(exc)
+        return
+
+    if json_output:
+        click.echo(format_json(result.as_dict()))
+        exit_code = result.exit_code()
+        if exit_code:
+            click.get_current_context().exit(exit_code)
+        return
+
+    if result.status == "awaiting_input" and result.awaiting_input is not None:
+        raise click.ClickException(
+            f"Run {result.run_id} is awaiting secret {result.awaiting_input.secret_name}. "
+            f"Re-run interactively or provide --secret {result.awaiting_input.secret_name}=VALUE."
+        )
+
+    if result.status in {"error", "cancelled"}:
+        raise click.ClickException(result.error or "Template workflow failed.")
+
+
 @devbox.command("start")
 @click.argument("template_id")
 @click.option("--name", help="Optional display name for the new devbox.")
@@ -746,6 +908,302 @@ def ssh_devbox(
         raise click.ClickException(str(exc)) from exc
     finally:
         ssh_wrapper.close()
+
+    sys.exit(exit_code)
+
+
+@devbox.group("terminal")
+def terminal_group() -> None:
+    """Manage devbox terminals (tmux sessions)."""
+
+
+def _format_devbox_api_error(error: DevboxApiError, *, context: str) -> str:
+    status = getattr(error, "status_code", None)
+    body = getattr(error, "body", None)
+
+    detail: _t.Optional[str] = None
+    if isinstance(body, dict):
+        raw_detail = body.get("detail")
+        if isinstance(raw_detail, dict):
+            maybe_error = raw_detail.get("error")
+            if isinstance(maybe_error, dict):
+                detail = maybe_error.get("message") or maybe_error.get("type")
+            detail = detail or raw_detail.get("message") or raw_detail.get("detail")
+        elif isinstance(raw_detail, str):
+            detail = raw_detail
+
+        if not detail:
+            error_block = body.get("error")
+            if isinstance(error_block, dict):
+                detail = error_block.get("message") or error_block.get("type")
+            elif isinstance(error_block, str):
+                detail = error_block
+
+        if not detail and isinstance(body.get("message"), str):
+            detail = body["message"]
+    elif isinstance(body, str):
+        detail = body
+
+    suffix = detail or (str(body) if body is not None else None) or "Unknown error"
+    if status is not None:
+        return f"{context} failed (status {status}): {suffix}"
+    return f"{context} failed: {suffix}"
+
+
+def _ensure_devbox_ready_for_terminals(
+    devbox_client, devbox_id: str, *, timeout: int
+) -> DevboxResponse:
+    try:
+        devbox = devbox_client.devboxes_core.get_devbox(devbox_id)
+    except DevboxApiError as exc:
+        raise click.ClickException(_format_devbox_api_error(exc, context="Get devbox")) from exc
+    except Exception as exc:
+        handle_api_error(exc)
+
+    status = _normalize_status(getattr(devbox, "status", None))
+    if status in _RESUMEABLE_STATUSES:
+        click.secho(
+            f"Devbox {devbox_id} is {status.upper()}. Attempting to resume...",
+            fg="yellow",
+        )
+        try:
+            devbox_client.devboxes_actions.resume_devbox(devbox_id)
+        except DevboxApiError as exc:
+            raise click.ClickException(
+                _format_devbox_api_error(exc, context="Resume devbox")
+            ) from exc
+        except Exception as exc:
+            handle_api_error(exc)
+
+    if status != _READY_STATUS:
+        try:
+            with Spinner(
+                text=f"Waiting for {devbox_id} to become ready...",
+                success_text=f"Devbox {devbox_id} is ready",
+                success_emoji="✅",
+            ):
+                devbox = _wait_for_devbox_ready(devbox_client, devbox_id, timeout=timeout)
+        except click.ClickException:
+            raise
+        except DevboxApiError as exc:
+            raise click.ClickException(
+                _format_devbox_api_error(exc, context="Wait for devbox ready")
+            ) from exc
+        except Exception as exc:
+            handle_api_error(exc)
+    return devbox
+
+
+def _looks_like_tmux_session_id(value: str) -> bool:
+    trimmed = (value or "").strip()
+    return trimmed.startswith("$") and trimmed[1:].isdigit()
+
+
+@terminal_group.command("list")
+@click.argument("devbox_id")
+@click.option("--socket", default=None, help="Optional tmux socket name/path.")
+@click.option(
+    "--timeout",
+    default=300,
+    show_default=True,
+    help="Seconds to wait for the devbox to become READY.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output raw JSON response")
+def terminal_list(devbox_id: str, socket: _t.Optional[str], timeout: int, json_output: bool) -> None:
+    """List devbox terminals (tmux sessions)."""
+    _, devbox_client = _get_devbox_client()
+
+    _ensure_devbox_ready_for_terminals(devbox_client, devbox_id, timeout=timeout)
+
+    try:
+        result = devbox_client.terminals.list(devbox_id, socket=socket)
+    except DevboxApiError as exc:
+        raise click.ClickException(
+            _format_devbox_api_error(exc, context="Terminal list")
+        ) from exc
+    except Exception as exc:
+        handle_api_error(exc)
+        return
+
+    if json_output:
+        click.echo(format_json(result))
+        return
+
+    sessions = list(result.sessions or [])
+    if not sessions:
+        if result.tmux_installed is False:
+            click.secho("tmux is not installed on this devbox.", fg="yellow")
+            click.echo(f"Run: morphcloud devbox terminal start {devbox_id}")
+            return
+        click.echo("No terminals found")
+        return
+
+    headers = list(_TERMINAL_LIST_HEADERS)
+    rows: list[list[_t.Any]] = []
+    for session in sessions:
+        rows.append(
+            [
+                _truncate_text(session.name, _TERMINAL_LIST_COLUMN_WIDTHS["Name"]),
+                _truncate_text(session.id, _TERMINAL_LIST_COLUMN_WIDTHS["ID"]),
+                _truncate_text(session.windows, _TERMINAL_LIST_COLUMN_WIDTHS["Windows"]),
+                _truncate_text(session.clients, _TERMINAL_LIST_COLUMN_WIDTHS["Clients"]),
+                _truncate_text(session.created, _TERMINAL_LIST_COLUMN_WIDTHS["Created"]),
+                _truncate_text(session.activity, _TERMINAL_LIST_COLUMN_WIDTHS["Activity"]),
+            ]
+        )
+
+    print_docker_style_table(headers, rows)
+
+
+@terminal_group.command("start")
+@click.argument("devbox_id")
+@click.option("--name", "session_name", required=False, help="Tmux session name.")
+@click.option(
+    "--timeout",
+    default=300,
+    show_default=True,
+    help="Seconds to wait for the devbox to become READY.",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output raw JSON response")
+def terminal_start(
+    devbox_id: str, session_name: _t.Optional[str], timeout: int, json_output: bool
+) -> None:
+    """Start a new devbox terminal (tmux session)."""
+    _, devbox_client = _get_devbox_client()
+
+    devbox = _ensure_devbox_ready_for_terminals(devbox_client, devbox_id, timeout=timeout)
+    metadata = dict(getattr(devbox, "metadata", {}) or {})
+
+    requested = session_name if session_name is not None else f"tmux-{_resolve_name(metadata, devbox_id)}"
+    safe_name = sanitize_tmux_session_name(requested)
+    if not safe_name:
+        raise click.ClickException("Session name cannot be empty.")
+
+    try:
+        result = devbox_client.terminals.start(devbox_id, name=safe_name, ensure_tmux=True, detached=True)
+    except DevboxApiError as exc:
+        raise click.ClickException(
+            _format_devbox_api_error(exc, context="Terminal start")
+        ) from exc
+    except Exception as exc:
+        handle_api_error(exc)
+        return
+
+    if json_output:
+        click.echo(format_json(result))
+        return
+
+    if requested != safe_name:
+        click.secho(f"Sanitized session name to: {safe_name}", fg="yellow")
+
+    install = result.install
+    if install is not None and getattr(install, "tmux_version", None):
+        click.echo(f"tmux version: {install.tmux_version}")
+
+    click.secho(f"Terminal started: {safe_name}", fg="green")
+    click.echo(f"Session ID: {result.session.id}")
+    click.echo(f"Connect with: morphcloud devbox terminal connect {devbox_id} {safe_name}")
+
+
+@terminal_group.command("connect")
+@click.argument("devbox_id")
+@click.argument("session")
+@click.option(
+    "--command",
+    "initial_command",
+    required=False,
+    help="Optional command to run when creating the session (name targets only).",
+)
+@click.option(
+    "--timeout",
+    default=300,
+    show_default=True,
+    help="Seconds to wait for the devbox to become READY.",
+)
+@click.option(
+    "--keepalive",
+    default=15,
+    show_default=True,
+    help="Seconds between SSH keepalive packets.",
+)
+def terminal_connect(
+    devbox_id: str, session: str, initial_command: _t.Optional[str], timeout: int, keepalive: int
+) -> None:
+    """Connect to a devbox terminal (tmux session) over SSH."""
+    if not sys.stdin.isatty():
+        raise click.ClickException("This command requires an interactive TTY.")
+
+    client, devbox_client = _get_devbox_client()
+    _ensure_devbox_ready_for_terminals(devbox_client, devbox_id, timeout=timeout)
+
+    target = (session or "").strip()
+    if not target:
+        raise click.ClickException("Session cannot be empty.")
+
+    if initial_command and _looks_like_tmux_session_id(target):
+        raise click.UsageError("--command requires a session name (not a session id like $0).")
+
+    attach_cmd: str
+    if _looks_like_tmux_session_id(target):
+        attach_cmd = f"tmux attach-session -t {sh_quote(target)}"
+    else:
+        attach_cmd = build_tmux_attach_command(target, initial_command)
+    if not attach_cmd:
+        raise click.ClickException("Failed to build tmux attach command.")
+
+    # Ensure tmux is installed (idempotent); this may take a while on first use.
+    try:
+        with Spinner(
+            text=f"Ensuring tmux is installed on {devbox_id}...",
+            success_text="tmux ready",
+            success_emoji="🧰",
+        ):
+            devbox_client.tmux.tmux_install(devbox_id)
+    except DevboxApiError as exc:
+        raise click.ClickException(
+            _format_devbox_api_error(exc, context="tmux install")
+        ) from exc
+    except Exception as exc:
+        handle_api_error(exc)
+        return
+
+    try:
+        creds = devbox_client.admin.get_devbox_ssh_credentials(devbox_id)
+    except DevboxApiError as exc:
+        raise click.ClickException(
+            _format_devbox_api_error(exc, context="Get SSH credentials")
+        ) from exc
+    except Exception as exc:
+        handle_api_error(exc)
+        return
+
+    username = getattr(creds, "access_token", None)
+    password = getattr(creds, "password", None)
+    if not username or not password:
+        raise click.ClickException("SSH credentials were not returned by the service.")
+
+    ssh_hostname = client.ssh_hostname
+    ssh_port = _safe_int_from_env("MORPH_SSH_PORT", default=client.ssh_port)
+    connect_timeout = _safe_int_from_env("DEVBOX_SSH_CONNECT_TIMEOUT", default=30)
+    ssh_target = f"{devbox_id}.{ssh_hostname}"
+
+    click.secho(f"Attaching to tmux session on {ssh_target}...", fg="magenta")
+
+    exit_code: int
+    try:
+        with _DevboxSSHContext(
+            hostname=ssh_target,
+            port=ssh_port,
+            username=username,
+            password=password,
+            timeout=connect_timeout,
+            keepalive=keepalive,
+        ) as ssh_wrapper:
+            exit_code = ssh_wrapper.interactive_shell(command=attach_cmd)
+    except paramiko.AuthenticationException as exc:
+        raise click.ClickException("Authentication failed while connecting to the devbox.") from exc
+    except (paramiko.SSHException, OSError) as exc:
+        raise click.ClickException(f"SSH connection failed: {exc}") from exc
 
     sys.exit(exit_code)
 
@@ -1107,6 +1565,33 @@ def _get_devbox_client():
     """Return the MorphCloud client and its devbox service client."""
     client = get_client()
     return client, client.devbox
+
+
+def _get_template_runner_backend():
+    """Return authenticated or anonymous transport inputs for template execution."""
+    settings = resolve_settings()
+    if settings.api_key:
+        client = get_client()
+        return client, client.devbox, False
+
+    service_api_key = (
+        os.environ.get("MNW_DEVBOX_SERVICE_API_KEY")
+        or os.environ.get("MORPH_DEVBOX_SERVICE_API_KEY")
+        or ""
+    ).strip()
+    if not service_api_key:
+        raise click.ClickException(
+            "MORPH_API_KEY is not set. To run a shared/public template without a "
+            "user API key, set MNW_DEVBOX_SERVICE_API_KEY."
+        )
+
+    devbox_client = DevboxClient(
+        token=service_api_key,
+        base_url=settings.devbox_base_url,
+    )
+    devbox_client.ssh_hostname = settings.ssh_hostname
+    devbox_client.ssh_port = settings.ssh_port
+    return None, devbox_client, True
 
 
 def _parse_key_value_items(items: _t.Iterable[str], *, label: str) -> _t.Dict[str, str]:

@@ -68,19 +68,23 @@ async def test_from_tag_multiple_snapshots(client: MorphCloudClient, base_image)
         # Create multiple snapshots with the same tag
         for i in range(3):
             logger.info(f"Creating snapshot {i+1}")
-            instance = await client.instances.acreate(base_image.id)
-            snapshot = await instance.asave()
+            snapshot = await client.snapshots.acreate(
+                image_id=base_image.id,
+                vcpus=1,
+                memory=512,
+                disk_size=8192,
+            )
             
             # Tag each snapshot with the same tag
-            snapshot.set_metadata({"tag": test_tag, "index": str(i)})
+            await snapshot.aset_metadata({"tag": test_tag, "index": str(i)})
             created_snapshots.append(snapshot)
             
             logger.info(f"Created snapshot {snapshot.id} with tag {test_tag}")
-            await instance.astop()
         
         # Test from_tag method - should return the most recent (last created) snapshot
         logger.info(f"Testing from_tag with tag: {test_tag}")
         retrieved_snapshot = Snapshot.from_tag(test_tag)
+        assert retrieved_snapshot is not None
         
         # The most recent snapshot should be the last one created (index 2)
         assert retrieved_snapshot.snapshot.id == created_snapshots[-1].id, \
@@ -111,15 +115,19 @@ async def test_from_tag_single_snapshot(client: MorphCloudClient, base_image):
         logger.info(f"Starting from_tag single snapshot test with tag: {test_tag}")
         
         # Create single snapshot with unique tag
-        instance = await client.instances.acreate(base_image.id)
-        snapshot = await instance.asave()
-        snapshot.set_metadata({"tag": test_tag})
+        snapshot = await client.snapshots.acreate(
+            image_id=base_image.id,
+            vcpus=1,
+            memory=512,
+            disk_size=8192,
+        )
+        await snapshot.aset_metadata({"tag": test_tag})
         
         logger.info(f"Created snapshot {snapshot.id} with tag {test_tag}")
-        await instance.astop()
         
         # Test from_tag method - should return the snapshot
         retrieved_snapshot = Snapshot.from_tag(test_tag)
+        assert retrieved_snapshot is not None
         
         assert retrieved_snapshot.snapshot.id == snapshot.id, \
             f"Expected snapshot {snapshot.id}, got {retrieved_snapshot.snapshot.id}"
@@ -144,8 +152,7 @@ async def test_from_tag_no_snapshots(client: MorphCloudClient):
     
     logger.info(f"Testing from_tag with nonexistent tag: {nonexistent_tag}")
     
-    # Test from_tag method - should raise ValueError
-    with pytest.raises(ValueError, match=f"No snapshot found with tag: {nonexistent_tag}"):
-        Snapshot.from_tag(nonexistent_tag)
+    # Test from_tag method - should return None
+    assert Snapshot.from_tag(nonexistent_tag) is None
     
     logger.info("from_tag no snapshots test completed successfully")
