@@ -2,7 +2,7 @@
 
 # Default Python interpreter
 PYTHON := uv run python
-GIT_FILES := $(shell git ls-files "./morphcloud")
+GIT_FILES := $(shell git ls-files 'morphcloud/**/*.py' 'morphcloud/*.py')
 
 # Helper function to extract the version, defined once and reusable
 get_current_version = $(shell grep -oP 'version = "\K[^"]+' pyproject.toml)
@@ -40,15 +40,13 @@ commit-format:
 	@# Only create a commit if something is staged
 	@git diff --cached --quiet && echo "No formatting changes to commit." || git commit -m "chore: format"
 
-# Check for undefined variables in all git-tracked files
+# Check for undefined variables in all git-tracked Python files
 check-undefined:
 	@echo "Checking for undefined variables..."
 	@for file in $(GIT_FILES); do \
 		echo "Checking $$file"; \
-		UNDEFINED=$$(ruff check "$$file" | grep ndefined || true); \
-		if [ ! -z "$$UNDEFINED" ]; then \
-			echo "Undefined variables found in $$file:"; \
-			echo "$$UNDEFINED"; \
+		if ! ruff check --select F821 "$$file"; then \
+			echo "Undefined variables found in $$file."; \
 			exit 1; \
 		fi; \
 	done
