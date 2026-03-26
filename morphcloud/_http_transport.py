@@ -43,9 +43,7 @@ class ShardedTransport(httpx.BaseTransport):
 
 
 class ShardedAsyncTransport(httpx.AsyncBaseTransport):
-    def __init__(
-        self, transports: typing.Sequence[httpx.AsyncHTTPTransport]
-    ) -> None:
+    def __init__(self, transports: typing.Sequence[httpx.AsyncHTTPTransport]) -> None:
         self._transports = list(transports)
         self._counter = itertools.count()
 
