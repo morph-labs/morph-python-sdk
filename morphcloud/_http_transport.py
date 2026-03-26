@@ -72,7 +72,7 @@ def _new_limits() -> httpx.Limits:
 def build_http_transport() -> httpx.BaseTransport:
     # Spread requests across independent httpcore pools to avoid contention
     # in a single transport under high concurrency. Set to 1 to disable.
-    transport_shards = max(_env_int("MORPH_HTTP_TRANSPORT_SHARDS", 16), 1)
+    transport_shards = max(_env_int("MORPH_HTTP_TRANSPORT_SHARDS", 32), 1)
     if transport_shards == 1:
         return httpx.HTTPTransport(limits=_new_limits())
     return ShardedTransport(
@@ -81,7 +81,7 @@ def build_http_transport() -> httpx.BaseTransport:
 
 
 def build_async_http_transport() -> httpx.AsyncBaseTransport:
-    transport_shards = max(_env_int("MORPH_HTTP_TRANSPORT_SHARDS", 16), 1)
+    transport_shards = max(_env_int("MORPH_HTTP_TRANSPORT_SHARDS", 32), 1)
     if transport_shards == 1:
         return httpx.AsyncHTTPTransport(limits=_new_limits())
     return ShardedAsyncTransport(
