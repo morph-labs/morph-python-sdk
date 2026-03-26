@@ -4,6 +4,8 @@ import typing
 
 import httpx
 
+from morphcloud._http_transport import build_async_http_transport, build_http_transport
+
 from .admin.client import AdminClient, AsyncAdminClient
 from .aliases.client import AliasesClient, AsyncAliasesClient
 from .core.client_wrapper import AsyncClientWrapper, SyncClientWrapper
@@ -75,10 +77,15 @@ class MorphLabsApi:
                 if httpx_client is not None
                 else (
                     httpx.Client(
-                        timeout=_defaulted_timeout, follow_redirects=follow_redirects
+                        timeout=_defaulted_timeout,
+                        follow_redirects=follow_redirects,
+                        transport=build_http_transport(),
                     )
                     if follow_redirects is not None
-                    else httpx.Client(timeout=_defaulted_timeout)
+                    else httpx.Client(
+                        timeout=_defaulted_timeout,
+                        transport=build_http_transport(),
+                    )
                 )
             ),
             timeout=_defaulted_timeout,
@@ -154,10 +161,15 @@ class AsyncMorphLabsApi:
                 if httpx_client is not None
                 else (
                     httpx.AsyncClient(
-                        timeout=_defaulted_timeout, follow_redirects=follow_redirects
+                        timeout=_defaulted_timeout,
+                        follow_redirects=follow_redirects,
+                        transport=build_async_http_transport(),
                     )
                     if follow_redirects is not None
-                    else httpx.AsyncClient(timeout=_defaulted_timeout)
+                    else httpx.AsyncClient(
+                        timeout=_defaulted_timeout,
+                        transport=build_async_http_transport(),
+                    )
                 )
             ),
             timeout=_defaulted_timeout,

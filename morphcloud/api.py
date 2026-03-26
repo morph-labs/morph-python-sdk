@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 # Import Rich for fancy printing
 from rich.console import Console
 
+from morphcloud._http_transport import build_async_http_transport, build_http_transport
 from morphcloud._utils import StrEnum
 from morphcloud.config import resolve_settings
 
@@ -194,27 +195,12 @@ class MorphCloudClient:
             except Exception:
                 return default
 
-        # Defaults tuned for moderate concurrency without excessive TLS connection churn.
-        # Override via env vars if you need to constrain socket usage.
-        max_connections = _env_int("MORPH_HTTP_MAX_CONNECTIONS", 100)
-        max_keepalive_connections = _env_int(
-            "MORPH_HTTP_MAX_KEEPALIVE_CONNECTIONS",
-            max_connections,
-        )
-        keepalive_expiry = _env_float("MORPH_HTTP_KEEPALIVE_EXPIRY", 60.0)
-
         # Always retry once on transient transport errors for instance.exec/instance.aexec.
         # Use `MORPH_EXEC_RETRY_BACKOFF_S` to tune the (small) backoff.
         self._exec_retries = 1
         self._exec_retry_backoff_s = _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
-
-        limits = httpx.Limits(
-            max_connections=max_connections,
-            max_keepalive_connections=max_keepalive_connections,
-            keepalive_expiry=keepalive_expiry,
-        )
-        transport = httpx.HTTPTransport(limits=limits)
-        async_transport = httpx.AsyncHTTPTransport(limits=limits)
+        transport = build_http_transport()
+        async_transport = build_async_http_transport()
 
         self._http_client = ApiClient(
             base_url=self.base_url,
