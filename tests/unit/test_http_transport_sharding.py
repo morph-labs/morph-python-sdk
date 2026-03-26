@@ -34,8 +34,8 @@ def test_client_uses_sharded_transports_by_default(monkeypatch):
     try:
         assert isinstance(client._http_client._transport, ShardedTransport)
         assert isinstance(client._async_http_client._transport, ShardedAsyncTransport)
-        assert len(client._http_client._transport._transports) == 16
-        assert len(client._async_http_client._transport._transports) == 16
+        assert len(client._http_client._transport._transports) == 32
+        assert len(client._async_http_client._transport._transports) == 32
     finally:
         client._http_client.close()
         asyncio.run(client._async_http_client.aclose())
@@ -64,13 +64,13 @@ def test_devbox_clients_use_sharded_transports_by_default(monkeypatch):
         )
         assert (
             len(client._client_wrapper.httpx_client.httpx_client._transport._transports)
-            == 16
+            == 32
         )
         assert (
             len(
                 async_client._client_wrapper.httpx_client.httpx_client._transport._transports
             )
-            == 16
+            == 32
         )
     finally:
         client._client_wrapper.httpx_client.httpx_client.close()
