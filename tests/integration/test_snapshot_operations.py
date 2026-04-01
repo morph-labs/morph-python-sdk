@@ -240,6 +240,49 @@ async def test_snapshot_metadata(client, base_image):
                 logger.error(f"Error deleting snapshot: {e}")
 
 
+async def test_snapshot_ttl(client, base_image):
+    """Test creating, updating, and clearing snapshot TTL."""
+    logger.info("Testing snapshot TTL")
+
+    try:
+        snapshot = await client.snapshots.acreate(
+            image_id=base_image.id,
+            vcpus=1,
+            memory=512,
+            disk_size=8192,
+            ttl_seconds=120,
+        )
+        logger.info(f"Created snapshot with TTL: {snapshot.id}")
+
+        assert snapshot.ttl.ttl_seconds == 120
+        assert snapshot.ttl.ttl_expire_at is not None
+
+        await snapshot.aset_ttl(240)
+        assert snapshot.ttl.ttl_seconds == 240
+        assert snapshot.ttl.ttl_expire_at is not None
+
+        refreshed_snapshot = await client.snapshots.aget(snapshot.id)
+        assert refreshed_snapshot.ttl.ttl_seconds == 240
+
+        await snapshot.aset_ttl(None)
+        assert snapshot.ttl.ttl_seconds is None
+        assert snapshot.ttl.ttl_expire_at is None
+
+        refreshed_snapshot = await client.snapshots.aget(snapshot.id)
+        assert refreshed_snapshot.ttl.ttl_seconds is None
+
+        logger.info("Snapshot TTL test completed successfully")
+
+    finally:
+        if 'snapshot' in locals():
+            try:
+                logger.info(f"Deleting snapshot {snapshot.id}")
+                await snapshot.adelete()
+                logger.info("Snapshot deleted")
+            except Exception as e:
+                logger.error(f"Error deleting snapshot: {e}")
+
+
 async def test_snapshot_multiple_instances(client, base_image):
     """Test starting multiple instances from the same snapshot."""
     logger.info("Testing starting multiple instances from the same snapshot")

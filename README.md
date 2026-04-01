@@ -102,7 +102,7 @@ morphcloud image list [--json]
 morphcloud snapshot list [--json] [--metadata KEY=VALUE]
 
 # Create a new snapshot
-morphcloud snapshot create --image-id <id> --vcpus <n> --memory <mb> --disk-size <mb> [--digest <hash>] [--metadata KEY=VALUE]
+morphcloud snapshot create --image-id <id> --vcpus <n> --memory <mb> --disk-size <mb> [--digest <hash>] [--ttl-seconds <seconds>] [--metadata KEY=VALUE]
 
 # Get detailed snapshot information
 morphcloud snapshot get <snapshot-id>
@@ -112,6 +112,9 @@ morphcloud snapshot delete <snapshot-id>
 
 # Set metadata on a snapshot
 morphcloud snapshot set-metadata <snapshot-id> KEY1=VALUE1 [KEY2=VALUE2...]
+
+# Set or clear snapshot retention
+morphcloud snapshot set-ttl <snapshot-id> --ttl-seconds <seconds|-1>
 ```
 
 ### Instances
@@ -139,7 +142,7 @@ morphcloud instance stop <instance-id>
 morphcloud instance get <instance-id>
 
 # Create snapshot from instance
-morphcloud instance snapshot <instance-id> [--digest <hash>] [--json]
+morphcloud instance snapshot <instance-id> [--digest <hash>] [--ttl-seconds <seconds>] [--json]
 
 # Create multiple instances from an instance (branching)
 morphcloud instance branch <instance-id> [--count <n>] [--json]
@@ -363,6 +366,46 @@ print("done")
 print("Stopping the instance...............", end="")
 instance.stop()
 print("done\n")
+```
+
+### Snapshot TTL
+
+```python
+from morphcloud.api import MorphCloudClient
+
+client = MorphCloudClient()
+
+snapshot = client.snapshots.create(
+    image_id="morphvm-minimal",
+    vcpus=1,
+    memory=512,
+    disk_size=1024,
+    ttl_seconds=3600,  # auto-delete after 1 hour of inactivity
+)
+
+print(snapshot.ttl.ttl_seconds)
+print(snapshot.ttl.ttl_expire_at)
+
+# Update an existing snapshot TTL
+snapshot.set_ttl(7200)
+
+# Clear the snapshot TTL entirely
+snapshot.set_ttl(None)
+```
+
+CLI equivalents:
+
+```bash
+morphcloud snapshot create \
+  --image-id morphvm-minimal \
+  --vcpus 1 \
+  --memory 512 \
+  --disk-size 1024 \
+  --ttl-seconds 3600
+
+morphcloud snapshot set-ttl snapshot_123 --ttl-seconds 7200
+morphcloud snapshot set-ttl snapshot_123 --ttl-seconds -1
+morphcloud instance snapshot instance_123 --ttl-seconds 3600
 ```
 
 ### Working with SSH
