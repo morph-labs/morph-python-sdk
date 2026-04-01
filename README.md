@@ -370,6 +370,8 @@ print("done\n")
 
 ### Snapshot TTL
 
+`ttl_seconds` must be greater than zero when you set it. Use `None` in Python or `--ttl-seconds -1` in the CLI to remove an existing snapshot TTL.
+
 ```python
 from morphcloud.api import MorphCloudClient
 

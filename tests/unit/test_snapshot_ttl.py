@@ -138,6 +138,23 @@ def test_snapshot_create_sends_ttl_seconds():
     assert snapshot.ttl.ttl_seconds == 60
 
 
+@pytest.mark.parametrize("ttl_seconds", [0, -5])
+def test_snapshot_create_rejects_non_positive_ttl(ttl_seconds):
+    http_client = StubHTTPClient(_snapshot_payload())
+    client = types.SimpleNamespace(_http_client=http_client)
+
+    with pytest.raises(ValueError, match="ttl_seconds must be greater than zero"):
+        SnapshotAPI(client).create(
+            image_id="morphvm-minimal",
+            vcpus=1,
+            memory=512,
+            disk_size=1024,
+            ttl_seconds=ttl_seconds,
+        )
+
+    assert http_client.post_calls == []
+
+
 def test_instance_snapshot_sends_ttl_seconds():
     http_client = StubHTTPClient(_snapshot_payload(ttl_seconds=45, ttl_expire_at=90))
     client = types.SimpleNamespace(
@@ -167,6 +184,23 @@ def test_instance_snapshot_sends_ttl_seconds():
     assert snapshot.ttl.ttl_seconds == 45
 
 
+@pytest.mark.parametrize("ttl_seconds", [0, -1])
+def test_instance_snapshot_rejects_non_positive_ttl(ttl_seconds):
+    http_client = StubHTTPClient(_snapshot_payload())
+    client = types.SimpleNamespace(
+        _http_client=http_client,
+        snapshots=types.SimpleNamespace(),
+    )
+    instance = Instance.model_validate(_instance_payload())._set_api(
+        types.SimpleNamespace(_client=client)
+    )
+
+    with pytest.raises(ValueError, match="ttl_seconds must be greater than zero"):
+        instance.snapshot(ttl_seconds=ttl_seconds)
+
+    assert http_client.post_calls == []
+
+
 def test_snapshot_set_ttl_can_clear_snapshot_ttl():
     api = StubSnapshotAPI(
         http_payload=_snapshot_payload(ttl_seconds=60, ttl_expire_at=120),
@@ -187,6 +221,20 @@ def test_snapshot_set_ttl_can_clear_snapshot_ttl():
     ]
     assert snapshot.ttl.ttl_seconds is None
     assert snapshot.ttl.ttl_expire_at is None
+
+
+@pytest.mark.parametrize("ttl_seconds", [0, -2])
+def test_snapshot_set_ttl_rejects_non_positive_values(ttl_seconds):
+    api = StubSnapshotAPI(
+        http_payload=_snapshot_payload(),
+        refresh_payload=_snapshot_payload(),
+    )
+    snapshot = Snapshot.model_validate(_snapshot_payload())._set_api(api)
+
+    with pytest.raises(ValueError, match="ttl_seconds must be greater than zero"):
+        snapshot.set_ttl(ttl_seconds)
+
+    assert api._http_client.post_calls == []
 
 
 @pytest.mark.asyncio

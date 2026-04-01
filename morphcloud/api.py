@@ -120,6 +120,18 @@ class SnapshotTTL(BaseModel):
     )
 
 
+def _validate_snapshot_ttl_seconds(
+    ttl_seconds: typing.Optional[int], *, allow_none: bool
+) -> None:
+    """Validate snapshot TTL values before sending them to the API."""
+    if ttl_seconds is None:
+        if allow_none:
+            return
+        raise ValueError("ttl_seconds must be greater than zero")
+    if ttl_seconds <= 0:
+        raise ValueError("ttl_seconds must be greater than zero")
+
+
 class WakeOn(BaseModel):
     """Represents the wake-on-event configuration for an instance."""
 
@@ -668,6 +680,8 @@ class SnapshotAPI:
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot.
             ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted."""
+        if ttl_seconds is not None:
+            _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}
         if image_id is not None:
             body["image_id"] = image_id
@@ -708,6 +722,8 @@ class SnapshotAPI:
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot.
             ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted."""
+        if ttl_seconds is not None:
+            _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}
         if image_id is not None:
             body["image_id"] = image_id
@@ -797,6 +813,7 @@ class Snapshot(BaseModel):
         Parameters:
             ttl_seconds: New TTL in seconds. Pass None to remove the snapshot TTL.
         """
+        _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=True)
         response = self._api._client._http_client.post(
             f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
         )
@@ -805,6 +822,7 @@ class Snapshot(BaseModel):
 
     async def aset_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
         """Async version of set_ttl()."""
+        _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=True)
         response = await self._api._client._async_http_client.post(
             f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
         )
@@ -2818,6 +2836,8 @@ class Instance(BaseModel):
             metadata: Optional metadata to attach to the new snapshot.
             ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted.
         """
+        if ttl_seconds is not None:
+            _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         params = {}
         if digest is not None:
             params["digest"] = digest
@@ -2840,6 +2860,8 @@ class Instance(BaseModel):
         ttl_seconds: typing.Optional[int] = None,
     ) -> Snapshot:
         """Async version of snapshot()."""
+        if ttl_seconds is not None:
+            _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         params = {}
         if digest is not None:
             params = {"digest": digest}

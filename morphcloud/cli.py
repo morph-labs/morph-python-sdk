@@ -212,6 +212,22 @@ def unix_timestamp_to_datetime(timestamp):
             return "Invalid Timestamp"
 
 
+def _validate_positive_snapshot_ttl(ctx, param, value):
+    if value is None:
+        return value
+    if value <= 0:
+        raise click.BadParameter("must be greater than 0")
+    return value
+
+
+def _validate_snapshot_ttl_or_clear(ctx, param, value):
+    if value is None:
+        return value
+    if value == -1 or value > 0:
+        return value
+    raise click.BadParameter("must be greater than 0, or -1 to clear")
+
+
 # ─────────────────────────────────────────────────────────────
 #  Profiles
 # ─────────────────────────────────────────────────────────────
@@ -1110,6 +1126,7 @@ def list_snapshots(metadata, interactive, page, limit, json_mode):
     type=int,
     required=False,
     help="Optional snapshot retention period in seconds.",
+    callback=_validate_positive_snapshot_ttl,
 )
 @click.option(
     "--metadata",
@@ -1267,6 +1284,7 @@ def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
     type=int,
     required=True,
     help="Snapshot TTL in seconds. Use -1 to remove TTL.",
+    callback=_validate_snapshot_ttl_or_clear,
 )
 def set_snapshot_ttl(snapshot_id, ttl_seconds):
     """Set or remove a time-to-live (TTL) for a snapshot."""
@@ -1700,6 +1718,7 @@ def get_instance(instance_id):
     type=int,
     required=False,
     help="Optional snapshot retention period in seconds.",
+    callback=_validate_positive_snapshot_ttl,
 )
 @click.option(
     "--metadata",
@@ -1726,12 +1745,9 @@ def snapshot_instance(instance_id, digest, ttl_seconds, metadata, json_mode):
 
     try:
         instance_obj = client.instances.get(instance_id)
-        if instance_obj.status not in [
-            api.InstanceStatus.READY,
-            api.InstanceStatus.PAUSED,
-        ]:
+        if instance_obj.status != api.InstanceStatus.READY:
             click.echo(
-                f"Error: Instance must be READY or PAUSED. Current: {instance_obj.status.value}",
+                f"Error: Instance must be READY. Current: {instance_obj.status.value}",
                 err=True,
             )
             sys.exit(1)

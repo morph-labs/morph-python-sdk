@@ -73,6 +73,43 @@ def test_snapshot_create_passes_ttl_seconds(monkeypatch):
     assert "TTL: 60 seconds" in result.output
 
 
+def test_snapshot_create_rejects_non_positive_ttl(monkeypatch):
+    import morphcloud.cli as cli_mod
+
+    create_calls = []
+
+    class StubSnapshots:
+        def create(self, **kwargs):
+            create_calls.append(kwargs)
+            return types.SimpleNamespace(id="snapshot_123", digest=None, ttl=None)
+
+    stub_client = types.SimpleNamespace(snapshots=StubSnapshots())
+    monkeypatch.setattr(cli_mod, "get_client", lambda: stub_client)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.cli,
+        [
+            "snapshot",
+            "create",
+            "--image-id",
+            "morphvm-minimal",
+            "--vcpus",
+            "1",
+            "--memory",
+            "512",
+            "--disk-size",
+            "1024",
+            "--ttl-seconds",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "Invalid value for '--ttl-seconds'" in result.output
+    assert create_calls == []
+
+
 def test_snapshot_set_ttl_uses_none_to_clear(monkeypatch):
     import morphcloud.cli as cli_mod
 
@@ -101,6 +138,34 @@ def test_snapshot_set_ttl_uses_none_to_clear(monkeypatch):
     assert result.exit_code == 0, result.output
     assert set_ttl_calls == [None]
     assert "TTL removed for snapshot_123" in result.output
+
+
+def test_snapshot_set_ttl_rejects_invalid_negative_values(monkeypatch):
+    import morphcloud.cli as cli_mod
+
+    set_ttl_calls = []
+
+    class StubSnapshot:
+        def set_ttl(self, ttl_seconds):
+            set_ttl_calls.append(ttl_seconds)
+
+    class StubSnapshots:
+        def get(self, snapshot_id):
+            assert snapshot_id == "snapshot_123"
+            return StubSnapshot()
+
+    stub_client = types.SimpleNamespace(snapshots=StubSnapshots())
+    monkeypatch.setattr(cli_mod, "get_client", lambda: stub_client)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.cli,
+        ["snapshot", "set-ttl", "snapshot_123", "--ttl-seconds", "-2"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "Invalid value for '--ttl-seconds'" in result.output
+    assert set_ttl_calls == []
 
 
 def test_instance_snapshot_passes_ttl_seconds(monkeypatch):
@@ -155,6 +220,69 @@ def test_instance_snapshot_passes_ttl_seconds(monkeypatch):
         }
     ]
     assert "TTL: 45 seconds" in result.output
+
+
+def test_instance_snapshot_rejects_non_positive_ttl(monkeypatch):
+    import morphcloud.cli as cli_mod
+
+    snapshot_calls = []
+
+    class StubInstance:
+        status = "ready"
+
+        def snapshot(self, **kwargs):
+            snapshot_calls.append(kwargs)
+            return types.SimpleNamespace(id="snapshot_123", digest=None, ttl=None)
+
+    class StubInstances:
+        def get(self, instance_id):
+            assert instance_id == "instance_123"
+            return StubInstance()
+
+    stub_client = types.SimpleNamespace(instances=StubInstances())
+    monkeypatch.setattr(cli_mod, "get_client", lambda: stub_client)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.cli,
+        ["instance", "snapshot", "instance_123", "--ttl-seconds", "0"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "Invalid value for '--ttl-seconds'" in result.output
+    assert snapshot_calls == []
+
+
+def test_instance_snapshot_requires_ready_instance(monkeypatch):
+    import morphcloud.api as api_mod
+    import morphcloud.cli as cli_mod
+
+    snapshot_calls = []
+
+    class StubInstance:
+        status = api_mod.InstanceStatus.PAUSED
+
+        def snapshot(self, **kwargs):
+            snapshot_calls.append(kwargs)
+            return types.SimpleNamespace(id="snapshot_123", digest=None, ttl=None)
+
+    class StubInstances:
+        def get(self, instance_id):
+            assert instance_id == "instance_123"
+            return StubInstance()
+
+    stub_client = types.SimpleNamespace(instances=StubInstances())
+    monkeypatch.setattr(cli_mod, "get_client", lambda: stub_client)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.cli,
+        ["instance", "snapshot", "instance_123"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Instance must be READY. Current: paused" in result.output
+    assert snapshot_calls == []
 
 
 @pytest.mark.parametrize(
