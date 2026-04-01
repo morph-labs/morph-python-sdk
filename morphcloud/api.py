@@ -11,6 +11,7 @@ import time
 import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
@@ -107,6 +108,42 @@ class TTL(BaseModel):
     ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = Field(
         "stop", description="Action to take when TTL expires."
     )
+
+
+DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _chain_snapshot_ttl_seconds() -> int:
+    raw = os.getenv("MORPH_CHAIN_SNAPSHOT_TTL_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except Exception:
+            pass
+    return DEFAULT_CHAIN_SNAPSHOT_TTL_SECONDS
+
+
+def _exec_service_proxy_base_url(base_url: str) -> typing.Optional[str]:
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return None
+    host = parsed.hostname or ""
+    if not host.startswith("api-") or not host.endswith(".http.cloud.morph.so"):
+        return None
+    service_host = "service-" + host[len("api-") :]
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{service_host}{port}"
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/service/api"
+    elif path.endswith("/api"):
+        path = "/service" + path
+    else:
+        path = "/service" + (path if path.startswith("/") else f"/{path}")
+    return urlunparse(parsed._replace(netloc=netloc, path=path))
 
 
 class WakeOn(BaseModel):
@@ -643,6 +680,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -653,6 +691,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -664,6 +703,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -679,6 +720,7 @@ class SnapshotAPI:
         vcpus: typing.Optional[int] = None,
         memory: typing.Optional[int] = None,
         disk_size: typing.Optional[int] = None,
+        ttl_seconds: typing.Optional[int] = None,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
     ) -> Snapshot:
@@ -689,6 +731,7 @@ class SnapshotAPI:
             vcpus: The number of virtual CPUs for the snapshot.
             memory: The amount of memory (in MB) for the snapshot.
             disk_size: The size of the snapshot (in MB).
+            ttl_seconds: Optional time-to-live in seconds for the snapshot.
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot."""
         body = {}
@@ -700,6 +743,8 @@ class SnapshotAPI:
             body["memory"] = memory
         if disk_size is not None:
             body["disk_size"] = disk_size
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         if digest is not None:
             body["digest"] = digest
         if metadata is not None:
@@ -734,6 +779,9 @@ class Snapshot(BaseModel):
     )
     metadata: typing.Dict[str, str] = Field(
         default_factory=dict, description="User provided metadata"
+    )
+    ttl: typing.Optional[TTL] = Field(
+        default=None, description="Time-To-Live configuration for the snapshot"
     )
 
     _api: SnapshotAPI = PrivateAttr()
@@ -770,6 +818,45 @@ class Snapshot(BaseModel):
         )
         response.raise_for_status()
         await self._refresh_async()
+
+    def set_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
+        """Set or clear the snapshot TTL."""
+        payload = {"ttl_seconds": ttl_seconds}
+        response = self._api._client._http_client.post(
+            f"/snapshot/{self.id}/ttl",
+            json=payload,
+        )
+        response.raise_for_status()
+        self._refresh()
+
+    async def aset_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
+        payload = {"ttl_seconds": ttl_seconds}
+        response = await self._api._client._async_http_client.post(
+            f"/snapshot/{self.id}/ttl",
+            json=payload,
+        )
+        response.raise_for_status()
+        await self._refresh_async()
+
+    def clear_ttl(self) -> None:
+        """Clear the snapshot TTL (never expire)."""
+        self.set_ttl(None)
+
+    async def aclear_ttl(self) -> None:
+        await self.aset_ttl(None)
+
+    def touch(self) -> None:
+        """Heartbeat the snapshot (extends inactivity-based TTL)."""
+        ttl_seconds = None
+        if self.ttl is not None:
+            ttl_seconds = self.ttl.ttl_seconds
+        self.set_ttl(ttl_seconds)
+
+    async def atouch(self) -> None:
+        ttl_seconds = None
+        if self.ttl is not None:
+            ttl_seconds = self.ttl.ttl_seconds
+        await self.aset_ttl(ttl_seconds)
 
     def _refresh(self) -> None:
         refreshed = self._api.get(self.id)
@@ -976,12 +1063,19 @@ class Snapshot(BaseModel):
         # 5) Check if there's already a snapshot with that digest
         candidates = self._api.list(digest=new_chain_hash)
         if candidates:
+            cached = candidates[0]
+            try:
+                cached.touch()
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Warning: failed to touch cached snapshot {cached.id}: {exc}[/yellow]"
+                )
             console.print(
                 f"[bold green]✅ Using cached snapshot[/bold green] "
                 f"with digest [white]{new_chain_hash}[/white] "
                 f"for effect [yellow]{fn.__name__}[/yellow]."
             )
-            return candidates[0]
+            return cached
 
         # 6) Otherwise, apply the effect on a fresh instance from this snapshot
         console.print(
@@ -993,7 +1087,10 @@ class Snapshot(BaseModel):
             instance.wait_until_ready(timeout=300)
             fn(instance, *args, **kwargs)  # Actually run the effect
             # 7) Snapshot the instance, passing digest=new_chain_hash to store the chain hash
-            new_snapshot = instance.snapshot(digest=new_chain_hash)
+            new_snapshot = instance.snapshot(
+                digest=new_chain_hash,
+                ttl_seconds=_chain_snapshot_ttl_seconds(),
+            )
         finally:
             instance.stop()
 
@@ -1323,6 +1420,12 @@ class Snapshot(BaseModel):
             if candidates:
                 cached_len = i + 1
                 last_snap = candidates[0]
+                try:
+                    last_snap.touch()
+                except Exception as exc:
+                    console.print(
+                        f"[yellow]Warning: failed to touch cached snapshot {last_snap.id}: {exc}[/yellow]"
+                    )
             else:
                 break
 
@@ -1404,7 +1507,10 @@ class Snapshot(BaseModel):
                     f"[magenta]• Snapshotting step {idx + 1} with digest "
                     f"[white]{desired_digest}[/white] ...[/magenta]"
                 )
-                current_snapshot = instance.snapshot(digest=desired_digest)
+                current_snapshot = instance.snapshot(
+                    digest=desired_digest,
+                    ttl_seconds=_chain_snapshot_ttl_seconds(),
+                )
 
             assert current_snapshot is not None
             console.print(
@@ -1452,6 +1558,12 @@ class Snapshot(BaseModel):
             if candidates:
                 cached_len = i + 1
                 last_cached = candidates[0]
+                try:
+                    await last_cached.atouch()
+                except Exception as exc:
+                    console.print(
+                        f"[yellow]Warning: failed to touch cached snapshot {last_cached.id}: {exc}[/yellow]"
+                    )
             else:
                 break
 
@@ -1506,7 +1618,10 @@ class Snapshot(BaseModel):
                     f"[magenta]• Snapshotting step {idx + 1} with digest "
                     f"[white]{desired_digest}[/white] ...[/magenta]"
                 )
-                current_snapshot = await instance.asnapshot(digest=desired_digest)
+                current_snapshot = await instance.asnapshot(
+                    digest=desired_digest,
+                    ttl_seconds=_chain_snapshot_ttl_seconds(),
+                )
 
             assert current_snapshot is not None
             console.print(
@@ -2769,13 +2884,17 @@ class Instance(BaseModel):
         self,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
     ) -> Snapshot:
         """Save the instance as a snapshot."""
         params = {}
         if digest is not None:
             params["digest"] = digest
+        body: typing.Dict[str, typing.Any] = {"metadata": metadata}
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         response = self._api._client._http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=dict(metadata=metadata)
+            f"/instance/{self.id}/snapshot", params=params, json=body
         )
         return Snapshot.model_validate(response.json())._set_api(
             self._api._client.snapshots,
@@ -2785,13 +2904,17 @@ class Instance(BaseModel):
         self,
         digest: typing.Optional[str] = None,
         metadata: typing.Optional[typing.Dict[str, str]] = None,
+        ttl_seconds: typing.Optional[int] = None,
     ) -> Snapshot:
         """Save the instance as a snapshot."""
         params = {}
         if digest is not None:
             params = {"digest": digest}
+        body: typing.Dict[str, typing.Any] = {"metadata": metadata}
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
         response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=dict(metadata=metadata)
+            f"/instance/{self.id}/snapshot", params=params, json=body
         )
         return Snapshot.model_validate(response.json())._set_api(
             self._api._client.snapshots
@@ -3033,6 +3156,22 @@ class Instance(BaseModel):
                         timeout=timeout,
                     )
                     return InstanceExecResponse.model_validate(response.json())
+                except ApiError as e:
+                    alt_base = _exec_service_proxy_base_url(
+                        self._api._client.base_url
+                    )
+                    if (
+                        e.status_code == 401
+                        and alt_base
+                        and alt_base != self._api._client.base_url
+                    ):
+                        response = self._api._client._http_client.post(
+                            f"{alt_base.rstrip('/')}/instance/{self.id}/exec",
+                            json={"command": command},
+                            timeout=timeout,
+                        )
+                        return InstanceExecResponse.model_validate(response.json())
+                    raise
                 except Exception as e:
                     # Convert HTTP timeout errors to more user-friendly TimeoutError
                     if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
@@ -3067,81 +3206,100 @@ class Instance(BaseModel):
             "Content-Type": "application/json",
         }
 
-        # Accumulate output for final response
-        stdout_chunks = []
-        stderr_chunks = []
-        exit_code = 0
+        def _run_stream(url: str) -> InstanceExecResponse:
+            # Accumulate output for final response
+            stdout_chunks: typing.List[str] = []
+            stderr_chunks: typing.List[str] = []
+            exit_code = 0
 
-        # Make streaming request
-        try:
-            with self._api._client._http_client.stream(
-                "POST",
-                f"{self._api._client.base_url}/instance/{self.id}/exec/sse",
-                json={"command": command},
-                headers=headers,
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
+            # Make streaming request
+            try:
+                with self._api._client._http_client.stream(
+                    "POST",
+                    url,
+                    json={"command": command},
+                    headers=headers,
+                    timeout=timeout,
+                ) as response:
+                    response.raise_for_status()
 
-                for line in response.iter_lines():
-                    if not line.strip():
-                        continue
+                    for line in response.iter_lines():
+                        if not line.strip():
+                            continue
 
-                    # Skip lines that don't start with 'data: '
-                    if not line.startswith("data: "):
-                        continue
+                        # Skip lines that don't start with 'data: '
+                        if not line.startswith("data: "):
+                            continue
 
-                    data_content = line[6:]  # Remove 'data: ' prefix
+                        data_content = line[6:]  # Remove 'data: ' prefix
 
-                    # Check for stream end
-                    if data_content.strip() == "[DONE]":
-                        break
+                        # Check for stream end
+                        if data_content.strip() == "[DONE]":
+                            break
 
-                    try:
-                        event = json.loads(data_content)
-                        event_type = event.get("type")
-                        content = event.get("content", "")
+                        try:
+                            event = json.loads(data_content)
+                            event_type = event.get("type")
+                            content = event.get("content", "")
 
-                        if event_type == "stdout":
-                            stdout_chunks.append(content)
-                            if on_stdout:
-                                try:
-                                    on_stdout(content)
-                                except Exception:
-                                    # Log callback errors but don't interrupt stream
-                                    pass
+                            if event_type == "stdout":
+                                stdout_chunks.append(content)
+                                if on_stdout:
+                                    try:
+                                        on_stdout(content)
+                                    except Exception:
+                                        # Log callback errors but don't interrupt stream
+                                        pass
 
-                        elif event_type == "stderr":
-                            stderr_chunks.append(content)
-                            if on_stderr:
-                                try:
-                                    on_stderr(content)
-                                except Exception:
-                                    # Log callback errors but don't interrupt stream
-                                    pass
+                            elif event_type == "stderr":
+                                stderr_chunks.append(content)
+                                if on_stderr:
+                                    try:
+                                        on_stderr(content)
+                                    except Exception:
+                                        # Log callback errors but don't interrupt stream
+                                        pass
 
-                        elif event_type == "exit_code":
-                            exit_code = int(content)
+                            elif event_type == "exit_code":
+                                exit_code = int(content)
 
-                    except (json.JSONDecodeError, KeyError, ValueError):
-                        # Skip malformed events and continue processing
-                        continue
-        except Exception as e:
-            # Convert HTTP timeout errors to more user-friendly TimeoutError
-            if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(
-                    f"Command execution timed out after {timeout} seconds"
-                ) from e
-            # Re-raise other exceptions as-is
-            raise
+                        except (json.JSONDecodeError, KeyError, ValueError):
+                            # Skip malformed events and continue processing
+                            continue
+            except Exception as e:
+                # Convert HTTP timeout errors to more user-friendly TimeoutError
+                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                    raise TimeoutError(
+                        f"Command execution timed out after {timeout} seconds"
+                    ) from e
+                # Re-raise other exceptions as-is
+                raise
 
-        return InstanceExecResponse.model_validate(
-            {
-                "exit_code": exit_code,
-                "stdout": "".join(stdout_chunks),
-                "stderr": "".join(stderr_chunks),
-            }
+            return InstanceExecResponse.model_validate(
+                {
+                    "exit_code": exit_code,
+                    "stdout": "".join(stdout_chunks),
+                    "stderr": "".join(stderr_chunks),
+                }
+            )
+
+        primary_url = f"{self._api._client.base_url}/instance/{self.id}/exec/sse"
+        alt_base = _exec_service_proxy_base_url(self._api._client.base_url)
+        alt_url = (
+            f"{alt_base.rstrip('/')}/instance/{self.id}/exec/sse" if alt_base else None
         )
+
+        try:
+            return _run_stream(primary_url)
+        except httpx.HTTPStatusError as e:
+            if (
+                e.response is not None
+                and e.response.status_code == 401
+                and alt_url
+                and alt_url != primary_url
+            ):
+                return _run_stream(alt_url)
+            raise
 
     async def aexec(
         self,
@@ -3194,6 +3352,22 @@ class Instance(BaseModel):
                         timeout=timeout,
                     )
                     return InstanceExecResponse.model_validate(response.json())
+                except ApiError as e:
+                    alt_base = _exec_service_proxy_base_url(
+                        self._api._client.base_url
+                    )
+                    if (
+                        e.status_code == 401
+                        and alt_base
+                        and alt_base != self._api._client.base_url
+                    ):
+                        response = await self._api._client._async_http_client.post(
+                            f"{alt_base.rstrip('/')}/instance/{self.id}/exec",
+                            json={"command": command},
+                            timeout=timeout,
+                        )
+                        return InstanceExecResponse.model_validate(response.json())
+                    raise
                 except Exception as e:
                     # Convert HTTP timeout errors to more user-friendly TimeoutError
                     if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
@@ -3228,81 +3402,100 @@ class Instance(BaseModel):
             "Content-Type": "application/json",
         }
 
-        # Accumulate output for final response
-        stdout_chunks = []
-        stderr_chunks = []
-        exit_code = 0
+        async def _run_stream(url: str) -> InstanceExecResponse:
+            # Accumulate output for final response
+            stdout_chunks: typing.List[str] = []
+            stderr_chunks: typing.List[str] = []
+            exit_code = 0
 
-        # Make streaming request
-        try:
-            async with self._api._client._async_http_client.stream(
-                "POST",
-                f"/instance/{self.id}/exec/sse",
-                json={"command": command},
-                headers=headers,
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
+            # Make streaming request
+            try:
+                async with self._api._client._async_http_client.stream(
+                    "POST",
+                    url,
+                    json={"command": command},
+                    headers=headers,
+                    timeout=timeout,
+                ) as response:
+                    response.raise_for_status()
 
-                async for line in response.aiter_lines():
-                    if not line.strip():
-                        continue
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
 
-                    # Skip lines that don't start with 'data: '
-                    if not line.startswith("data: "):
-                        continue
+                        # Skip lines that don't start with 'data: '
+                        if not line.startswith("data: "):
+                            continue
 
-                    data_content = line[6:]  # Remove 'data: ' prefix
+                        data_content = line[6:]  # Remove 'data: ' prefix
 
-                    # Check for stream end
-                    if data_content.strip() == "[DONE]":
-                        break
+                        # Check for stream end
+                        if data_content.strip() == "[DONE]":
+                            break
 
-                    try:
-                        event = json.loads(data_content)
-                        event_type = event.get("type")
-                        content = event.get("content", "")
+                        try:
+                            event = json.loads(data_content)
+                            event_type = event.get("type")
+                            content = event.get("content", "")
 
-                        if event_type == "stdout":
-                            stdout_chunks.append(content)
-                            if on_stdout:
-                                try:
-                                    on_stdout(content)
-                                except Exception:
-                                    # Log callback errors but don't interrupt stream
-                                    pass
+                            if event_type == "stdout":
+                                stdout_chunks.append(content)
+                                if on_stdout:
+                                    try:
+                                        on_stdout(content)
+                                    except Exception:
+                                        # Log callback errors but don't interrupt stream
+                                        pass
 
-                        elif event_type == "stderr":
-                            stderr_chunks.append(content)
-                            if on_stderr:
-                                try:
-                                    on_stderr(content)
-                                except Exception:
-                                    # Log callback errors but don't interrupt stream
-                                    pass
+                            elif event_type == "stderr":
+                                stderr_chunks.append(content)
+                                if on_stderr:
+                                    try:
+                                        on_stderr(content)
+                                    except Exception:
+                                        # Log callback errors but don't interrupt stream
+                                        pass
 
-                        elif event_type == "exit_code":
-                            exit_code = int(content)
+                            elif event_type == "exit_code":
+                                exit_code = int(content)
 
-                    except (json.JSONDecodeError, KeyError, ValueError):
-                        # Skip malformed events and continue processing
-                        continue
-        except Exception as e:
-            # Convert HTTP timeout errors to more user-friendly TimeoutError
-            if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(
-                    f"Command execution timed out after {timeout} seconds"
-                ) from e
-            # Re-raise other exceptions as-is
-            raise
+                        except (json.JSONDecodeError, KeyError, ValueError):
+                            # Skip malformed events and continue processing
+                            continue
+            except Exception as e:
+                # Convert HTTP timeout errors to more user-friendly TimeoutError
+                if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
+                    raise TimeoutError(
+                        f"Command execution timed out after {timeout} seconds"
+                    ) from e
+                # Re-raise other exceptions as-is
+                raise
 
-        return InstanceExecResponse.model_validate(
-            {
-                "exit_code": exit_code,
-                "stdout": "".join(stdout_chunks),
-                "stderr": "".join(stderr_chunks),
-            }
+            return InstanceExecResponse.model_validate(
+                {
+                    "exit_code": exit_code,
+                    "stdout": "".join(stdout_chunks),
+                    "stderr": "".join(stderr_chunks),
+                }
+            )
+
+        primary_url = f"{self._api._client.base_url}/instance/{self.id}/exec/sse"
+        alt_base = _exec_service_proxy_base_url(self._api._client.base_url)
+        alt_url = (
+            f"{alt_base.rstrip('/')}/instance/{self.id}/exec/sse" if alt_base else None
         )
+
+        try:
+            return await _run_stream(primary_url)
+        except httpx.HTTPStatusError as e:
+            if (
+                e.response is not None
+                and e.response.status_code == 401
+                and alt_url
+                and alt_url != primary_url
+            ):
+                return await _run_stream(alt_url)
+            raise
 
     def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
         """Wait until the instance is ready."""
