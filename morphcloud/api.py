@@ -24,6 +24,7 @@ from morphcloud.config import resolve_settings
 
 if typing.TYPE_CHECKING:
     from morphcloud.devbox.client import AsyncDevboxClient, DevboxClient
+    from morphcloud.volumes.client import VolumesClient
 
 # Global console instance
 console = Console()
@@ -162,6 +163,8 @@ class MorphCloudClient:
         profile: typing.Optional[str] = None,
         api_host: typing.Optional[str] = None,
         service_base_url: typing.Optional[str] = None,
+        volumes_base_url: typing.Optional[str] = None,
+        volumes_service_api_key: typing.Optional[str] = None,
         admin_base_url: typing.Optional[str] = None,
         db_base_url: typing.Optional[str] = None,
         ssh_hostname: typing.Optional[str] = None,
@@ -175,6 +178,7 @@ class MorphCloudClient:
                 "base_url": base_url,
                 "api_host": api_host,
                 "service_base_url": service_base_url,
+                "volumes_base_url": volumes_base_url,
                 "devbox_base_url": devbox_base_url,
                 "admin_base_url": admin_base_url,
                 "db_base_url": db_base_url,
@@ -189,12 +193,17 @@ class MorphCloudClient:
         self.ssh_hostname = settings.ssh_hostname
         self.ssh_port = settings.ssh_port
         self.service_base_url = settings.service_base_url
+        self.volumes_base_url = settings.volumes_base_url
+        self.volumes_service_api_key = volumes_service_api_key or os.environ.get(
+            "MORPH_VOLUMES_SERVICE_API_KEY"
+        )
         self.devbox_base_url = settings.devbox_base_url
         self.admin_base_url = settings.admin_base_url
         self.db_base_url = settings.db_base_url
         self.profile = settings.profile
         self._devbox_client = None
         self._devbox_async_client = None
+        self._volumes_client = None
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
@@ -317,6 +326,18 @@ class MorphCloudClient:
     def user(self) -> "UserAPI":
         """Access the API for the current authenticated user."""
         return UserAPI(self)
+
+    @property
+    def volumes(self) -> "VolumesClient":
+        if self._volumes_client is None:
+            from morphcloud.volumes.client import VolumesClient
+
+            self._volumes_client = VolumesClient(self)
+        return self._volumes_client
+
+    @volumes.setter
+    def volumes(self, value: "VolumesClient") -> None:
+        self._volumes_client = value
 
 
 class BaseAPI:
@@ -679,7 +700,8 @@ class SnapshotAPI:
             disk_size: The size of the snapshot (in MB).
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot.
-            ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted."""
+            ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted.
+        """
         if ttl_seconds is not None:
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}
@@ -721,7 +743,8 @@ class SnapshotAPI:
             disk_size: The size of the snapshot (in MB).
             digest: Optional digest for the snapshot. If provided, it will be used to identify the snapshot. If a snapshot with the same digest already exists, it will be returned instead of creating a new one.
             metadata: Optional metadata to attach to the snapshot.
-            ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted."""
+            ttl_seconds: Optional retention period in seconds before the snapshot is automatically deleted.
+        """
         if ttl_seconds is not None:
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}

@@ -293,6 +293,9 @@ def profile_show(name):
 @click.option(
     "--service-base-url", default=None, help="Override the services API base URL."
 )
+@click.option(
+    "--volumes-base-url", default=None, help="Override the volumes API base URL."
+)
 @click.option("--admin-base-url", default=None, help="Override the admin API base URL.")
 @click.option("--db-base-url", default=None, help="Override the db API base URL.")
 def profile_set(
@@ -303,6 +306,7 @@ def profile_set(
     ssh_hostname,
     ssh_port,
     service_base_url,
+    volumes_base_url,
     admin_base_url,
     db_base_url,
 ):
@@ -313,6 +317,7 @@ def profile_set(
         "ssh_hostname": ssh_hostname,
         "ssh_port": ssh_port,
         "service_base_url": service_base_url,
+        "volumes_base_url": volumes_base_url,
         "admin_base_url": admin_base_url,
         "db_base_url": db_base_url,
     }
@@ -2690,10 +2695,21 @@ def cleanup_instances(
 # Load CLI plugins
 load_cli_plugins(cli)
 
-# Register built-in devbox commands last (so they win over any external plugin).
-from morphcloud.devbox.cli import devbox as devbox_group
+def _register_builtin_cli_extensions() -> None:
+    # Register built-in volumes commands after external plugins so the
+    # first-party command wins if a duplicate name is present.
+    from morphcloud.volumes.cli import register_cli_plugin as register_volumes_cli_plugin
 
-cli.add_command(devbox_group)
+    register_volumes_cli_plugin(cli)
+
+    # Register built-in devbox commands last (so they win over any external
+    # plugin).
+    from morphcloud.devbox.cli import devbox as devbox_group
+
+    cli.add_command(devbox_group)
+
+
+_register_builtin_cli_extensions()
 
 
 if __name__ == "__main__":

@@ -185,6 +185,63 @@ morphcloud instance copy inst_123:/remote/file.log ./local_dir/
 morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 ```
 
+### Volumes
+
+Morph Volumes exposes an S3-compatible object store. Object operations use your normal `MORPH_API_KEY`. Bucket creation requires a volumes service API key via `MORPH_VOLUMES_SERVICE_API_KEY`.
+
+```python
+import os
+
+from morphcloud import MorphCloudClient
+
+client = MorphCloudClient(
+    api_key="morph_...",
+    volumes_service_api_key=os.environ["MORPH_VOLUMES_SERVICE_API_KEY"],
+)
+
+client.volumes.create_bucket("my-volume-bucket")
+client.volumes.put_object(
+    "my-volume-bucket",
+    "builds/artifact.txt",
+    b"hello from morph volumes\n",
+    content_type="text/plain",
+)
+payload = client.volumes.get_object("my-volume-bucket", "builds/artifact.txt")
+client.volumes.delete_object("my-volume-bucket", "builds/artifact.txt")
+client.volumes.delete_bucket("my-volume-bucket")
+```
+
+```bash
+# List buckets
+morphcloud volumes ls
+
+# Create or remove a bucket
+morphcloud volumes mb my-volume-bucket
+morphcloud volumes rb my-volume-bucket
+
+# Browse a bucket or prefix
+morphcloud volumes ls s3://my-volume-bucket/
+morphcloud volumes tree s3://my-volume-bucket/project/
+
+# Upload, inspect, and download objects
+morphcloud volumes cp ./artifact.txt s3://my-volume-bucket/builds/artifact.txt
+morphcloud volumes cp -r ./dataset s3://my-volume-bucket/datasets/
+morphcloud volumes cat s3://my-volume-bucket/builds/artifact.txt
+morphcloud volumes cp s3://my-volume-bucket/builds/artifact.txt ./downloads/
+
+# Remove objects under a prefix
+morphcloud volumes rm -r s3://my-volume-bucket/datasets/
+```
+
+If you use profiles with non-default endpoints, the volumes gateway can be configured explicitly:
+
+```bash
+morphcloud profile set stage \
+  --api-host stage.morph.so \
+  --service-base-url https://service.svc.stage.morph.so \
+  --volumes-base-url https://volumes.svc.stage.morph.so
+```
+
 ### Interactive Tools
 
 ```bash

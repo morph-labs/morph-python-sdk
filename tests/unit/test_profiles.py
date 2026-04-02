@@ -19,6 +19,7 @@ def test_resolve_settings_derives_from_api_host():
     assert settings.base_url == "https://stage.morph.so/api"
     assert settings.ssh_hostname == "ssh.stage.morph.so"
     assert settings.service_base_url == "https://service.svc.stage.morph.so"
+    assert settings.volumes_base_url == "https://volumes.svc.stage.morph.so"
     assert settings.devbox_base_url == "https://devbox.svc.stage.morph.so"
     assert settings.admin_base_url == "https://admin.svc.stage.morph.so"
     assert settings.db_base_url == "https://db.svc.stage.morph.so"
@@ -56,6 +57,8 @@ def test_profile_cli_set_use_and_env(tmp_path, monkeypatch):
             "stage.morph.so",
             "--api-key",
             "key-123",
+            "--volumes-base-url",
+            "https://volumes.svc.stage.morph.so",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -70,6 +73,7 @@ def test_profile_cli_set_use_and_env(tmp_path, monkeypatch):
     result = runner.invoke(cli_mod.cli, ["profile", "env", "stage", "--no-api-key"])
     assert result.exit_code == 0, result.output
     assert "MORPH_BASE_URL" in result.output
+    assert "MORPH_VOLUMES_BASE_URL" in result.output
     assert "MORPH_API_KEY" not in result.output
 
     # Ensure config persisted
