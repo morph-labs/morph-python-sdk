@@ -187,7 +187,7 @@ morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 
 ### Volumes
 
-Morph Volumes exposes an S3-compatible object store. Object operations use your normal `MORPH_API_KEY`. Bucket creation requires a volumes service API key via `MORPH_VOLUMES_SERVICE_API_KEY`.
+Morph Volumes exposes an S3-compatible object store. Bucket lifecycle and object operations use your normal `MORPH_API_KEY`.
 
 ```python
 import os
@@ -195,8 +195,7 @@ import os
 from morphcloud import MorphCloudClient
 
 client = MorphCloudClient(
-    api_key="morph_...",
-    volumes_service_api_key=os.environ["MORPH_VOLUMES_SERVICE_API_KEY"],
+    api_key=os.environ["MORPH_API_KEY"],
 )
 
 client.volumes.create_bucket("my-volume-bucket")
@@ -236,10 +235,9 @@ morphcloud volumes rm -r s3://my-volume-bucket/datasets/
 If you use profiles with non-default endpoints, the volumes gateway can be configured explicitly:
 
 ```bash
-morphcloud profile set stage \
-  --api-host stage.morph.so \
-  --service-base-url https://service.svc.stage.morph.so \
-  --volumes-base-url https://volumes.svc.stage.morph.so
+morphcloud profile set prod \
+  --api-host cloud.morph.so \
+  --volumes-base-url https://volumes.svc.cloud.morph.so
 ```
 
 ### Interactive Tools

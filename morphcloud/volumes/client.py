@@ -4,7 +4,6 @@ import datetime as dt
 import hashlib
 import hmac
 import json
-import os
 import re
 import typing
 import xml.etree.ElementTree as ET
@@ -186,19 +185,11 @@ class VolumesClient:
     def __init__(self, client: MorphCloudClient):
         self._client = client
         self.base_url = str(client.volumes_base_url or "").rstrip("/")
-        self.service_base_url = str(client.service_base_url or "").rstrip("/")
-        self.volumes_service_api_key = str(
-            getattr(client, "volumes_service_api_key", None)
-            or os.environ.get("MORPH_VOLUMES_SERVICE_API_KEY")
-            or ""
-        ).strip()
-        self._active_organization_id: str | None = None
         transport = build_http_transport()
         self._http_client = httpx.Client(
             timeout=None,
             transport=transport,
         )
-        self._json_client = httpx.Client(timeout=30, transport=transport)
 
     def _compose_url(
         self,
@@ -319,69 +310,6 @@ class VolumesClient:
             )
         return response
 
-    def _require_volumes_service_api_key(self) -> str:
-        if not self.volumes_service_api_key:
-            raise ValueError(
-                "Bucket creation requires MORPH_VOLUMES_SERVICE_API_KEY or "
-                "MorphCloudClient(..., volumes_service_api_key=...)."
-            )
-        return self.volumes_service_api_key
-
-    def _get_active_organization_id(self) -> str:
-        if self._active_organization_id:
-            return self._active_organization_id
-
-        response = self._json_client.request(
-            method="GET",
-            url=f"{self._client.base_url.rstrip('/')}/orgs/active",
-            headers={"Authorization": f"Bearer {self._client.api_key}"},
-        )
-        if response.is_error:
-            raise ApiError(
-                f"Volumes organization lookup failed for url '{response.url}'",
-                response.status_code,
-                _parse_error_body(response.text),
-            )
-
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Unexpected active organization response.")
-
-        organization_id = (
-            payload.get("organization_id")
-            or payload.get("id")
-            or (payload.get("organization") or {}).get("id")
-        )
-        if not organization_id:
-            raise ValueError("Could not determine the active organization for volumes.")
-
-        self._active_organization_id = str(organization_id)
-        return self._active_organization_id
-
-    def _service_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_body: typing.Mapping[str, typing.Any] | None = None,
-    ) -> httpx.Response:
-        response = self._json_client.request(
-            method=method.upper(),
-            url=f"{self.service_base_url}{path}",
-            headers={
-                "Authorization": (f"Bearer {self._require_volumes_service_api_key()}"),
-                "X-Morph-Organization-ID": self._get_active_organization_id(),
-            },
-            json=dict(json_body or {}),
-        )
-        if response.is_error:
-            raise ApiError(
-                f"Volumes control-plane request failed for url '{response.url}'",
-                response.status_code,
-                _parse_error_body(response.text),
-            )
-        return response
-
     def list_buckets(self) -> list[VolumeBucket]:
         response = self._request(
             "GET",
@@ -401,18 +329,13 @@ class VolumesClient:
 
     def create_bucket(self, bucket: str) -> VolumeBucket:
         normalized_bucket = _normalize_bucket(bucket)
-        response = self._service_request(
-            "POST",
-            "/service/volume",
-            json_body={"name": normalized_bucket},
+        self._request(
+            "PUT",
+            self._compose_url(bucket=normalized_bucket),
         )
-        payload = response.json()
-        volume_payload = payload.get("volume") if isinstance(payload, dict) else None
-        if not isinstance(volume_payload, dict):
-            raise ValueError("Unexpected create volume response from service API.")
         return VolumeBucket(
-            name=str(volume_payload.get("name") or normalized_bucket),
-            created_at=typing.cast(str | None, volume_payload.get("created_at")),
+            name=normalized_bucket,
+            created_at=None,
         )
 
     def delete_bucket(self, bucket: str) -> None:

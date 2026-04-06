@@ -50,6 +50,30 @@ def test_volumes_ls_lists_buckets(monkeypatch):
     assert "beta" in result.output
 
 
+def test_volumes_mb_creates_bucket(monkeypatch):
+    import morphcloud.cli as cli_mod
+    import morphcloud.volumes.cli as volumes_cli
+
+    _install_noop_spinner(monkeypatch)
+
+    calls = []
+    stub_volumes = types.SimpleNamespace(
+        create_bucket=lambda bucket: calls.append(bucket),
+    )
+    monkeypatch.setattr(
+        volumes_cli,
+        "get_client",
+        lambda: types.SimpleNamespace(volumes=stub_volumes),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.cli, ["volumes", "mb", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["demo"]
+    assert "s3://demo" in result.output
+
+
 def test_volumes_cp_uploads_to_bucket_prefix(monkeypatch, tmp_path):
     import morphcloud.cli as cli_mod
     import morphcloud.volumes.cli as volumes_cli

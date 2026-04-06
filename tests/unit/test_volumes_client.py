@@ -57,19 +57,15 @@ class StubHTTPClient:
 def _build_client(
     *,
     s3_responses=(),
-    json_responses=(),
-    volumes_service_api_key="morph_service_key",
 ):
     morph_client = types.SimpleNamespace(
         api_key="morph_test_key",
         base_url="https://cloud.morph.so/api",
         service_base_url="https://service.svc.stage.morph.so",
         volumes_base_url="https://volumes.svc.stage.morph.so",
-        volumes_service_api_key=volumes_service_api_key,
     )
     client = VolumesClient(morph_client)
     client._http_client = StubHTTPClient(s3_responses)
-    client._json_client = StubHTTPClient(json_responses)
     return client
 
 
@@ -95,55 +91,49 @@ def test_list_buckets_parses_xml():
     assert buckets[0].created_at == "2026-04-01T00:00:00Z"
 
 
-def test_create_bucket_uses_service_api_and_active_org():
+def test_create_bucket_uses_signed_gateway_request():
     client = _build_client(
-        json_responses=[
+        s3_responses=[
             StubResponse(
-                json_data={
-                    "organization_id": "organization_demo",
-                    "organization": {"id": "organization_demo"},
-                },
-                url="https://cloud.morph.so/api/orgs/active",
-            ),
-            StubResponse(
-                json_data={
-                    "volume": {
-                        "name": "demo",
-                        "created_at": "2026-04-06T00:00:00Z",
-                    }
-                },
-                url="https://service.svc.stage.morph.so/service/volume",
-            ),
+                status_code=200,
+                headers={"Location": "https://volumes.svc.stage.morph.so/demo"},
+                url="https://volumes.svc.stage.morph.so/demo",
+            )
         ]
     )
 
     bucket = client.create_bucket("demo")
 
     assert bucket.name == "demo"
-    assert bucket.created_at == "2026-04-06T00:00:00Z"
-    assert client._json_client.calls[0]["method"] == "GET"
-    assert client._json_client.calls[0]["url"].endswith("/orgs/active")
-    assert client._json_client.calls[0]["headers"]["Authorization"] == (
-        "Bearer morph_test_key"
+    assert bucket.created_at is None
+    assert len(client._http_client.calls) == 1
+    assert client._http_client.calls[0]["method"] == "PUT"
+    assert client._http_client.calls[0]["url"] == "https://volumes.svc.stage.morph.so/demo"
+    assert client._http_client.calls[0]["content"] is None
+    assert client._http_client.calls[0]["headers"]["Authorization"].startswith(
+        "AWS4-HMAC-SHA256 "
     )
-    assert client._json_client.calls[1]["method"] == "POST"
-    assert client._json_client.calls[1]["url"].endswith("/service/volume")
-    assert client._json_client.calls[1]["headers"]["Authorization"] == (
-        "Bearer morph_service_key"
-    )
-    assert client._json_client.calls[1]["headers"]["X-Morph-Organization-ID"] == (
-        "organization_demo"
-    )
-    assert client._json_client.calls[1]["json"] == {"name": "demo"}
 
 
-def test_create_bucket_requires_service_api_key():
-    client = _build_client(volumes_service_api_key="")
+def test_create_bucket_raises_api_error_on_conflict():
+    client = _build_client(
+        s3_responses=[
+            StubResponse(
+                status_code=409,
+                text=(
+                    "<Error><Code>BucketAlreadyExists</Code>"
+                    "<Message>bucket already exists</Message></Error>"
+                ),
+                url="https://volumes.svc.stage.morph.so/demo",
+            )
+        ]
+    )
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ApiError) as excinfo:
         client.create_bucket("demo")
 
-    assert "MORPH_VOLUMES_SERVICE_API_KEY" in str(excinfo.value)
+    assert excinfo.value.status_code == 409
+    assert "BucketAlreadyExists" in excinfo.value.response_body
 
 
 def test_list_directory_derives_prefixes_from_flat_listing():
