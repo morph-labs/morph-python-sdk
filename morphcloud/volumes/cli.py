@@ -202,7 +202,9 @@ def list_volumes(target: str | None, recursive: bool, json_mode: bool) -> None:
             if target_kind == "object" and exact_object is not None:
                 objects = [exact_object]
             else:
-                objects = volumes_client.list_all_objects(ref.bucket, prefix=resolved_key)
+                objects = volumes_client.list_all_objects(
+                    ref.bucket, prefix=resolved_key
+                )
             if json_mode:
                 click.echo(format_json([obj.model_dump() for obj in objects]))
                 return
@@ -256,7 +258,9 @@ def tree_volumes(target: str | None, json_mode: bool) -> None:
                 click.echo(format_json(exact_object))
                 return
             tree = Tree(ref.uri)
-            tree.add(f"{exact_object.name} [dim]{_format_bytes(exact_object.size)}[/dim]")
+            tree.add(
+                f"{exact_object.name} [dim]{_format_bytes(exact_object.size)}[/dim]"
+            )
             console.print(tree)
             return
 
@@ -356,9 +360,7 @@ def _upload_files(
 
     if local_path.is_dir():
         if not recursive:
-            raise click.ClickException(
-                "Uploading a directory requires --recursive."
-            )
+            raise click.ClickException("Uploading a directory requires --recursive.")
         if remote_ref.key and not remote_ref.key.endswith("/"):
             raise click.ClickException(
                 "Remote destination for directory uploads must end with '/'."
@@ -367,7 +369,9 @@ def _upload_files(
         files = sorted(path for path in local_path.rglob("*") if path.is_file())
         for file_path in files:
             relative = file_path.relative_to(local_path).as_posix()
-            uploads.append((file_path, f"{destination_prefix}{relative}", file_path.stat().st_size))
+            uploads.append(
+                (file_path, f"{destination_prefix}{relative}", file_path.stat().st_size)
+            )
         return uploads
 
     if not remote_ref.key or remote_ref.key.endswith("/"):
@@ -385,7 +389,9 @@ def _download_targets(
     local_path: pathlib.Path,
     recursive: bool,
 ) -> list[tuple[str, pathlib.Path]]:
-    target_kind, resolved_key, exact_object = _resolve_target(volumes_client, remote_ref)
+    target_kind, resolved_key, exact_object = _resolve_target(
+        volumes_client, remote_ref
+    )
     if target_kind == "object" and exact_object is not None:
         if local_path.exists() and local_path.is_dir():
             destination = local_path / pathlib.Path(exact_object.key).name
@@ -394,9 +400,7 @@ def _download_targets(
         return [(exact_object.key, destination)]
 
     if not recursive:
-        raise click.ClickException(
-            "Downloading a prefix requires --recursive."
-        )
+        raise click.ClickException("Downloading a prefix requires --recursive.")
 
     prefix = resolved_key
     objects = volumes_client.list_all_objects(remote_ref.bucket, prefix=prefix)
@@ -405,7 +409,9 @@ def _download_targets(
 
     targets: list[tuple[str, pathlib.Path]] = []
     for obj in objects:
-        relative = obj.key[len(prefix) :] if prefix and obj.key.startswith(prefix) else obj.key
+        relative = (
+            obj.key[len(prefix) :] if prefix and obj.key.startswith(prefix) else obj.key
+        )
         relative = relative.lstrip("/")
         targets.append((obj.key, local_path / relative))
     return targets

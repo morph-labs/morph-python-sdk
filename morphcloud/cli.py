@@ -1106,7 +1106,11 @@ def list_snapshots(metadata, interactive, page, limit, json_mode):
                         snap.id,
                         unix_timestamp_to_datetime(snap.created),
                         snap.status,
-                        snap.ttl.ttl_seconds if snap.ttl.ttl_seconds is not None else "",
+                        (
+                            snap.ttl.ttl_seconds
+                            if snap.ttl.ttl_seconds is not None
+                            else ""
+                        ),
                         snap.spec.vcpus,
                         snap.spec.memory,
                         snap.spec.disk_size,
@@ -2695,10 +2699,13 @@ def cleanup_instances(
 # Load CLI plugins
 load_cli_plugins(cli)
 
+
 def _register_builtin_cli_extensions() -> None:
     # Register built-in volumes commands after external plugins so the
     # first-party command wins if a duplicate name is present.
-    from morphcloud.volumes.cli import register_cli_plugin as register_volumes_cli_plugin
+    from morphcloud.volumes.cli import (
+        register_cli_plugin as register_volumes_cli_plugin,
+    )
 
     register_volumes_cli_plugin(cli)
 
