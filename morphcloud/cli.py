@@ -153,9 +153,8 @@ class VersionCheckGroup(AliasedGroup):
         except click.exceptions.ClickException:
             # Let Click handle its own exceptions, but check version after
             # We need to raise first so Click can display the error
-            exctype, value, tb = sys.exc_info()
             raise
-        except Exception as e:
+        except Exception:
             # For non-Click exceptions, check version before letting the exception propagate
             check_for_package_update(display_mode="error")
             raise
@@ -298,6 +297,11 @@ def profile_show(name):
 )
 @click.option("--admin-base-url", default=None, help="Override the admin API base URL.")
 @click.option("--db-base-url", default=None, help="Override the db API base URL.")
+@click.option(
+    "--simple-index-base-url",
+    default=None,
+    help="Override the simple-index base URL.",
+)
 def profile_set(
     name,
     api_key,
@@ -309,6 +313,7 @@ def profile_set(
     volumes_base_url,
     admin_base_url,
     db_base_url,
+    simple_index_base_url,
 ):
     updates = {
         "api_key": api_key,
@@ -320,6 +325,7 @@ def profile_set(
         "volumes_base_url": volumes_base_url,
         "admin_base_url": admin_base_url,
         "db_base_url": db_base_url,
+        "simple_index_base_url": simple_index_base_url,
     }
     updates = {k: v for k, v in updates.items() if v is not None}
     if not updates:
@@ -510,7 +516,7 @@ def _interactive_pagination(
             content_height = max(5, height - 12)
 
             if not current_items:
-                spinner = _start_spinner("Fetching data")
+                _start_spinner("Fetching data")
                 try:
                     result = get_data_func(page=page, limit=limit, **kwargs)
                     current_items = getattr(result, items_attr, [])
@@ -617,7 +623,7 @@ def _interactive_pagination(
                 # Temporarily exit alt screen for input
                 click.echo("\033[?1049l", nl=False)
                 try:
-                    changed = on_search()
+                    on_search()
                 finally:
                     # Re-enter alt screen
                     click.echo("\033[?1049h", nl=False)
@@ -2708,6 +2714,10 @@ def _register_builtin_cli_extensions() -> None:
     )
 
     register_volumes_cli_plugin(cli)
+
+    from morphcloud.plugins.cli import register_cli_plugin as register_plugin_cli_plugin
+
+    register_plugin_cli_plugin(cli)
 
     # Register built-in devbox commands last (so they win over any external
     # plugin).

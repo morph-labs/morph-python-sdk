@@ -185,6 +185,68 @@ morphcloud instance copy inst_123:/remote/file.log ./local_dir/
 morphcloud instance copy -r ./local_dir inst_123:/remote/dir
 ```
 
+### Plugins
+
+Plugins are Python packages that register extra `morphcloud` commands through
+the `morphcloud.cli_plugins` entry-point group. Catalog and package operations
+use your normal `MORPH_API_KEY`. A catalog entry can install from the private
+simple-index package name or from an explicit `artifact_url`.
+
+```bash
+# Inspect plugin configuration and installed commands
+morphcloud plugin doctor
+
+# List or inspect plugins visible to your organization
+morphcloud plugin list
+morphcloud plugin show intro
+
+# Validate install resolution without changing the environment
+morphcloud plugin install intro --dry-run
+
+# Install or update a plugin into the current Python environment
+morphcloud plugin install intro
+morphcloud plugin upgrade intro
+
+# Run the command exposed by the installed plugin
+morphcloud intro --help
+```
+
+Common commands:
+
+| Command | Purpose |
+| --- | --- |
+| `morphcloud plugin list [query]` | List visible enabled plugins. |
+| `morphcloud plugin search <query>` | Search visible plugins by name, package, artifact, or command. |
+| `morphcloud plugin show <name>` / `info` | Show one catalog entry. |
+| `morphcloud plugin install <name>` | Install into the active Python environment. |
+| `morphcloud plugin upgrade <name>` / `update` | Upgrade an installed plugin. |
+| `morphcloud plugin uninstall <name>` | Remove the plugin package. |
+| `morphcloud plugin register <name>` | Upsert a catalog entry from flags or `--manifest`. |
+| `morphcloud plugin publish <name> --wheel dist/pkg-version-py3-none-any.whl` | Upload a wheel to simple-index, then register the catalog entry. |
+| `morphcloud plugin enable/disable/delete <name>` | Manage catalog lifecycle. |
+| `morphcloud plugin doctor` | Show auth, index, catalog, and installed entry-point status. |
+
+Management commands accept `--visibility global|org` and `--organization-id`.
+Org-scoped entries require `--organization-id`; global entries must omit it.
+
+For local or preview simple-index services, set:
+
+```bash
+export MORPH_SIMPLE_INDEX_BASE_URL="http://127.0.0.1:8912"
+```
+
+The installer uses the authenticated simple-index URL as the primary package
+index for package-backed plugins and keeps PyPI as an extra index for public
+dependencies. Credentials are redacted from CLI output, including direct
+artifact URLs. Direct `artifact_url` installs are allowed only for URLs without
+embedded credentials, query strings, or fragments; use package-backed simple-index
+publishing for private or signed artifacts so secrets are not passed to pip as
+process arguments.
+
+For stricter private-package installs, set `MORPH_PLUGIN_DISABLE_EXTRA_INDEX=1`
+to omit the public extra index. To use a controlled mirror instead of PyPI, set
+`MORPH_PLUGIN_EXTRA_INDEX_URL`.
+
 ### Volumes
 
 Morph Volumes exposes an S3-compatible object store. Bucket lifecycle and object operations use your normal `MORPH_API_KEY`.

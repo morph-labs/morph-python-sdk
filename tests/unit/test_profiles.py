@@ -23,6 +23,7 @@ def test_resolve_settings_derives_from_api_host():
     assert settings.devbox_base_url == "https://devbox.svc.stage.morph.so"
     assert settings.admin_base_url == "https://admin.svc.stage.morph.so"
     assert settings.db_base_url == "https://db.svc.stage.morph.so"
+    assert settings.simple_index_base_url == "https://simple-index.svc.stage.morph.so"
 
 
 def test_env_overrides_profile():
@@ -59,6 +60,8 @@ def test_profile_cli_set_use_and_env(tmp_path, monkeypatch):
             "key-123",
             "--volumes-base-url",
             "https://volumes.svc.stage.morph.so",
+            "--simple-index-base-url",
+            "https://simple-index.svc.stage.morph.so",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -74,8 +77,13 @@ def test_profile_cli_set_use_and_env(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "MORPH_BASE_URL" in result.output
     assert "MORPH_VOLUMES_BASE_URL" in result.output
+    assert "MORPH_SIMPLE_INDEX_BASE_URL" in result.output
     assert "MORPH_API_KEY" not in result.output
 
     # Ensure config persisted
     cfg = toml.loads(cfg_path.read_text())
     assert cfg.get("active_profile") == "stage"
+    assert (
+        cfg["profiles"]["stage"]["simple_index_base_url"]
+        == "https://simple-index.svc.stage.morph.so"
+    )

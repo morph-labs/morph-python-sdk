@@ -24,6 +24,7 @@ from morphcloud.config import resolve_settings
 
 if typing.TYPE_CHECKING:
     from morphcloud.devbox.client import AsyncDevboxClient, DevboxClient
+    from morphcloud.simple_index.client import SimpleIndexClient
     from morphcloud.volumes.client import VolumesClient
 
 # Global console instance
@@ -167,6 +168,7 @@ class MorphCloudClient:
         volumes_service_api_key: typing.Optional[str] = None,
         admin_base_url: typing.Optional[str] = None,
         db_base_url: typing.Optional[str] = None,
+        simple_index_base_url: typing.Optional[str] = None,
         ssh_hostname: typing.Optional[str] = None,
         ssh_port: typing.Optional[int] = None,
         devbox_base_url: typing.Optional[str] = None,
@@ -182,6 +184,7 @@ class MorphCloudClient:
                 "devbox_base_url": devbox_base_url,
                 "admin_base_url": admin_base_url,
                 "db_base_url": db_base_url,
+                "simple_index_base_url": simple_index_base_url,
                 "ssh_hostname": ssh_hostname,
                 "ssh_port": ssh_port,
             },
@@ -200,10 +203,12 @@ class MorphCloudClient:
         self.devbox_base_url = settings.devbox_base_url
         self.admin_base_url = settings.admin_base_url
         self.db_base_url = settings.db_base_url
+        self.simple_index_base_url = settings.simple_index_base_url
         self.profile = settings.profile
         self._devbox_client = None
         self._devbox_async_client = None
         self._volumes_client = None
+        self._simple_index_client = None
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in MORPH_API_KEY environment variable"
@@ -254,9 +259,10 @@ class MorphCloudClient:
         )
 
         self._load_sdk_plugins()
-        # Ensure first-party devbox clients win even if an external plugin attempted to attach them.
+        # Ensure first-party clients win even if an external plugin attempted to attach them.
         self._devbox_client = None
         self._devbox_async_client = None
+        self._simple_index_client = None
 
     def _load_sdk_plugins(self):
         """Load SDK plugins from entry points."""
@@ -338,6 +344,18 @@ class MorphCloudClient:
     @volumes.setter
     def volumes(self, value: "VolumesClient") -> None:
         self._volumes_client = value
+
+    @property
+    def simple_index(self) -> "SimpleIndexClient":
+        if self._simple_index_client is None:
+            from morphcloud.simple_index.client import SimpleIndexClient
+
+            self._simple_index_client = SimpleIndexClient(self)
+        return self._simple_index_client
+
+    @simple_index.setter
+    def simple_index(self, value: "SimpleIndexClient") -> None:
+        self._simple_index_client = value
 
 
 class BaseAPI:

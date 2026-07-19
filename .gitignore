@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.ruff_cache/
 
 # Poetry
 poetry.lock
@@ -60,3 +61,10 @@ _build/
 
 # uv
 uv.lock
+
+#clanker
+AGENTS.md
+CLAUDE.md
+PLAN.md
+.codex/
+.agents/

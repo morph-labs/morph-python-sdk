@@ -17,6 +17,7 @@ DEFAULT_VOLUMES_BASE_URL = "https://volumes.svc.cloud.morph.so"
 DEFAULT_DEVBOX_BASE_URL = "https://devbox.svc.cloud.morph.so"
 DEFAULT_ADMIN_BASE_URL = "https://admin.svc.cloud.morph.so"
 DEFAULT_DB_BASE_URL = "https://db.svc.cloud.morph.so"
+DEFAULT_SIMPLE_INDEX_BASE_URL = "https://simple-index.svc.cloud.morph.so"
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class ResolvedSettings:
     devbox_base_url: str
     admin_base_url: str
     db_base_url: str
+    simple_index_base_url: str
 
     def as_env(self, *, include_api_key: bool = True) -> Dict[str, str]:
         env: Dict[str, str] = {
@@ -44,6 +46,7 @@ class ResolvedSettings:
             "MORPH_DEVBOX_BASE_URL": self.devbox_base_url,
             "MORPH_ADMIN_BASE_URL": self.admin_base_url,
             "MORPH_DB_BASE_URL": self.db_base_url,
+            "MORPH_SIMPLE_INDEX_BASE_URL": self.simple_index_base_url,
         }
         if include_api_key and self.api_key:
             env["MORPH_API_KEY"] = self.api_key
@@ -255,6 +258,11 @@ def resolve_settings(
         env.get("MORPH_DB_BASE_URL"),
         profile_data.get("db_base_url"),
     )
+    simple_index_base_url = _coalesce(
+        overrides.get("simple_index_base_url"),
+        env.get("MORPH_SIMPLE_INDEX_BASE_URL"),
+        profile_data.get("simple_index_base_url"),
+    )
 
     if not api_host:
         api_host = _api_host_from_base_url(base_url)
@@ -277,6 +285,8 @@ def resolve_settings(
             admin_base_url = f"https://admin.svc.{api_host}"
         if not db_base_url:
             db_base_url = f"https://db.svc.{api_host}"
+        if not simple_index_base_url:
+            simple_index_base_url = f"https://simple-index.svc.{api_host}"
 
     base_url = base_url or DEFAULT_BASE_URL
     ssh_hostname = ssh_hostname or DEFAULT_SSH_HOSTNAME
@@ -286,6 +296,7 @@ def resolve_settings(
     devbox_base_url = devbox_base_url or DEFAULT_DEVBOX_BASE_URL
     admin_base_url = admin_base_url or DEFAULT_ADMIN_BASE_URL
     db_base_url = db_base_url or DEFAULT_DB_BASE_URL
+    simple_index_base_url = simple_index_base_url or DEFAULT_SIMPLE_INDEX_BASE_URL
 
     if not api_host:
         api_host = _api_host_from_base_url(base_url) or DEFAULT_API_HOST
@@ -302,6 +313,7 @@ def resolve_settings(
         devbox_base_url=devbox_base_url,
         admin_base_url=admin_base_url,
         db_base_url=db_base_url,
+        simple_index_base_url=simple_index_base_url,
     )
 
 
