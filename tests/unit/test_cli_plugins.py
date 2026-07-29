@@ -2,6 +2,7 @@ import json
 import types
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from morphcloud import config
@@ -276,6 +277,55 @@ def test_plugin_install_uses_authenticated_index_and_verifies(monkeypatch):
         ("help", "intro", None),
     ]
     assert "secret" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    [
+        ("install", "Installing plugin 'intro'"),
+        ("update", "Upgrading plugin 'intro'"),
+    ],
+)
+def test_plugin_install_and_update_report_progress(monkeypatch, command, label):
+    import morphcloud.cli as cli_mod
+    import morphcloud.plugins.cli as plugin_cli
+
+    fake = FakeSimpleIndexClient()
+    _install_fake_client(monkeypatch, fake)
+    progress_updates = []
+
+    class FakeProgressBar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def update(self, amount):
+            progress_updates.append(amount)
+
+    monkeypatch.setattr(
+        plugin_cli.click,
+        "progressbar",
+        lambda *, length, label, show_eta: (
+            progress_updates.append((length, label, show_eta)) or FakeProgressBar()
+        ),
+    )
+    monkeypatch.setattr(
+        plugin_cli.plugin_installer,
+        "install_requirement",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(plugin_cli, "_verify_installed", lambda *args, **kwargs: None)
+
+    result = CliRunner().invoke(cli_mod.cli, ["plugin", command, "intro"])
+
+    assert result.exit_code == 0, result.output
+    assert progress_updates == [
+        (2, label, False),
+        1,
+        1,
+    ]
 
 
 def test_plugin_install_forwards_explicit_python_to_installer_and_verify(monkeypatch):

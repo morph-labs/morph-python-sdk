@@ -121,21 +121,28 @@ def plugin_install(
                 python_executable=target_python,
             )
             return
-        if entry.artifact_url:
-            plugin_installer.install_artifact(
-                entry.artifact_url,
-                upgrade=upgrade,
-                python_executable=target_python,
-            )
-        else:
-            plugin_installer.install_requirement(
-                target,
-                index_url=client.authenticated_simple_index_url(),
-                upgrade=upgrade,
-                python_executable=target_python,
-            )
-        if not skip_verify:
-            _verify_installed(entry, python_executable=target_python)
+        with click.progressbar(
+            length=1 if skip_verify else 2,
+            label=f"Installing plugin '{entry.name}'",
+            show_eta=False,
+        ) as progress:
+            if entry.artifact_url:
+                plugin_installer.install_artifact(
+                    entry.artifact_url,
+                    upgrade=upgrade,
+                    python_executable=target_python,
+                )
+            else:
+                plugin_installer.install_requirement(
+                    target,
+                    index_url=client.authenticated_simple_index_url(),
+                    upgrade=upgrade,
+                    python_executable=target_python,
+                )
+            progress.update(1)
+            if not skip_verify:
+                _verify_installed(entry, python_executable=target_python)
+                progress.update(1)
         click.echo(f"Installed plugin '{entry.name}' ({_redact_url(target)}).")
     except Exception as exc:
         _raise_click_error(exc)
@@ -226,21 +233,28 @@ def plugin_upgrade(
                 python_executable=target_python,
             )
             return
-        if entry.artifact_url:
-            plugin_installer.install_artifact(
-                entry.artifact_url,
-                upgrade=True,
-                python_executable=target_python,
-            )
-        else:
-            plugin_installer.install_requirement(
-                target,
-                index_url=client.authenticated_simple_index_url(),
-                upgrade=True,
-                python_executable=target_python,
-            )
-        if not skip_verify:
-            _verify_installed(entry, python_executable=target_python)
+        with click.progressbar(
+            length=1 if skip_verify else 2,
+            label=f"Upgrading plugin '{entry.name}'",
+            show_eta=False,
+        ) as progress:
+            if entry.artifact_url:
+                plugin_installer.install_artifact(
+                    entry.artifact_url,
+                    upgrade=True,
+                    python_executable=target_python,
+                )
+            else:
+                plugin_installer.install_requirement(
+                    target,
+                    index_url=client.authenticated_simple_index_url(),
+                    upgrade=True,
+                    python_executable=target_python,
+                )
+            progress.update(1)
+            if not skip_verify:
+                _verify_installed(entry, python_executable=target_python)
+                progress.update(1)
         click.echo(f"Upgraded plugin '{entry.name}' ({_redact_url(target)}).")
     except Exception as exc:
         _raise_click_error(exc)
