@@ -4,6 +4,7 @@ import datetime
 import importlib.metadata
 import json
 import os
+import pathlib
 import shlex
 import sys
 import termios
@@ -861,20 +862,153 @@ def user_secret_delete(name):
 cli.add_command(user_secret, name="secrets")
 
 
-# ── SSH Key ─────────────────────────────────────────────────
+# ── Managed SSH public keys ─────────────────────────────────
 
 
 @user.group(cls=AliasedGroup, name="ssh-key")
 def user_ssh_key():
-    """Manage user SSH public key."""
+    """Manage user-owned SSH public keys used for direct SSH."""
     pass
 
 
-@user_ssh_key.command(name="get")
+def _read_ssh_public_key(
+    public_key: typing.Optional[str], public_key_file: typing.Optional[str]
+) -> str:
+    if public_key is not None and public_key_file is not None:
+        raise click.ClickException(
+            "Use either --public-key or --public-key-file, not both."
+        )
+    if public_key_file is not None:
+        path = pathlib.Path(public_key_file)
+        if path.suffix.lower() != ".pub":
+            raise click.ClickException(
+                "--public-key-file must point to a public .pub file, never a private key."
+            )
+        try:
+            public_key = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise click.ClickException(
+                f"Could not read public-key file: {exc}"
+            ) from exc
+    if public_key is None:
+        raise click.ClickException(
+            "Provide the public key with --public-key or --public-key-file."
+        )
+    value = public_key.strip()
+    if not value:
+        raise click.ClickException("SSH public key cannot be empty.")
+    if "PRIVATE KEY" in value:
+        raise click.ClickException(
+            "Private keys are not accepted. Provide only the public .pub value."
+        )
+    if "\n" in value or "\r" in value:
+        raise click.ClickException("Provide exactly one SSH public key.")
+    return value
+
+
+def _parse_ssh_expiry(
+    ctx: click.Context,
+    param: typing.Optional[click.Parameter],
+    value: typing.Optional[str],
+) -> typing.Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise click.BadParameter(
+            "must be Unix seconds or an ISO 8601 datetime", ctx=ctx, param=param
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return int(parsed.timestamp())
+
+
+@user_ssh_key.command(name="list", aliases=["ls"])
 @click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_get(json_mode):
+def user_ssh_key_list(json_mode):
+    """List managed SSH public keys."""
     client = get_client()
     try:
+        keys = client.user.list_ssh_keys()
+        if json_mode:
+            click.echo(
+                json.dumps([key.model_dump(mode="json") for key in keys], indent=2)
+            )
+        else:
+            headers = [
+                "ID",
+                "Name",
+                "Algorithm",
+                "Fingerprint",
+                "Status",
+                "Created",
+                "Last Used",
+                "Expires",
+            ]
+            rows = [
+                [
+                    key.id,
+                    key.name,
+                    key.algorithm,
+                    key.fingerprint,
+                    key.status.value,
+                    unix_timestamp_to_datetime(key.created),
+                    unix_timestamp_to_datetime(key.last_used),
+                    unix_timestamp_to_datetime(key.expires),
+                ]
+                for key in keys
+            ]
+            print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_ssh_key.command(name="get")
+@click.argument("ssh_key_id", required=False)
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_ssh_key_get(ssh_key_id, json_mode):
+    """Get a managed key by ID, or the legacy singular key when ID is omitted."""
+    client = get_client()
+    try:
+        if ssh_key_id is not None:
+            info = client.user.get_managed_ssh_key(ssh_key_id)
+            if json_mode:
+                click.echo(format_json(info))
+            else:
+                headers = [
+                    "ID",
+                    "Name",
+                    "Algorithm",
+                    "Fingerprint",
+                    "Status",
+                    "Created",
+                    "Updated",
+                    "Last Used",
+                    "Expires",
+                    "Revoked",
+                ]
+                rows = [
+                    [
+                        info.id,
+                        info.name,
+                        info.algorithm,
+                        info.fingerprint,
+                        info.status.value,
+                        unix_timestamp_to_datetime(info.created),
+                        unix_timestamp_to_datetime(info.updated),
+                        unix_timestamp_to_datetime(info.last_used),
+                        unix_timestamp_to_datetime(info.expires),
+                        unix_timestamp_to_datetime(info.revoked),
+                    ]
+                ]
+                print_docker_style_table(headers, rows)
+            return
+
         info = client.user.get_ssh_key()
         if json_mode:
             click.echo(format_json(info))
@@ -882,6 +1016,120 @@ def user_ssh_key_get(json_mode):
             headers = ["Public Key", "Created"]
             rows = [[info.public_key, unix_timestamp_to_datetime(info.created)]]
             print_docker_style_table(headers, rows)
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_ssh_key.command(name="add", aliases=["create"])
+@click.option("--name", required=True, help="A unique, recognizable device name.")
+@click.option("--public-key", default=None, help="One OpenSSH public-key value.")
+@click.option(
+    "--public-key-file",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    default=None,
+    help="Read the public key from a .pub file.",
+)
+@click.option(
+    "--expires",
+    callback=_parse_ssh_expiry,
+    default=None,
+    help="Optional expiry as Unix seconds or ISO 8601 (naive values are UTC).",
+)
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_ssh_key_add(name, public_key, public_key_file, expires, json_mode):
+    """Add a managed SSH public key.
+
+    A user-owned key authorizes direct SSH through all current organization
+    memberships. Morph never asks for or stores the corresponding private key.
+    """
+    key_value = _read_ssh_public_key(public_key, public_key_file)
+    client = get_client()
+    try:
+        with Spinner(
+            text="Adding SSH public key...",
+            success_text="SSH public key added",
+            success_emoji="🔐",
+        ):
+            info = client.user.add_ssh_key(
+                name=name, public_key=key_value, expires=expires
+            )
+        if json_mode:
+            click.echo(format_json(info))
+        else:
+            click.secho("SSH public key added.", fg="green")
+            click.echo(f"ID: {info.id}")
+            click.echo(f"Name: {info.name}")
+            click.echo(f"Fingerprint: {info.fingerprint}")
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_ssh_key.command(name="edit")
+@click.argument("ssh_key_id")
+@click.option("--name", default=None, help="New recognizable device name.")
+@click.option(
+    "--expires",
+    callback=_parse_ssh_expiry,
+    default=None,
+    help="New expiry as Unix seconds or ISO 8601.",
+)
+@click.option(
+    "--clear-expiry",
+    is_flag=True,
+    default=False,
+    help="Remove the key's existing expiry.",
+)
+@click.option("--json", "json_mode", is_flag=True, default=False)
+def user_ssh_key_edit(ssh_key_id, name, expires, clear_expiry, json_mode):
+    """Edit a managed key's name or expiry; public material is immutable."""
+    if name is None and expires is None and not clear_expiry:
+        raise click.ClickException(
+            "Provide at least one of --name, --expires, or --clear-expiry."
+        )
+    if expires is not None and clear_expiry:
+        raise click.ClickException("Use either --expires or --clear-expiry, not both.")
+
+    client = get_client()
+    try:
+        with Spinner(
+            text="Editing SSH public key...",
+            success_text="SSH public key edited",
+            success_emoji="🔐",
+        ):
+            info = client.user.edit_ssh_key(
+                ssh_key_id, name=name, expires=expires, clear_expiry=clear_expiry
+            )
+        if json_mode:
+            click.echo(format_json(info))
+        else:
+            click.secho("SSH public key edited.", fg="green")
+            click.echo(f"ID: {info.id}")
+            click.echo(f"Name: {info.name}")
+            click.echo(f"Expires: {unix_timestamp_to_datetime(info.expires)}")
+    except Exception as e:
+        handle_api_error(e)
+
+
+@user_ssh_key.command(name="revoke", aliases=["rm"])
+@click.argument("ssh_key_id")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def user_ssh_key_revoke(ssh_key_id, yes):
+    """Revoke one managed key across all current organization memberships."""
+    if not yes:
+        click.confirm(
+            "Revoke this key for direct SSH across all current organization "
+            "memberships? Browser terminal and instance credentials are separate.",
+            abort=True,
+        )
+    client = get_client()
+    try:
+        with Spinner(
+            text="Revoking SSH public key...",
+            success_text="SSH public key revoked",
+            success_emoji="🗑",
+        ):
+            client.user.revoke_ssh_key(ssh_key_id)
+        click.secho("SSH public key revoked.", fg="green")
     except Exception as e:
         handle_api_error(e)
 
@@ -894,6 +1142,10 @@ def user_ssh_key_get(json_mode):
 )
 @click.option("--json", "json_mode", is_flag=True, default=False)
 def user_ssh_key_set(public_key, json_mode):
+    """Set the legacy singular compatibility key.
+
+    Prefer ``add`` for safe overlap rotation with managed keys.
+    """
     client = get_client()
     try:
         with Spinner(
@@ -901,7 +1153,7 @@ def user_ssh_key_set(public_key, json_mode):
             success_text="SSH key updated",
             success_emoji="🔐",
         ):
-            info = client.user.update_ssh_key(public_key)
+            info = client.user.set_ssh_key(public_key)
         if json_mode:
             click.echo(format_json(info))
         else:

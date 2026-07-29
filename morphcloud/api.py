@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
 import httpx
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 # Import Rich for fancy printing
 from rich.console import Console
@@ -52,9 +52,28 @@ class ApiError(Exception):
     def __init__(self, message: str, status_code: int, response_body: str):
         self.status_code = status_code
         self.response_body = response_body
+        self.error_code: typing.Optional[str] = None
+        self.detail: typing.Optional[str] = None
+        try:
+            payload = json.loads(response_body)
+            if isinstance(payload, dict):
+                error_code = payload.get("error_code")
+                detail = payload.get("detail")
+                if isinstance(error_code, str):
+                    self.error_code = error_code
+                if isinstance(detail, str):
+                    self.detail = detail
+        except (TypeError, ValueError):
+            pass
         super().__init__(
             f"{message}\nStatus Code: {status_code}\nResponse Body: {response_body}"
         )
+
+    def as_managed_ssh_key_error(self) -> typing.Optional["ManagedSSHKeyError"]:
+        """Return a typed managed-key error when the response uses that contract."""
+        if self.error_code is None or self.detail is None:
+            return None
+        return ManagedSSHKeyError(error_code=self.error_code, detail=self.detail)
 
 
 class ApiClient(httpx.Client):
@@ -441,27 +460,145 @@ class UserAPI(BaseAPI):
         await self._client._async_http_client.delete(f"/user/secret/{secret_name}")
 
     # ────────────────────────────────
-    # SSH Key
+    # Managed SSH public keys
+    # ────────────────────────────────
+    def list_ssh_keys(self) -> typing.List["ManagedSSHKey"]:
+        """List all managed SSH public keys owned by the authenticated user."""
+        response = self._client._http_client.get("/user/ssh-keys")
+        return ManagedSSHKeyList.model_validate(response.json()).data
+
+    async def alist_ssh_keys(self) -> typing.List["ManagedSSHKey"]:
+        """Asynchronously list all managed SSH public keys owned by the user."""
+        response = await self._client._async_http_client.get("/user/ssh-keys")
+        return ManagedSSHKeyList.model_validate(response.json()).data
+
+    def get_managed_ssh_key(self, ssh_key_id: str) -> "ManagedSSHKey":
+        """Get one managed SSH public key by its stable ID."""
+        response = self._client._http_client.get(f"/user/ssh-keys/{ssh_key_id}")
+        return ManagedSSHKey.model_validate(response.json())
+
+    async def aget_managed_ssh_key(self, ssh_key_id: str) -> "ManagedSSHKey":
+        """Asynchronously get one managed SSH public key by its stable ID."""
+        response = await self._client._async_http_client.get(
+            f"/user/ssh-keys/{ssh_key_id}"
+        )
+        return ManagedSSHKey.model_validate(response.json())
+
+    def add_ssh_key(
+        self,
+        name: str,
+        public_key: str,
+        expires: typing.Optional[int] = None,
+    ) -> "ManagedSSHKey":
+        """Add a named SSH public key, optionally expiring at Unix seconds."""
+        request_body = ManagedSSHKeyCreateRequest(
+            name=name, public_key=public_key, expires=expires
+        )
+        response = self._client._http_client.post(
+            "/user/ssh-keys", json=request_body.model_dump(exclude_none=True)
+        )
+        return ManagedSSHKey.model_validate(response.json())
+
+    async def aadd_ssh_key(
+        self,
+        name: str,
+        public_key: str,
+        expires: typing.Optional[int] = None,
+    ) -> "ManagedSSHKey":
+        """Asynchronously add a named SSH public key."""
+        request_body = ManagedSSHKeyCreateRequest(
+            name=name, public_key=public_key, expires=expires
+        )
+        response = await self._client._async_http_client.post(
+            "/user/ssh-keys", json=request_body.model_dump(exclude_none=True)
+        )
+        return ManagedSSHKey.model_validate(response.json())
+
+    def edit_ssh_key(
+        self,
+        ssh_key_id: str,
+        *,
+        name: typing.Optional[str] = None,
+        expires: typing.Optional[int] = None,
+        clear_expiry: bool = False,
+    ) -> "ManagedSSHKey":
+        """Edit a key's name or expiry without changing its public material.
+
+        Pass ``clear_expiry=True`` to send an explicit JSON null for ``expires``.
+        """
+        request_body = _managed_ssh_key_patch_request(
+            name=name, expires=expires, clear_expiry=clear_expiry
+        )
+        response = self._client._http_client.patch(
+            f"/user/ssh-keys/{ssh_key_id}",
+            json=request_body.model_dump(exclude_unset=True),
+        )
+        return ManagedSSHKey.model_validate(response.json())
+
+    async def aedit_ssh_key(
+        self,
+        ssh_key_id: str,
+        *,
+        name: typing.Optional[str] = None,
+        expires: typing.Optional[int] = None,
+        clear_expiry: bool = False,
+    ) -> "ManagedSSHKey":
+        """Asynchronously edit a key's name or expiry."""
+        request_body = _managed_ssh_key_patch_request(
+            name=name, expires=expires, clear_expiry=clear_expiry
+        )
+        response = await self._client._async_http_client.patch(
+            f"/user/ssh-keys/{ssh_key_id}",
+            json=request_body.model_dump(exclude_unset=True),
+        )
+        return ManagedSSHKey.model_validate(response.json())
+
+    def revoke_ssh_key(self, ssh_key_id: str) -> None:
+        """Permanently revoke one managed SSH public key by stable ID."""
+        self._client._http_client.delete(f"/user/ssh-keys/{ssh_key_id}")
+
+    async def arevoke_ssh_key(self, ssh_key_id: str) -> None:
+        """Asynchronously revoke one managed SSH public key by stable ID."""
+        await self._client._async_http_client.delete(f"/user/ssh-keys/{ssh_key_id}")
+
+    # ────────────────────────────────
+    # Legacy singular SSH key compatibility
     # ────────────────────────────────
     def get_ssh_key(self) -> "UserSSHKey":
+        """Get the legacy singular key through its compatibility endpoint."""
         response = self._client._http_client.get("/user/ssh-key")
         return UserSSHKey.model_validate(response.json())
 
     async def aget_ssh_key(self) -> "UserSSHKey":
+        """Asynchronously get the legacy singular compatibility key."""
         response = await self._client._async_http_client.get("/user/ssh-key")
         return UserSSHKey.model_validate(response.json())
 
     def update_ssh_key(self, public_key: str) -> "UserSSHKey":
+        """Set the legacy singular compatibility key.
+
+        New integrations should use :meth:`add_ssh_key`, then revoke the old key
+        only after verifying the replacement.
+        """
         response = self._client._http_client.put(
             "/user/ssh-key", json={"public_key": public_key}
         )
         return UserSSHKey.model_validate(response.json())
 
     async def aupdate_ssh_key(self, public_key: str) -> "UserSSHKey":
+        """Asynchronously set the legacy singular compatibility key."""
         response = await self._client._async_http_client.put(
             "/user/ssh-key", json={"public_key": public_key}
         )
         return UserSSHKey.model_validate(response.json())
+
+    def set_ssh_key(self, public_key: str) -> "UserSSHKey":
+        """Compatibility alias for :meth:`update_ssh_key`."""
+        return self.update_ssh_key(public_key)
+
+    async def aset_ssh_key(self, public_key: str) -> "UserSSHKey":
+        """Async compatibility alias for :meth:`aupdate_ssh_key`."""
+        return await self.aupdate_ssh_key(public_key)
 
     # ────────────────────────────────
     # Usage
@@ -535,8 +672,83 @@ class CreateSecretRequest(BaseModel):
 
 
 class UserSSHKey(BaseModel):
+    """Legacy singular user SSH-key response."""
+
     public_key: str
     created: int
+
+
+class ManagedSSHKeyStatus(StrEnum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+    MIGRATION_WARNING = "migration_warning"
+
+
+class ManagedSSHKey(BaseModel):
+    """A user-owned SSH public key accepted through current org memberships."""
+
+    object: typing.Literal["user_ssh_key"] = "user_ssh_key"
+    id: str
+    name: str
+    public_key: str
+    fingerprint: str
+    algorithm: str
+    created: int
+    updated: int
+    expires: typing.Optional[int] = None
+    last_used: typing.Optional[int] = None
+    revoked: typing.Optional[int] = None
+    status: ManagedSSHKeyStatus
+    migrated_from_legacy: bool = False
+    migration_warning: bool = False
+
+
+class ManagedSSHKeyList(BaseModel):
+    object: typing.Literal["list"] = "list"
+    data: typing.List[ManagedSSHKey]
+
+
+class ManagedSSHKeyCreateRequest(BaseModel):
+    name: str
+    public_key: str
+    expires: typing.Optional[int] = None
+
+
+class ManagedSSHKeyPatchRequest(BaseModel):
+    name: typing.Optional[str] = None
+    expires: typing.Optional[int] = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "ManagedSSHKeyPatchRequest":
+        if not self.model_fields_set:
+            raise ValueError("at least one of name or expires must be provided")
+        return self
+
+
+class ManagedSSHKeyError(BaseModel):
+    """Stable machine-readable error returned by managed-key endpoints."""
+
+    detail: str
+    error_code: str
+
+
+def _managed_ssh_key_patch_request(
+    *,
+    name: typing.Optional[str],
+    expires: typing.Optional[int],
+    clear_expiry: bool,
+) -> ManagedSSHKeyPatchRequest:
+    if clear_expiry and expires is not None:
+        raise ValueError("expires and clear_expiry cannot be used together")
+    values: typing.Dict[str, typing.Any] = {}
+    if name is not None:
+        values["name"] = name
+    if clear_expiry:
+        values["expires"] = None
+    elif expires is not None:
+        values["expires"] = expires
+    return ManagedSSHKeyPatchRequest(**values)
 
 
 class UserInstanceUsage(BaseModel):

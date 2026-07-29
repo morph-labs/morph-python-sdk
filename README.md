@@ -689,15 +689,48 @@ morphcloud user api-key create
 # Delete an API key
 morphcloud user api-key delete <api_key_id>
 
-# Get your SSH public key
-morphcloud user ssh-key get
+# List named SSH public keys (fingerprints, expiry, and status)
+morphcloud user ssh-key list
 
-# Set/update your SSH public key
+# Add a user-owned public key; never provide the private key
+morphcloud user ssh-key add --name "Work laptop" --public-key-file ~/.ssh/id_ed25519.pub
+
+# Inspect and edit one managed key by its stable ID
+morphcloud user ssh-key get <ssh_key_id>
+morphcloud user ssh-key edit <ssh_key_id> --expires 2030-01-01T00:00:00Z
+
+# Revoke only that key across your current organization memberships
+morphcloud user ssh-key revoke <ssh_key_id>
+
+# Legacy singular compatibility commands remain available
+morphcloud user ssh-key get
 morphcloud user ssh-key set --public-key "ssh-rsa AAAA..."
 
 # View usage (3-hour lookback by default; supports 30m, 3h, 7d, etc.)
 morphcloud user usage --interval 3h
 ```
+
+The same managed-key lifecycle is typed in the SDK, with async methods using the
+usual `a` prefix (`alist_ssh_keys`, `aadd_ssh_key`, and so on):
+
+```python
+from pathlib import Path
+
+from morphcloud.api import MorphCloudClient
+
+client = MorphCloudClient()
+key = client.user.add_ssh_key(
+    name="Work laptop",
+    public_key=Path("~/.ssh/id_ed25519.pub").expanduser().read_text().strip(),
+)
+key = client.user.get_managed_ssh_key(key.id)
+key = client.user.edit_ssh_key(key.id, name="Work laptop (2026)")
+client.user.revoke_ssh_key(key.id)
+```
+
+Managed account public keys are separate from Morph-generated instance
+credentials and browser terminal access. A managed key is owned by one user and
+authorizes direct SSH through that user's current organization memberships.
 
 ## Advanced Features
 
