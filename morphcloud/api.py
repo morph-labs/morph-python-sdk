@@ -1,7 +1,4 @@
-# morphcloud/api.py
-
 from __future__ import annotations
-
 import asyncio
 import fnmatch
 import hashlib
@@ -11,40 +8,28 @@ import time
 import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
-
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
-
-# Import Rich for fancy printing
 from rich.console import Console
-
 from morphcloud._http_transport import build_async_http_transport, build_http_transport
 from morphcloud._utils import StrEnum
 from morphcloud.config import resolve_settings
-
 if typing.TYPE_CHECKING:
     from morphcloud.devbox.client import AsyncDevboxClient, DevboxClient
     from morphcloud.simple_index.client import SimpleIndexClient
     from morphcloud.volumes.client import VolumesClient
-
-# Global console instance
 console = Console()
-
 
 @lru_cache
 def _dummy_key():
     import io
-
     import paramiko
-
     key = paramiko.RSAKey.generate(1024)
     key_file = io.StringIO()
     key.write_private_key(key_file)
     key_file.seek(0)
     pkey = paramiko.RSAKey.from_private_key(key_file)
-
     return pkey
-
 
 class ApiError(Exception):
     """Custom exception for Morph API errors that includes the response body"""
@@ -57,26 +42,24 @@ class ApiError(Exception):
         try:
             payload = json.loads(response_body)
             if isinstance(payload, dict):
-                error_code = payload.get("error_code")
-                detail = payload.get("detail")
+                error_code = payload.get('error_code')
+                detail = payload.get('detail')
                 if isinstance(error_code, str):
                     self.error_code = error_code
                 if isinstance(detail, str):
                     self.detail = detail
         except (TypeError, ValueError):
             pass
-        super().__init__(
-            f"{message}\nStatus Code: {status_code}\nResponse Body: {response_body}"
-        )
+        super().__init__(f'{message}\nStatus Code: {status_code}\nResponse Body: {response_body}')
 
-    def as_managed_ssh_key_error(self) -> typing.Optional["ManagedSSHKeyError"]:
+    def as_managed_ssh_key_error(self) -> typing.Optional['ManagedSSHKeyError']:
         """Return a typed managed-key error when the response uses that contract."""
         if self.error_code is None or self.detail is None:
             return None
         return ManagedSSHKeyError(error_code=self.error_code, detail=self.detail)
 
-
 class ApiClient(httpx.Client):
+
     def raise_for_status(self, response: httpx.Response) -> None:
         """Custom error handling that includes the response body in the error message"""
         if response.is_error:
@@ -84,7 +67,6 @@ class ApiClient(httpx.Client):
                 error_body = json.dumps(response.json(), indent=2)
             except Exception:
                 error_body = response.text
-
             message = f"HTTP Error {response.status_code} for url '{response.url}'"
             raise ApiError(message, response.status_code, error_body)
 
@@ -95,8 +77,8 @@ class ApiClient(httpx.Client):
             self.raise_for_status(response)
         return response
 
-
 class AsyncApiClient(httpx.AsyncClient):
+
     async def raise_for_status(self, response: httpx.Response) -> None:
         """Custom error handling that includes the response body in the error message"""
         if response.is_error:
@@ -104,7 +86,6 @@ class AsyncApiClient(httpx.AsyncClient):
                 error_body = json.dumps(response.json(), indent=2)
             except Exception:
                 error_body = response.text
-
             message = f"HTTP Error {response.status_code} for url '{response.url}'"
             raise ApiError(message, response.status_code, error_body)
 
@@ -115,100 +96,42 @@ class AsyncApiClient(httpx.AsyncClient):
             await self.raise_for_status(response)
         return response
 
-
 class TTL(BaseModel):
     """Represents the Time-To-Live configuration for an instance."""
-
-    ttl_seconds: typing.Optional[int] = Field(
-        None, description="Time in seconds until the action is triggered."
-    )
-    ttl_expire_at: typing.Optional[int] = Field(
-        None, description="Unix timestamp when the instance is set to expire."
-    )
-    ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = Field(
-        "stop", description="Action to take when TTL expires."
-    )
-
+    ttl_seconds: typing.Optional[int] = Field(None, description='Time in seconds until the action is triggered.')
+    ttl_expire_at: typing.Optional[int] = Field(None, description='Unix timestamp when the instance is set to expire.')
+    ttl_action: typing.Optional[typing.Literal['stop', 'pause']] = Field('stop', description='Action to take when TTL expires.')
 
 class SnapshotTTL(BaseModel):
     """Represents the retention policy for a snapshot."""
+    ttl_seconds: typing.Optional[int] = Field(None, description='Time in seconds until the snapshot expires.')
+    ttl_expire_at: typing.Optional[int] = Field(None, description='Unix timestamp when the snapshot is set to expire.')
 
-    ttl_seconds: typing.Optional[int] = Field(
-        None, description="Time in seconds until the snapshot expires."
-    )
-    ttl_expire_at: typing.Optional[int] = Field(
-        None, description="Unix timestamp when the snapshot is set to expire."
-    )
-
-
-def _validate_snapshot_ttl_seconds(
-    ttl_seconds: typing.Optional[int], *, allow_none: bool
-) -> None:
+def _validate_snapshot_ttl_seconds(ttl_seconds: typing.Optional[int], *, allow_none: bool) -> None:
     """Validate snapshot TTL values before sending them to the API."""
     if ttl_seconds is None:
         if allow_none:
             return
-        raise ValueError("ttl_seconds must be greater than zero")
+        raise ValueError('ttl_seconds must be greater than zero')
     if ttl_seconds <= 0:
-        raise ValueError("ttl_seconds must be greater than zero")
-
+        raise ValueError('ttl_seconds must be greater than zero')
 
 class WakeOn(BaseModel):
     """Represents the wake-on-event configuration for an instance."""
-
-    wake_on_ssh: bool = Field(
-        False, description="Whether the instance should wake on an SSH attempt."
-    )
-    wake_on_http: bool = Field(
-        False, description="Whether the instance should wake on an HTTP request."
-    )
-
+    wake_on_ssh: bool = Field(False, description='Whether the instance should wake on an SSH attempt.')
+    wake_on_http: bool = Field(False, description='Whether the instance should wake on an HTTP request.')
 
 class InstanceSshKey(BaseModel):
     """SSH key details for an instance."""
-
-    object: typing.Literal["instance_ssh_key"] = Field(
-        "instance_ssh_key", description="Object type, always 'instance_ssh_key'"
-    )
-    private_key: str = Field(..., description="SSH private key")
-    public_key: str = Field(..., description="SSH public key")
-    password: str = Field(..., description="SSH password")
-
+    object: typing.Literal['instance_ssh_key'] = Field('instance_ssh_key', description="Object type, always 'instance_ssh_key'")
+    private_key: str = Field(..., description='SSH private key')
+    public_key: str = Field(..., description='SSH public key')
+    password: str = Field(..., description='SSH password')
 
 class MorphCloudClient:
-    def __init__(
-        self,
-        api_key: typing.Optional[str] = None,
-        base_url: typing.Optional[str] = None,
-        profile: typing.Optional[str] = None,
-        api_host: typing.Optional[str] = None,
-        service_base_url: typing.Optional[str] = None,
-        volumes_base_url: typing.Optional[str] = None,
-        volumes_service_api_key: typing.Optional[str] = None,
-        admin_base_url: typing.Optional[str] = None,
-        db_base_url: typing.Optional[str] = None,
-        simple_index_base_url: typing.Optional[str] = None,
-        ssh_hostname: typing.Optional[str] = None,
-        ssh_port: typing.Optional[int] = None,
-        devbox_base_url: typing.Optional[str] = None,
-    ):
-        settings = resolve_settings(
-            profile=profile,
-            overrides={
-                "api_key": api_key,
-                "base_url": base_url,
-                "api_host": api_host,
-                "service_base_url": service_base_url,
-                "volumes_base_url": volumes_base_url,
-                "devbox_base_url": devbox_base_url,
-                "admin_base_url": admin_base_url,
-                "db_base_url": db_base_url,
-                "simple_index_base_url": simple_index_base_url,
-                "ssh_hostname": ssh_hostname,
-                "ssh_port": ssh_port,
-            },
-        )
 
+    def __init__(self, api_key: typing.Optional[str]=None, base_url: typing.Optional[str]=None, profile: typing.Optional[str]=None, api_host: typing.Optional[str]=None, service_base_url: typing.Optional[str]=None, volumes_base_url: typing.Optional[str]=None, volumes_service_api_key: typing.Optional[str]=None, admin_base_url: typing.Optional[str]=None, db_base_url: typing.Optional[str]=None, simple_index_base_url: typing.Optional[str]=None, ssh_hostname: typing.Optional[str]=None, ssh_port: typing.Optional[int]=None, devbox_base_url: typing.Optional[str]=None):
+        settings = resolve_settings(profile=profile, overrides={'api_key': api_key, 'base_url': base_url, 'api_host': api_host, 'service_base_url': service_base_url, 'volumes_base_url': volumes_base_url, 'devbox_base_url': devbox_base_url, 'admin_base_url': admin_base_url, 'db_base_url': db_base_url, 'simple_index_base_url': simple_index_base_url, 'ssh_hostname': ssh_hostname, 'ssh_port': ssh_port})
         self.base_url = settings.base_url
         self.api_key = settings.api_key
         self.api_host = settings.api_host
@@ -216,9 +139,7 @@ class MorphCloudClient:
         self.ssh_port = settings.ssh_port
         self.service_base_url = settings.service_base_url
         self.volumes_base_url = settings.volumes_base_url
-        self.volumes_service_api_key = volumes_service_api_key or os.environ.get(
-            "MORPH_VOLUMES_SERVICE_API_KEY"
-        )
+        self.volumes_service_api_key = volumes_service_api_key or os.environ.get('MORPH_VOLUMES_SERVICE_API_KEY')
         self.devbox_base_url = settings.devbox_base_url
         self.admin_base_url = settings.admin_base_url
         self.db_base_url = settings.db_base_url
@@ -229,13 +150,11 @@ class MorphCloudClient:
         self._volumes_client = None
         self._simple_index_client = None
         if not self.api_key:
-            raise ValueError(
-                "API key must be provided or set in MORPH_API_KEY environment variable"
-            )
+            raise ValueError('API key must be provided or set in MORPH_API_KEY environment variable')
 
         def _env_int(name: str, default: int) -> int:
             value = os.environ.get(name)
-            if value is None or value == "":
+            if value is None or value == '':
                 return default
             try:
                 return int(value)
@@ -244,41 +163,19 @@ class MorphCloudClient:
 
         def _env_float(name: str, default: float) -> float:
             value = os.environ.get(name)
-            if value is None or value == "":
+            if value is None or value == '':
                 return default
             try:
                 return float(value)
             except Exception:
                 return default
-
-        # Always retry once on transient transport errors for instance.exec/instance.aexec.
-        # Use `MORPH_EXEC_RETRY_BACKOFF_S` to tune the (small) backoff.
         self._exec_retries = 1
-        self._exec_retry_backoff_s = _env_float("MORPH_EXEC_RETRY_BACKOFF_S", 0.05)
+        self._exec_retry_backoff_s = _env_float('MORPH_EXEC_RETRY_BACKOFF_S', 0.05)
         transport = build_http_transport()
         async_transport = build_async_http_transport()
-
-        self._http_client = ApiClient(
-            base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=None,
-            transport=transport,
-        )
-        self._async_http_client = AsyncApiClient(
-            base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=None,
-            transport=async_transport,
-        )
-
+        self._http_client = ApiClient(base_url=self.base_url, headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}, timeout=None, transport=transport)
+        self._async_http_client = AsyncApiClient(base_url=self.base_url, headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}, timeout=None, transport=async_transport)
         self._load_sdk_plugins()
-        # Ensure first-party clients win even if an external plugin attempted to attach them.
         self._devbox_client = None
         self._devbox_async_client = None
         self._simple_index_client = None
@@ -286,11 +183,8 @@ class MorphCloudClient:
     def _load_sdk_plugins(self):
         """Load SDK plugins from entry points."""
         import importlib.metadata
-
         try:
-            plugin_entry_points = importlib.metadata.entry_points(
-                group="morphcloud.sdk_plugins"
-            )
+            plugin_entry_points = importlib.metadata.entry_points(group='morphcloud.sdk_plugins')
             for entry_point in plugin_entry_points:
                 plugin_loader_func = entry_point.load()
                 plugin_loader_func(self)
@@ -310,10 +204,9 @@ class MorphCloudClient:
         return ImageAPI(self)
 
     @property
-    def devbox(self) -> "DevboxClient":
+    def devbox(self) -> 'DevboxClient':
         if self._devbox_client is None:
             from morphcloud.devbox.client import DevboxClient
-
             client = DevboxClient(token=self.api_key, base_url=self.devbox_base_url)
             client.ssh_hostname = self.ssh_hostname
             client.ssh_port = self.ssh_port
@@ -321,320 +214,219 @@ class MorphCloudClient:
         return self._devbox_client
 
     @devbox.setter
-    def devbox(self, value: "DevboxClient") -> None:
+    def devbox(self, value: 'DevboxClient') -> None:
         self._devbox_client = value
 
     @property
-    def devbox_async(self) -> "AsyncDevboxClient":
+    def devbox_async(self) -> 'AsyncDevboxClient':
         if self._devbox_async_client is None:
             from morphcloud.devbox.client import AsyncDevboxClient
-
-            client = AsyncDevboxClient(
-                token=self.api_key, base_url=self.devbox_base_url
-            )
+            client = AsyncDevboxClient(token=self.api_key, base_url=self.devbox_base_url)
             client.ssh_hostname = self.ssh_hostname
             client.ssh_port = self.ssh_port
             self._devbox_async_client = client
         return self._devbox_async_client
 
     @devbox_async.setter
-    def devbox_async(self, value: "AsyncDevboxClient") -> None:
+    def devbox_async(self, value: 'AsyncDevboxClient') -> None:
         self._devbox_async_client = value
 
-    # Add this property to the MorphCloudClient class
     @property
     def computers(self):
         """Deprecated: Computer API has been removed."""
-        raise AttributeError("The Computer API has been removed from the SDK.")
+        raise AttributeError('The Computer API has been removed from the SDK.')
 
     @property
-    def user(self) -> "UserAPI":
+    def user(self) -> 'UserAPI':
         """Access the API for the current authenticated user."""
         return UserAPI(self)
 
     @property
-    def volumes(self) -> "VolumesClient":
+    def volumes(self) -> 'VolumesClient':
         if self._volumes_client is None:
             from morphcloud.volumes.client import VolumesClient
-
             self._volumes_client = VolumesClient(self)
         return self._volumes_client
 
     @volumes.setter
-    def volumes(self, value: "VolumesClient") -> None:
+    def volumes(self, value: 'VolumesClient') -> None:
         self._volumes_client = value
 
     @property
-    def simple_index(self) -> "SimpleIndexClient":
+    def simple_index(self) -> 'SimpleIndexClient':
         if self._simple_index_client is None:
             from morphcloud.simple_index.client import SimpleIndexClient
-
             self._simple_index_client = SimpleIndexClient(self)
         return self._simple_index_client
 
     @simple_index.setter
-    def simple_index(self, value: "SimpleIndexClient") -> None:
+    def simple_index(self, value: 'SimpleIndexClient') -> None:
         self._simple_index_client = value
 
-
 class BaseAPI:
+
     def __init__(self, client: MorphCloudClient):
         self._client = client
-
 
 class UserAPI(BaseAPI):
     """API methods for the authenticated user (/user/*)."""
 
-    # ────────────────────────────────
-    # API Keys
-    # ────────────────────────────────
-    def list_api_keys(self) -> typing.List["APIKey"]:
-        response = self._client._http_client.get("/user/api-key")
-        return [APIKey.model_validate(item) for item in response.json()["data"]]
+    def list_api_keys(self) -> typing.List['APIKey']:
+        response = self._client._http_client.get('/user/api-key')
+        return [APIKey.model_validate(item) for item in response.json()['data']]
 
-    async def alist_api_keys(self) -> typing.List["APIKey"]:
-        response = await self._client._async_http_client.get("/user/api-key")
-        return [APIKey.model_validate(item) for item in response.json()["data"]]
+    async def alist_api_keys(self) -> typing.List['APIKey']:
+        response = await self._client._async_http_client.get('/user/api-key')
+        return [APIKey.model_validate(item) for item in response.json()['data']]
 
-    def create_api_key(self) -> "CreateAPIKeyResponse":
-        response = self._client._http_client.post("/user/api-key")
+    def create_api_key(self) -> 'CreateAPIKeyResponse':
+        response = self._client._http_client.post('/user/api-key')
         return CreateAPIKeyResponse.model_validate(response.json())
 
-    async def acreate_api_key(self) -> "CreateAPIKeyResponse":
-        response = await self._client._async_http_client.post("/user/api-key")
+    async def acreate_api_key(self) -> 'CreateAPIKeyResponse':
+        response = await self._client._async_http_client.post('/user/api-key')
         return CreateAPIKeyResponse.model_validate(response.json())
 
     def delete_api_key(self, api_key_id: str) -> None:
-        self._client._http_client.delete(f"/user/api-key/{api_key_id}")
+        self._client._http_client.delete(f'/user/api-key/{api_key_id}')
 
     async def adelete_api_key(self, api_key_id: str) -> None:
-        await self._client._async_http_client.delete(f"/user/api-key/{api_key_id}")
+        await self._client._async_http_client.delete(f'/user/api-key/{api_key_id}')
 
-    # ────────────────────────────────
-    # Secrets
-    # ────────────────────────────────
-    def list_secrets(self) -> typing.List["Secret"]:
-        response = self._client._http_client.get("/user/secret")
+    def list_secrets(self) -> typing.List['Secret']:
+        response = self._client._http_client.get('/user/secret')
         secret_list = SecretList.model_validate(response.json())
         return secret_list.data
 
-    async def alist_secrets(self) -> typing.List["Secret"]:
-        response = await self._client._async_http_client.get("/user/secret")
+    async def alist_secrets(self) -> typing.List['Secret']:
+        response = await self._client._async_http_client.get('/user/secret')
         secret_list = SecretList.model_validate(response.json())
         return secret_list.data
 
-    def create_secret(
-        self,
-        name: str,
-        value: str,
-        description: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> "Secret":
-        request_body = CreateSecretRequest(
-            name=name, value=value, description=description, metadata=metadata
-        )
-        response = self._client._http_client.post(
-            "/user/secret", json=request_body.model_dump(exclude_none=True)
-        )
+    def create_secret(self, name: str, value: str, description: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None) -> 'Secret':
+        request_body = CreateSecretRequest(name=name, value=value, description=description, metadata=metadata)
+        response = self._client._http_client.post('/user/secret', json=request_body.model_dump(exclude_none=True))
         return Secret.model_validate(response.json())
 
-    async def acreate_secret(
-        self,
-        name: str,
-        value: str,
-        description: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> "Secret":
-        request_body = CreateSecretRequest(
-            name=name, value=value, description=description, metadata=metadata
-        )
-        response = await self._client._async_http_client.post(
-            "/user/secret", json=request_body.model_dump(exclude_none=True)
-        )
+    async def acreate_secret(self, name: str, value: str, description: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None) -> 'Secret':
+        request_body = CreateSecretRequest(name=name, value=value, description=description, metadata=metadata)
+        response = await self._client._async_http_client.post('/user/secret', json=request_body.model_dump(exclude_none=True))
         return Secret.model_validate(response.json())
 
     def delete_secret(self, secret_name: str) -> None:
-        self._client._http_client.delete(f"/user/secret/{secret_name}")
+        self._client._http_client.delete(f'/user/secret/{secret_name}')
 
     async def adelete_secret(self, secret_name: str) -> None:
-        await self._client._async_http_client.delete(f"/user/secret/{secret_name}")
+        await self._client._async_http_client.delete(f'/user/secret/{secret_name}')
 
-    # ────────────────────────────────
-    # Managed SSH public keys
-    # ────────────────────────────────
-    def list_ssh_keys(self) -> typing.List["ManagedSSHKey"]:
+    def list_ssh_keys(self) -> typing.List['ManagedSSHKey']:
         """List all managed SSH public keys owned by the authenticated user."""
-        response = self._client._http_client.get("/user/ssh-keys")
+        response = self._client._http_client.get('/user/ssh-keys')
         return ManagedSSHKeyList.model_validate(response.json()).data
 
-    async def alist_ssh_keys(self) -> typing.List["ManagedSSHKey"]:
+    async def alist_ssh_keys(self) -> typing.List['ManagedSSHKey']:
         """Asynchronously list all managed SSH public keys owned by the user."""
-        response = await self._client._async_http_client.get("/user/ssh-keys")
+        response = await self._client._async_http_client.get('/user/ssh-keys')
         return ManagedSSHKeyList.model_validate(response.json()).data
 
-    def get_managed_ssh_key(self, ssh_key_id: str) -> "ManagedSSHKey":
+    def get_managed_ssh_key(self, ssh_key_id: str) -> 'ManagedSSHKey':
         """Get one managed SSH public key by its stable ID."""
-        response = self._client._http_client.get(f"/user/ssh-keys/{ssh_key_id}")
+        response = self._client._http_client.get(f'/user/ssh-keys/{ssh_key_id}')
         return ManagedSSHKey.model_validate(response.json())
 
-    async def aget_managed_ssh_key(self, ssh_key_id: str) -> "ManagedSSHKey":
+    async def aget_managed_ssh_key(self, ssh_key_id: str) -> 'ManagedSSHKey':
         """Asynchronously get one managed SSH public key by its stable ID."""
-        response = await self._client._async_http_client.get(
-            f"/user/ssh-keys/{ssh_key_id}"
-        )
+        response = await self._client._async_http_client.get(f'/user/ssh-keys/{ssh_key_id}')
         return ManagedSSHKey.model_validate(response.json())
 
-    def add_ssh_key(
-        self,
-        name: str,
-        public_key: str,
-        expires: typing.Optional[int] = None,
-    ) -> "ManagedSSHKey":
+    def add_ssh_key(self, name: str, public_key: str, expires: typing.Optional[int]=None) -> 'ManagedSSHKey':
         """Add a named SSH public key, optionally expiring at Unix seconds."""
-        request_body = ManagedSSHKeyCreateRequest(
-            name=name, public_key=public_key, expires=expires
-        )
-        response = self._client._http_client.post(
-            "/user/ssh-keys", json=request_body.model_dump(exclude_none=True)
-        )
+        request_body = ManagedSSHKeyCreateRequest(name=name, public_key=public_key, expires=expires)
+        response = self._client._http_client.post('/user/ssh-keys', json=request_body.model_dump(exclude_none=True))
         return ManagedSSHKey.model_validate(response.json())
 
-    async def aadd_ssh_key(
-        self,
-        name: str,
-        public_key: str,
-        expires: typing.Optional[int] = None,
-    ) -> "ManagedSSHKey":
+    async def aadd_ssh_key(self, name: str, public_key: str, expires: typing.Optional[int]=None) -> 'ManagedSSHKey':
         """Asynchronously add a named SSH public key."""
-        request_body = ManagedSSHKeyCreateRequest(
-            name=name, public_key=public_key, expires=expires
-        )
-        response = await self._client._async_http_client.post(
-            "/user/ssh-keys", json=request_body.model_dump(exclude_none=True)
-        )
+        request_body = ManagedSSHKeyCreateRequest(name=name, public_key=public_key, expires=expires)
+        response = await self._client._async_http_client.post('/user/ssh-keys', json=request_body.model_dump(exclude_none=True))
         return ManagedSSHKey.model_validate(response.json())
 
-    def edit_ssh_key(
-        self,
-        ssh_key_id: str,
-        *,
-        name: typing.Optional[str] = None,
-        expires: typing.Optional[int] = None,
-        clear_expiry: bool = False,
-    ) -> "ManagedSSHKey":
+    def edit_ssh_key(self, ssh_key_id: str, *, name: typing.Optional[str]=None, expires: typing.Optional[int]=None, clear_expiry: bool=False) -> 'ManagedSSHKey':
         """Edit a key's name or expiry without changing its public material.
 
         Pass ``clear_expiry=True`` to send an explicit JSON null for ``expires``.
         """
-        request_body = _managed_ssh_key_patch_request(
-            name=name, expires=expires, clear_expiry=clear_expiry
-        )
-        response = self._client._http_client.patch(
-            f"/user/ssh-keys/{ssh_key_id}",
-            json=request_body.model_dump(exclude_unset=True),
-        )
+        request_body = _managed_ssh_key_patch_request(name=name, expires=expires, clear_expiry=clear_expiry)
+        response = self._client._http_client.patch(f'/user/ssh-keys/{ssh_key_id}', json=request_body.model_dump(exclude_unset=True))
         return ManagedSSHKey.model_validate(response.json())
 
-    async def aedit_ssh_key(
-        self,
-        ssh_key_id: str,
-        *,
-        name: typing.Optional[str] = None,
-        expires: typing.Optional[int] = None,
-        clear_expiry: bool = False,
-    ) -> "ManagedSSHKey":
+    async def aedit_ssh_key(self, ssh_key_id: str, *, name: typing.Optional[str]=None, expires: typing.Optional[int]=None, clear_expiry: bool=False) -> 'ManagedSSHKey':
         """Asynchronously edit a key's name or expiry."""
-        request_body = _managed_ssh_key_patch_request(
-            name=name, expires=expires, clear_expiry=clear_expiry
-        )
-        response = await self._client._async_http_client.patch(
-            f"/user/ssh-keys/{ssh_key_id}",
-            json=request_body.model_dump(exclude_unset=True),
-        )
+        request_body = _managed_ssh_key_patch_request(name=name, expires=expires, clear_expiry=clear_expiry)
+        response = await self._client._async_http_client.patch(f'/user/ssh-keys/{ssh_key_id}', json=request_body.model_dump(exclude_unset=True))
         return ManagedSSHKey.model_validate(response.json())
 
     def revoke_ssh_key(self, ssh_key_id: str) -> None:
         """Permanently revoke one managed SSH public key by stable ID."""
-        self._client._http_client.delete(f"/user/ssh-keys/{ssh_key_id}")
+        self._client._http_client.delete(f'/user/ssh-keys/{ssh_key_id}')
 
     async def arevoke_ssh_key(self, ssh_key_id: str) -> None:
         """Asynchronously revoke one managed SSH public key by stable ID."""
-        await self._client._async_http_client.delete(f"/user/ssh-keys/{ssh_key_id}")
+        await self._client._async_http_client.delete(f'/user/ssh-keys/{ssh_key_id}')
 
-    # ────────────────────────────────
-    # Legacy singular SSH key compatibility
-    # ────────────────────────────────
-    def get_ssh_key(self) -> "UserSSHKey":
+    def get_ssh_key(self) -> 'UserSSHKey':
         """Get the legacy singular key through its compatibility endpoint."""
-        response = self._client._http_client.get("/user/ssh-key")
+        response = self._client._http_client.get('/user/ssh-key')
         return UserSSHKey.model_validate(response.json())
 
-    async def aget_ssh_key(self) -> "UserSSHKey":
+    async def aget_ssh_key(self) -> 'UserSSHKey':
         """Asynchronously get the legacy singular compatibility key."""
-        response = await self._client._async_http_client.get("/user/ssh-key")
+        response = await self._client._async_http_client.get('/user/ssh-key')
         return UserSSHKey.model_validate(response.json())
 
-    def update_ssh_key(self, public_key: str) -> "UserSSHKey":
+    def update_ssh_key(self, public_key: str) -> 'UserSSHKey':
         """Set the legacy singular compatibility key.
 
         New integrations should use :meth:`add_ssh_key`, then revoke the old key
         only after verifying the replacement.
         """
-        response = self._client._http_client.put(
-            "/user/ssh-key", json={"public_key": public_key}
-        )
+        response = self._client._http_client.put('/user/ssh-key', json={'public_key': public_key})
         return UserSSHKey.model_validate(response.json())
 
-    async def aupdate_ssh_key(self, public_key: str) -> "UserSSHKey":
+    async def aupdate_ssh_key(self, public_key: str) -> 'UserSSHKey':
         """Asynchronously set the legacy singular compatibility key."""
-        response = await self._client._async_http_client.put(
-            "/user/ssh-key", json={"public_key": public_key}
-        )
+        response = await self._client._async_http_client.put('/user/ssh-key', json={'public_key': public_key})
         return UserSSHKey.model_validate(response.json())
 
-    def set_ssh_key(self, public_key: str) -> "UserSSHKey":
+    def set_ssh_key(self, public_key: str) -> 'UserSSHKey':
         """Compatibility alias for :meth:`update_ssh_key`."""
         return self.update_ssh_key(public_key)
 
-    async def aset_ssh_key(self, public_key: str) -> "UserSSHKey":
+    async def aset_ssh_key(self, public_key: str) -> 'UserSSHKey':
         """Async compatibility alias for :meth:`aupdate_ssh_key`."""
         return await self.aupdate_ssh_key(public_key)
 
-    # ────────────────────────────────
-    # Usage
-    # ────────────────────────────────
-    def usage(self, interval: typing.Optional[str] = None) -> "UserUsageOverview":
-        params = {"interval": interval} if interval else None
-        response = self._client._http_client.get("/user/usage", params=params)
+    def usage(self, interval: typing.Optional[str]=None) -> 'UserUsageOverview':
+        params = {'interval': interval} if interval else None
+        response = self._client._http_client.get('/user/usage', params=params)
         return UserUsageOverview.model_validate(response.json())
 
-    async def ausage(
-        self, interval: typing.Optional[str] = None
-    ) -> "UserUsageOverview":
-        params = {"interval": interval} if interval else None
-        response = await self._client._async_http_client.get(
-            "/user/usage", params=params
-        )
+    async def ausage(self, interval: typing.Optional[str]=None) -> 'UserUsageOverview':
+        params = {'interval': interval} if interval else None
+        response = await self._client._async_http_client.get('/user/usage', params=params)
         return UserUsageOverview.model_validate(response.json())
-
 
 class ImageAPI(BaseAPI):
+
     def list(self) -> typing.List[Image]:
         """List all base images available to the user."""
-        response = self._client._http_client.get("/image")
-        return [
-            Image.model_validate(image)._set_api(self)
-            for image in response.json()["data"]
-        ]
+        response = self._client._http_client.get('/image')
+        return [Image.model_validate(image)._set_api(self) for image in response.json()['data']]
 
     async def alist(self) -> typing.List[Image]:
         """List all base images available to the user."""
-        response = await self._client._async_http_client.get("/image")
-        return [
-            Image.model_validate(image)._set_api(self)
-            for image in response.json()["data"]
-        ]
-
+        response = await self._client._async_http_client.get('/image')
+        return [Image.model_validate(image)._set_api(self) for image in response.json()['data']]
 
 class APIKey(BaseModel):
     id: str
@@ -642,13 +434,11 @@ class APIKey(BaseModel):
     created: int
     last_used: typing.Optional[int] = None
 
-
 class CreateAPIKeyResponse(BaseModel):
     id: str
     key: str
     key_prefix: str
     created: int
-
 
 class Secret(BaseModel):
     id: str
@@ -658,11 +448,9 @@ class Secret(BaseModel):
     created: int
     updated: int
 
-
 class SecretList(BaseModel):
-    object: typing.Literal["list"] = "list"
+    object: typing.Literal['list'] = 'list'
     data: typing.List[Secret]
-
 
 class CreateSecretRequest(BaseModel):
     name: str
@@ -670,25 +458,20 @@ class CreateSecretRequest(BaseModel):
     description: typing.Optional[str] = None
     metadata: typing.Optional[typing.Dict[str, str]] = None
 
-
 class UserSSHKey(BaseModel):
     """Legacy singular user SSH-key response."""
-
     public_key: str
     created: int
 
-
 class ManagedSSHKeyStatus(StrEnum):
-    ACTIVE = "active"
-    EXPIRED = "expired"
-    REVOKED = "revoked"
-    MIGRATION_WARNING = "migration_warning"
-
+    ACTIVE = 'active'
+    EXPIRED = 'expired'
+    REVOKED = 'revoked'
+    MIGRATION_WARNING = 'migration_warning'
 
 class ManagedSSHKey(BaseModel):
     """A user-owned SSH public key accepted through current org memberships."""
-
-    object: typing.Literal["user_ssh_key"] = "user_ssh_key"
+    object: typing.Literal['user_ssh_key'] = 'user_ssh_key'
     id: str
     name: str
     public_key: str
@@ -703,53 +486,41 @@ class ManagedSSHKey(BaseModel):
     migrated_from_legacy: bool = False
     migration_warning: bool = False
 
-
 class ManagedSSHKeyList(BaseModel):
-    object: typing.Literal["list"] = "list"
+    object: typing.Literal['list'] = 'list'
     data: typing.List[ManagedSSHKey]
-
 
 class ManagedSSHKeyCreateRequest(BaseModel):
     name: str
     public_key: str
     expires: typing.Optional[int] = None
 
-
 class ManagedSSHKeyPatchRequest(BaseModel):
     name: typing.Optional[str] = None
     expires: typing.Optional[int] = None
 
-    @model_validator(mode="after")
-    def require_change(self) -> "ManagedSSHKeyPatchRequest":
+    @model_validator(mode='after')
+    def require_change(self) -> 'ManagedSSHKeyPatchRequest':
         if not self.model_fields_set:
-            raise ValueError("at least one of name or expires must be provided")
+            raise ValueError('at least one of name or expires must be provided')
         return self
-
 
 class ManagedSSHKeyError(BaseModel):
     """Stable machine-readable error returned by managed-key endpoints."""
-
     detail: str
     error_code: str
 
-
-def _managed_ssh_key_patch_request(
-    *,
-    name: typing.Optional[str],
-    expires: typing.Optional[int],
-    clear_expiry: bool,
-) -> ManagedSSHKeyPatchRequest:
+def _managed_ssh_key_patch_request(*, name: typing.Optional[str], expires: typing.Optional[int], clear_expiry: bool) -> ManagedSSHKeyPatchRequest:
     if clear_expiry and expires is not None:
-        raise ValueError("expires and clear_expiry cannot be used together")
+        raise ValueError('expires and clear_expiry cannot be used together')
     values: typing.Dict[str, typing.Any] = {}
     if name is not None:
-        values["name"] = name
+        values['name'] = name
     if clear_expiry:
-        values["expires"] = None
+        values['expires'] = None
     elif expires is not None:
-        values["expires"] = expires
+        values['expires'] = expires
     return ManagedSSHKeyPatchRequest(**values)
-
 
 class UserInstanceUsage(BaseModel):
     instance_cpu_time: int
@@ -758,70 +529,51 @@ class UserInstanceUsage(BaseModel):
     period_start: int
     period_end: int
 
-
 class UserSnapshotUsage(BaseModel):
     snapshot_memory_time: int
     snapshot_disk_time: int
     period_start: int
     period_end: int
 
-
 class UserUsageOverview(BaseModel):
     instance: typing.List[UserInstanceUsage]
     snapshot: typing.List[UserSnapshotUsage]
     items: typing.List[str]
 
-
 class Image(BaseModel):
-    id: str = Field(
-        ..., description="Unique identifier for the base image, like img_xxxx"
-    )
-    object: typing.Literal["image"] = Field(
-        "image", description="Object type, always 'image'"
-    )
-    name: str = Field(..., description="Name of the base image")
-    description: typing.Optional[str] = Field(
-        None, description="Description of the base image"
-    )
-    disk_size: int = Field(..., description="Size of the base image in bytes")
-    created: int = Field(
-        ..., description="Unix timestamp of when the base image was created"
-    )
-
+    id: str = Field(..., description='Unique identifier for the base image, like img_xxxx')
+    object: typing.Literal['image'] = Field('image', description="Object type, always 'image'")
+    name: str = Field(..., description='Name of the base image')
+    description: typing.Optional[str] = Field(None, description='Description of the base image')
+    disk_size: int = Field(..., description='Size of the base image in bytes')
+    created: int = Field(..., description='Unix timestamp of when the base image was created')
     _api: ImageAPI = PrivateAttr()
 
     def _set_api(self, api: ImageAPI) -> Image:
         self._api = api
         return self
 
-
 class SnapshotStatus(StrEnum):
-    PENDING = "pending"
-    READY = "ready"
-    FAILED = "failed"
-    DELETING = "deleting"
-    DELETED = "deleted"
-
+    PENDING = 'pending'
+    READY = 'ready'
+    FAILED = 'failed'
+    DELETING = 'deleting'
+    DELETED = 'deleted'
 
 class ResourceSpec(BaseModel):
-    vcpus: int = Field(..., description="VCPU Count of the snapshot")
-    memory: int = Field(..., description="Memory of the snapshot in megabytes")
-    disk_size: int = Field(..., description="Size of the snapshot in megabytes")
-
+    vcpus: int = Field(..., description='VCPU Count of the snapshot')
+    memory: int = Field(..., description='Memory of the snapshot in megabytes')
+    disk_size: int = Field(..., description='Size of the snapshot in megabytes')
 
 class SnapshotRefs(BaseModel):
     image_id: str
 
-
 class SnapshotAPI:
+
     def __init__(self, client: MorphCloudClient):
         self._client = client
 
-    def list(
-        self,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> typing.List[Snapshot]:
+    def list(self, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None) -> typing.List[Snapshot]:
         """List all snapshots available to the user.
 
         Parameters:
@@ -829,18 +581,15 @@ class SnapshotAPI:
             metadata: Optional metadata to filter snapshots by."""
         params = {}
         if digest is not None:
-            params["digest"] = digest
+            params['digest'] = digest
         if metadata is not None:
             for k, v in metadata.items():
-                params[f"metadata[{k}]"] = v
-        response = self._client._http_client.get("/snapshot", params=params)
-        return [
-            Snapshot.model_validate(snapshot)._set_api(self)
-            for snapshot in response.json()["data"]
-        ]
+                params[f'metadata[{k}]'] = v
+        response = self._client._http_client.get('/snapshot', params=params)
+        return [Snapshot.model_validate(snapshot)._set_api(self) for snapshot in response.json()['data']]
 
     class ListPaginatedResponse(BaseModel):
-        snapshots: typing.List["Snapshot"]
+        snapshots: typing.List['Snapshot']
         total: int
         page: int
         size: int
@@ -848,14 +597,7 @@ class SnapshotAPI:
         has_next: bool
         has_prev: bool
 
-    def list_paginated(
-        self,
-        page: int = 1,
-        limit: int = 50,
-        *,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> "SnapshotAPI.ListPaginatedResponse":
+    def list_paginated(self, page: int=1, limit: int=50, *, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None) -> 'SnapshotAPI.ListPaginatedResponse':
         """List snapshots with pagination using the /snapshot/list endpoint.
 
         Parameters:
@@ -864,36 +606,18 @@ class SnapshotAPI:
             digest: Optional digest to filter snapshots by
             metadata: Optional metadata to filter snapshots by
         """
-        params: typing.Dict[str, typing.Union[str, int]] = {
-            "page": page,
-            "limit": limit,
-        }
+        params: typing.Dict[str, typing.Union[str, int]] = {'page': page, 'limit': limit}
         if digest is not None:
-            params["digest"] = digest
+            params['digest'] = digest
         if metadata is not None:
             for k, v in metadata.items():
-                params[f"metadata[{k}]"] = v
-        response = self._client._http_client.get("/snapshot/list", params=params)
+                params[f'metadata[{k}]'] = v
+        response = self._client._http_client.get('/snapshot/list', params=params)
         payload = response.json()
-        snapshots = [
-            Snapshot.model_validate(s)._set_api(self)
-            for s in payload.get("snapshots", [])
-        ]
-        return SnapshotAPI.ListPaginatedResponse(
-            snapshots=snapshots,
-            total=payload.get("total", len(snapshots)),
-            page=payload.get("page", page),
-            size=payload.get("size", len(snapshots)),
-            total_pages=payload.get("total_pages", 1),
-            has_next=payload.get("has_next", False),
-            has_prev=payload.get("has_prev", False),
-        )
+        snapshots = [Snapshot.model_validate(s)._set_api(self) for s in payload.get('snapshots', [])]
+        return SnapshotAPI.ListPaginatedResponse(snapshots=snapshots, total=payload.get('total', len(snapshots)), page=payload.get('page', page), size=payload.get('size', len(snapshots)), total_pages=payload.get('total_pages', 1), has_next=payload.get('has_next', False), has_prev=payload.get('has_prev', False))
 
-    async def alist(
-        self,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> typing.List[Snapshot]:
+    async def alist(self, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None) -> typing.List[Snapshot]:
         """List all snapshots available to the user.
 
         Parameters:
@@ -901,26 +625,14 @@ class SnapshotAPI:
             metadata: Optional metadata to filter snapshots by."""
         params = {}
         if digest is not None:
-            params["digest"] = digest
+            params['digest'] = digest
         if metadata is not None:
             for k, v in metadata.items():
-                params[f"metadata[{k}]"] = v
-        response = await self._client._async_http_client.get("/snapshot", params=params)
-        return [
-            Snapshot.model_validate(snapshot)._set_api(self)
-            for snapshot in response.json()["data"]
-        ]
+                params[f'metadata[{k}]'] = v
+        response = await self._client._async_http_client.get('/snapshot', params=params)
+        return [Snapshot.model_validate(snapshot)._set_api(self) for snapshot in response.json()['data']]
 
-    def create(
-        self,
-        image_id: typing.Optional[str] = None,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-    ) -> Snapshot:
+    def create(self, image_id: typing.Optional[str]=None, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None) -> Snapshot:
         """Create a new snapshot from a base image and a machine configuration.
 
         Parameters:
@@ -936,34 +648,25 @@ class SnapshotAPI:
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}
         if image_id is not None:
-            body["image_id"] = image_id
+            body['image_id'] = image_id
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if digest is not None:
-            body["digest"] = digest
+            body['digest'] = digest
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
-        response = self._client._http_client.post("/snapshot", json=body)
+            body['ttl_seconds'] = ttl_seconds
+        response = self._client._http_client.post('/snapshot', json=body)
         snap: Snapshot = Snapshot.model_validate(response.json())._set_api(self)
         snap.wait_until_ready()
         return snap
 
-    async def acreate(
-        self,
-        image_id: typing.Optional[str] = None,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-    ) -> Snapshot:
+    async def acreate(self, image_id: typing.Optional[str]=None, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None) -> Snapshot:
         """Create a new snapshot from a base image and a machine configuration.
 
         Parameters:
@@ -979,52 +682,42 @@ class SnapshotAPI:
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         body = {}
         if image_id is not None:
-            body["image_id"] = image_id
+            body['image_id'] = image_id
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if digest is not None:
-            body["digest"] = digest
+            body['digest'] = digest
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
-        response = await self._client._async_http_client.post("/snapshot", json=body)
+            body['ttl_seconds'] = ttl_seconds
+        response = await self._client._async_http_client.post('/snapshot', json=body)
         snap: Snapshot = Snapshot.model_validate(response.json())._set_api(self)
         await snap.await_until_ready()
         return snap
 
     def get(self, snapshot_id: str) -> Snapshot:
-        response = self._client._http_client.get(f"/snapshot/{snapshot_id}")
+        response = self._client._http_client.get(f'/snapshot/{snapshot_id}')
         return Snapshot.model_validate(response.json())._set_api(self)
 
     async def aget(self, snapshot_id: str) -> Snapshot:
-        response = await self._client._async_http_client.get(f"/snapshot/{snapshot_id}")
+        response = await self._client._async_http_client.get(f'/snapshot/{snapshot_id}')
         return Snapshot.model_validate(response.json())._set_api(self)
 
-
 class Snapshot(BaseModel):
-    id: str = Field(
-        ..., description="Unique identifier for the snapshot, e.g. snapshot_xxxx"
-    )
-    object: typing.Literal["snapshot"] = Field(
-        "snapshot", description="Object type, always 'snapshot'"
-    )
-    created: int = Field(..., description="Unix timestamp of snapshot creation")
-    status: SnapshotStatus = Field(..., description="Snapshot status")
-    spec: ResourceSpec = Field(..., description="Resource specifications")
-    refs: SnapshotRefs = Field(..., description="Referenced resources")
-    digest: typing.Optional[str] = Field(
-        default=None, description="User provided digest"
-    )
-    metadata: typing.Dict[str, str] = Field(
-        default_factory=dict, description="User provided metadata"
-    )
+    id: str = Field(..., description='Unique identifier for the snapshot, e.g. snapshot_xxxx')
+    object: typing.Literal['snapshot'] = Field('snapshot', description="Object type, always 'snapshot'")
+    created: int = Field(..., description='Unix timestamp of snapshot creation')
+    status: SnapshotStatus = Field(..., description='Snapshot status')
+    spec: ResourceSpec = Field(..., description='Resource specifications')
+    refs: SnapshotRefs = Field(..., description='Referenced resources')
+    digest: typing.Optional[str] = Field(default=None, description='User provided digest')
+    metadata: typing.Dict[str, str] = Field(default_factory=dict, description='User provided metadata')
     ttl: SnapshotTTL = Field(default_factory=SnapshotTTL)
-
     _api: SnapshotAPI = PrivateAttr()
 
     def _set_api(self, api: SnapshotAPI) -> Snapshot:
@@ -1032,13 +725,11 @@ class Snapshot(BaseModel):
         return self
 
     def delete(self) -> None:
-        response = self._api._client._http_client.delete(f"/snapshot/{self.id}")
+        response = self._api._client._http_client.delete(f'/snapshot/{self.id}')
         response.raise_for_status()
 
     async def adelete(self) -> None:
-        response = await self._api._client._async_http_client.delete(
-            f"/snapshot/{self.id}"
-        )
+        response = await self._api._client._async_http_client.delete(f'/snapshot/{self.id}')
         response.raise_for_status()
 
     def set_metadata(self, metadata: typing.Dict[str, str]) -> None:
@@ -1047,16 +738,12 @@ class Snapshot(BaseModel):
         To preserve existing metadata:
         metadata = snapshot.metadata.copy(); metadata.update(new_fields); snapshot.set_metadata(metadata)
         """
-        response = self._api._client._http_client.post(
-            f"/snapshot/{self.id}/metadata", json=metadata
-        )
+        response = self._api._client._http_client.post(f'/snapshot/{self.id}/metadata', json=metadata)
         response.raise_for_status()
         self._refresh()
 
     async def aset_metadata(self, metadata: typing.Dict[str, str]) -> None:
-        response = await self._api._client._async_http_client.post(
-            f"/snapshot/{self.id}/metadata", json=metadata
-        )
+        response = await self._api._client._async_http_client.post(f'/snapshot/{self.id}/metadata', json=metadata)
         response.raise_for_status()
         await self._refresh_async()
 
@@ -1067,18 +754,14 @@ class Snapshot(BaseModel):
             ttl_seconds: New TTL in seconds. Pass None to remove the snapshot TTL.
         """
         _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=True)
-        response = self._api._client._http_client.post(
-            f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
-        )
+        response = self._api._client._http_client.post(f'/snapshot/{self.id}/ttl', json={'ttl_seconds': ttl_seconds})
         response.raise_for_status()
         self._refresh()
 
     async def aset_ttl(self, ttl_seconds: typing.Optional[int]) -> None:
         """Async version of set_ttl()."""
         _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=True)
-        response = await self._api._client._async_http_client.post(
-            f"/snapshot/{self.id}/ttl", json={"ttl_seconds": ttl_seconds}
-        )
+        response = await self._api._client._async_http_client.post(f'/snapshot/{self.id}/ttl', json={'ttl_seconds': ttl_seconds})
         response.raise_for_status()
         await self._refresh_async()
 
@@ -1094,27 +777,27 @@ class Snapshot(BaseModel):
         for key, value in updated.__dict__.items():
             setattr(self, key, value)
 
-    def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+    def wait_until_ready(self, timeout: typing.Optional[float]=None) -> None:
         """Wait until the snapshot is ready."""
         start_time = time.time()
         while self.status != SnapshotStatus.READY:
             if timeout is not None and time.time() - start_time > timeout:
-                raise TimeoutError("Snapshot did not become ready before timeout")
+                raise TimeoutError('Snapshot did not become ready before timeout')
             time.sleep(1)
             self._refresh()
             if self.status == SnapshotStatus.FAILED:
-                raise RuntimeError("Snapshot creation failed / encountered an error")
+                raise RuntimeError('Snapshot creation failed / encountered an error')
 
-    async def await_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+    async def await_until_ready(self, timeout: typing.Optional[float]=None) -> None:
         """Wait until the snapshot is ready."""
         start_time = time.time()
         while self.status != SnapshotStatus.READY:
             if timeout is not None and time.time() - start_time > timeout:
-                raise TimeoutError("Snapshot did not become ready before timeout")
+                raise TimeoutError('Snapshot did not become ready before timeout')
             await asyncio.sleep(1)
             await self._refresh_async()
             if self.status == SnapshotStatus.FAILED:
-                raise RuntimeError("Snapshot creation failed / encountered an error")
+                raise RuntimeError('Snapshot creation failed / encountered an error')
 
     @staticmethod
     def compute_chain_hash(parent_chain_hash: str, effect_identifier: str) -> str:
@@ -1123,14 +806,12 @@ class Snapshot(BaseModel):
         The effect identifier is typically derived from the function name and its arguments.
         """
         hasher = hashlib.sha256()
-        hasher.update(parent_chain_hash.encode("utf-8"))
-        hasher.update(b"\n")
-        hasher.update(effect_identifier.encode("utf-8"))
+        hasher.update(parent_chain_hash.encode('utf-8'))
+        hasher.update(b'\n')
+        hasher.update(effect_identifier.encode('utf-8'))
         return hasher.hexdigest()
 
-    def _run_command_effect(
-        self, instance: Instance, command: str, background: bool, get_pty: bool
-    ) -> None:
+    def _run_command_effect(self, instance: Instance, command: str, background: bool, get_pty: bool) -> None:
         """
         Executes a shell command on the given instance, handling ANSI escape codes properly.
         If background is True, the command is run without waiting for completion.
@@ -1138,125 +819,74 @@ class Snapshot(BaseModel):
         """
         import re
         import threading
-
-        # Create a thread ID for logging
         thread_id = threading.get_ident()
-        thread_name = f"Thread-{thread_id}"
-
-        # Create console lock to prevent output interleaving
-        if not hasattr(console, "_output_lock"):
+        thread_name = f'Thread-{thread_id}'
+        if not hasattr(console, '_output_lock'):
             console._output_lock = threading.Lock()
-
-        # ANSI escape code regex pattern
-        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
+        ansi_escape = re.compile('\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])')
         with console._output_lock:
-            console.print(
-                f"[blue]🔌 Connecting via SSH[/blue] (instance_id={instance.id})"
-            )
-
+            console.print(f'[blue]🔌 Connecting via SSH[/blue] (instance_id={instance.id})')
         ssh_client = instance.ssh_connect()
         try:
             channel = ssh_client.get_transport().open_session()
             if get_pty:
                 channel.get_pty(width=120, height=40)
             channel.exec_command(command)
-
             if background:
                 with console._output_lock:
-                    console.print(
-                        f"[blue]Command is running in the background:[/blue] {command}"
-                    )
+                    console.print(f'[blue]Command is running in the background:[/blue] {command}')
                 channel.close()
                 return
-
             with console._output_lock:
-                console.print(
-                    f"[bold blue]🔧 {thread_name}:[/bold blue] [yellow]{command}[/yellow]"
-                )
-
-            # Buffer for collecting line-by-line output
-            line_buffer = ""
-            full_output = ""
-
-            # Process the output
+                console.print(f'[bold blue]🔧 {thread_name}:[/bold blue] [yellow]{command}[/yellow]')
+            line_buffer = ''
+            full_output = ''
             while not channel.exit_status_ready():
                 if channel.recv_ready():
-                    data = channel.recv(1024).decode("utf-8", errors="replace")
+                    data = channel.recv(1024).decode('utf-8', errors='replace')
                     if data:
                         full_output += data
-
-                        # Process data line by line
                         line_buffer += data
-                        lines = line_buffer.split("\n")
-
-                        # All complete lines can be printed
+                        lines = line_buffer.split('\n')
                         if len(lines) > 1:
                             with console._output_lock:
                                 for line in lines[:-1]:
                                     if line:
-                                        # Strip ANSI escape codes when prefixing thread name
-                                        # but pass the original line (with ANSI codes) to console.print
-                                        clean_line = ansi_escape.sub("", line)
-                                        # Only add prefix if line isn't empty after stripping ANSI
+                                        clean_line = ansi_escape.sub('', line)
                                         if clean_line.strip():
-                                            # Use print directly to preserve ANSI codes
-                                            print(f"{thread_name}: {line}")
+                                            print(f'{thread_name}: {line}')
                                         else:
                                             print(line)
-                            # Keep the last partial line in the buffer
                             line_buffer = lines[-1]
                 time.sleep(0.1)
-
-            # Get any remaining output
             while channel.recv_ready():
-                data = channel.recv(1024).decode("utf-8", errors="replace")
+                data = channel.recv(1024).decode('utf-8', errors='replace')
                 if data:
                     full_output += data
                     line_buffer += data
-
-            # Print any remaining content in the line buffer
             if line_buffer:
-                lines = line_buffer.split("\n")
+                lines = line_buffer.split('\n')
                 with console._output_lock:
                     for line in lines:
                         if line:
-                            clean_line = ansi_escape.sub("", line)
+                            clean_line = ansi_escape.sub('', line)
                             if clean_line.strip():
-                                print(f"{thread_name}: {line}")
+                                print(f'{thread_name}: {line}')
                             else:
                                 print(line)
-
-            # Check exit code
             exit_code = channel.recv_exit_status()
-
-            # Print a summary of the command execution
             with console._output_lock:
                 if exit_code == 0:
-                    console.print(
-                        f"[bold green]✅ {thread_name}: Command completed successfully[/bold green]"
-                    )
+                    console.print(f'[bold green]✅ {thread_name}: Command completed successfully[/bold green]')
                 else:
-                    console.print(
-                        f"[bold red]⚠️ {thread_name}: Command exited with code [red]{exit_code}[/red][/bold red]"
-                    )
-
+                    console.print(f'[bold red]⚠️ {thread_name}: Command exited with code [red]{exit_code}[/red][/bold red]')
             channel.close()
-
             if exit_code != 0:
-                raise RuntimeError(
-                    f"Command `{command}` failed with exit code {exit_code}."
-                )
-
+                raise RuntimeError(f'Command `{command}` failed with exit code {exit_code}.')
         finally:
             ssh_client.close()
 
-    def _cache_effect(
-        self,
-        fn: typing.Callable[[Instance], None],
-        *args,
-        **kwargs,
-    ) -> Snapshot:
+    def _cache_effect(self, fn: typing.Callable[[Instance], None], *args, **kwargs) -> Snapshot:
         """
         Generic caching mechanism based on a "chain hash":
           - Computes a unique hash from the parent's chain hash (self.digest or self.id)
@@ -1266,65 +896,30 @@ class Snapshot(BaseModel):
           - Otherwise, starts an instance from this snapshot, applies `fn` (with *args/**kwargs),
             snapshots the instance (embedding that chain hash in `digest`), and returns it.
         """
-
-        # 1) Print out which function and args/kwargs are being applied
-        console.print(
-            "\n[bold black on white]Effect function:[/bold black on white] "
-            f"[cyan]{fn.__name__}[/cyan]\n"
-            f"[bold white]args:[/bold white] [yellow]{args}[/yellow]   "
-            f"[bold white]kwargs:[/bold white] [yellow]{kwargs}[/yellow]\n"
-        )
-
-        # 2) Determine the parent chain hash:
+        console.print(f'\n[bold black on white]Effect function:[/bold black on white] [cyan]{fn.__name__}[/cyan]\n[bold white]args:[/bold white] [yellow]{args}[/yellow]   [bold white]kwargs:[/bold white] [yellow]{kwargs}[/yellow]\n')
         parent_chain_hash = self.digest or self.id
-
-        # 3) Build an effect identifier string from the function name + the stringified arguments.
         effect_identifier = fn.__name__ + str(args) + str(kwargs)
-
-        # 4) Compute the new chain hash
         new_chain_hash = self.compute_chain_hash(parent_chain_hash, effect_identifier)
-
-        # 5) Check if there's already a snapshot with that digest
         candidates = self._api.list(digest=new_chain_hash)
         if candidates:
-            console.print(
-                f"[bold green]✅ Using cached snapshot[/bold green] "
-                f"with digest [white]{new_chain_hash}[/white] "
-                f"for effect [yellow]{fn.__name__}[/yellow]."
-            )
+            console.print(f'[bold green]✅ Using cached snapshot[/bold green] with digest [white]{new_chain_hash}[/white] for effect [yellow]{fn.__name__}[/yellow].')
             return candidates[0]
-
-        # 6) Otherwise, apply the effect on a fresh instance from this snapshot
-        console.print(
-            f"[bold magenta]🚀 Building new snapshot[/bold magenta] "
-            f"with digest [white]{new_chain_hash}[/white]."
-        )
+        console.print(f'[bold magenta]🚀 Building new snapshot[/bold magenta] with digest [white]{new_chain_hash}[/white].')
         instance = self._api._client.instances.start(self.id)
         try:
             instance.wait_until_ready(timeout=300)
-            fn(instance, *args, **kwargs)  # Actually run the effect
-            # 7) Snapshot the instance, passing digest=new_chain_hash to store the chain hash
+            fn(instance, *args, **kwargs)
             new_snapshot = instance.snapshot(digest=new_chain_hash)
         finally:
             instance.stop()
-
-        # 8) Return the newly created snapshot
-        console.print(
-            f"[bold blue]🎉 New snapshot created[/bold blue] "
-            f"with digest [white]{new_chain_hash}[/white].\n"
-        )
+        console.print(f'[bold blue]🎉 New snapshot created[/bold blue] with digest [white]{new_chain_hash}[/white].\n')
         return new_snapshot
 
     def setup(self, command: str) -> Snapshot:
         """
         Deprecated, use `Snapshot.exec` instead
         """
-        return self._cache_effect(
-            fn=self._run_command_effect,
-            command=command,
-            background=False,
-            get_pty=True,
-        )
+        return self._cache_effect(fn=self._run_command_effect, command=command, background=False, get_pty=True)
 
     def exec(self, command: str) -> Snapshot:
         """
@@ -1340,9 +935,7 @@ class Snapshot(BaseModel):
     async def asetup(self, command: str) -> Snapshot:
         return await asyncio.to_thread(self.setup, command)
 
-    def upload(
-        self, local_path: str, remote_path: str, recursive: bool = False
-    ) -> Snapshot:
+    def upload(self, local_path: str, remote_path: str, recursive: bool=False) -> Snapshot:
         """
         Chain-hash aware upload operation on this snapshot.
         1. Checks if a matching effect (upload with these arguments) is already cached.
@@ -1351,17 +944,9 @@ class Snapshot(BaseModel):
 
         def _upload_effect(instance: Instance, local_path, remote_path, recursive):
             instance.upload(local_path, remote_path, recursive=recursive)
+        return self._cache_effect(fn=_upload_effect, local_path=local_path, remote_path=remote_path, recursive=recursive)
 
-        return self._cache_effect(
-            fn=_upload_effect,
-            local_path=local_path,
-            remote_path=remote_path,
-            recursive=recursive,
-        )
-
-    def download(
-        self, remote_path: str, local_path: str, recursive: bool = False
-    ) -> Snapshot:
+    def download(self, remote_path: str, local_path: str, recursive: bool=False) -> Snapshot:
         """
         Chain-hash aware download operation on this snapshot.
         1. Checks if a matching effect (download with these arguments) is already cached.
@@ -1370,46 +955,23 @@ class Snapshot(BaseModel):
 
         def _download_effect(instance: Instance, remote_path, local_path, recursive):
             instance.download(remote_path, local_path, recursive=recursive)
+        return self._cache_effect(fn=_download_effect, remote_path=remote_path, local_path=local_path, recursive=recursive)
 
-        return self._cache_effect(
-            fn=_download_effect,
-            remote_path=remote_path,
-            local_path=local_path,
-            recursive=recursive,
-        )
-
-    async def aupload(
-        self, local_path: str, remote_path: str, recursive: bool = False
-    ) -> Snapshot:
+    async def aupload(self, local_path: str, remote_path: str, recursive: bool=False) -> Snapshot:
         """
         Asynchronously perform a chain-hash aware upload operation on this snapshot.
         Internally calls the synchronous self.upload(...) in a background thread.
         """
         return await asyncio.to_thread(self.upload, local_path, remote_path, recursive)
 
-    async def adownload(
-        self, remote_path: str, local_path: str, recursive: bool = False
-    ) -> Snapshot:
+    async def adownload(self, remote_path: str, local_path: str, recursive: bool=False) -> Snapshot:
         """
         Asynchronously perform a chain-hash aware download operation on this snapshot.
         Internally calls the synchronous self.download(...) in a background thread.
         """
-        return await asyncio.to_thread(
-            self.download, remote_path, local_path, recursive
-        )
+        return await asyncio.to_thread(self.download, remote_path, local_path, recursive)
 
-    def as_container(
-        self,
-        image: typing.Optional[str] = None,
-        dockerfile: typing.Optional[str] = None,
-        build_context: typing.Optional[str] = None,
-        container_name: str = "container",
-        container_args: typing.Optional[typing.List[str]] = None,
-        ports: typing.Optional[typing.Dict[int, int]] = None,
-        volumes: typing.Optional[typing.List[str]] = None,
-        env: typing.Optional[typing.Dict[str, str]] = None,
-        restart_policy: str = "unless-stopped",
-    ) -> Snapshot:
+    def as_container(self, image: typing.Optional[str]=None, dockerfile: typing.Optional[str]=None, build_context: typing.Optional[str]=None, container_name: str='container', container_args: typing.Optional[typing.List[str]]=None, ports: typing.Optional[typing.Dict[int, int]]=None, volumes: typing.Optional[typing.List[str]]=None, env: typing.Optional[typing.Dict[str, str]]=None, restart_policy: str='unless-stopped') -> Snapshot:
         """
         Configure a snapshot so that instances started from it will automatically
         redirect all SSH connections to a Docker container.
@@ -1445,59 +1007,11 @@ class Snapshot(BaseModel):
             A new snapshot configured to automatically start and use the container
         """
 
-        # The function to apply on the instance that will be used for caching
-        def _container_effect(
-            instance: Instance,
-            image=None,
-            dockerfile=None,
-            build_context=None,
-            container_name="container",
-            container_args=None,
-            ports=None,
-            volumes=None,
-            env=None,
-            restart_policy="unless-stopped",
-        ):
-            # Call the enhanced instance.as_container method
-            instance.as_container(
-                image=image,
-                dockerfile=dockerfile,
-                build_context=build_context,
-                container_name=container_name,
-                container_args=container_args,
-                ports=ports,
-                volumes=volumes,
-                env=env,
-                restart_policy=restart_policy,
-            )
+        def _container_effect(instance: Instance, image=None, dockerfile=None, build_context=None, container_name='container', container_args=None, ports=None, volumes=None, env=None, restart_policy='unless-stopped'):
+            instance.as_container(image=image, dockerfile=dockerfile, build_context=build_context, container_name=container_name, container_args=container_args, ports=ports, volumes=volumes, env=env, restart_policy=restart_policy)
+        return self._cache_effect(fn=_container_effect, image=image, dockerfile=dockerfile, build_context=build_context, container_name=container_name, container_args=container_args, ports=ports, volumes=volumes, env=env, restart_policy=restart_policy)
 
-        # Use the existing caching mechanism to avoid rebuilding the same snapshot
-        # All parameters are passed to _cache_effect to ensure proper cache hashing
-        return self._cache_effect(
-            fn=_container_effect,
-            image=image,
-            dockerfile=dockerfile,
-            build_context=build_context,
-            container_name=container_name,
-            container_args=container_args,
-            ports=ports,
-            volumes=volumes,
-            env=env,
-            restart_policy=restart_policy,
-        )
-
-    async def aas_container(
-        self,
-        image: typing.Optional[str] = None,
-        dockerfile: typing.Optional[str] = None,
-        build_context: typing.Optional[str] = None,
-        container_name: str = "container",
-        container_args: typing.Optional[typing.List[str]] = None,
-        ports: typing.Optional[typing.Dict[int, int]] = None,
-        volumes: typing.Optional[typing.List[str]] = None,
-        env: typing.Optional[typing.Dict[str, str]] = None,
-        restart_policy: str = "unless-stopped",
-    ) -> Snapshot:
+    async def aas_container(self, image: typing.Optional[str]=None, dockerfile: typing.Optional[str]=None, build_context: typing.Optional[str]=None, container_name: str='container', container_args: typing.Optional[typing.List[str]]=None, ports: typing.Optional[typing.Dict[int, int]]=None, volumes: typing.Optional[typing.List[str]]=None, env: typing.Optional[typing.Dict[str, str]]=None, restart_policy: str='unless-stopped') -> Snapshot:
         """
         Asynchronous version: Configure a snapshot so that instances started from it will
         automatically redirect all SSH connections to a Docker container.
@@ -1532,48 +1046,28 @@ class Snapshot(BaseModel):
         Returns:
             A new snapshot configured to automatically start and use the container
         """
-        # Run the synchronous version in a thread
-        return await asyncio.to_thread(
-            self.as_container,
-            image=image,
-            dockerfile=dockerfile,
-            build_context=build_context,
-            container_name=container_name,
-            container_args=container_args,
-            ports=ports,
-            volumes=volumes,
-            env=env,
-            restart_policy=restart_policy,
-        )
+        return await asyncio.to_thread(self.as_container, image=image, dockerfile=dockerfile, build_context=build_context, container_name=container_name, container_args=container_args, ports=ports, volumes=volumes, env=env, restart_policy=restart_policy)
 
-    def _format_step_for_log(
-        self,
-        step: typing.Union[str, typing.Callable[[Instance], None]],
-        max_len: int = 120,
-    ) -> str:
+    def _format_step_for_log(self, step: typing.Union[str, typing.Callable[[Instance], None]], max_len: int=120) -> str:
         """Nice one-line label for a step when printing 'skipped' lists."""
         import hashlib
         import inspect
-
         if isinstance(step, str):
-            s = step.strip().replace("\n", "\\n")
+            s = step.strip().replace('\n', '\\n')
             if len(s) > max_len:
-                s = s[: max_len - 3] + "..."
-            return f"$ {s}"
+                s = s[:max_len - 3] + '...'
+            return f'$ {s}'
         else:
-            name = getattr(step, "__qualname__", getattr(step, "__name__", repr(step)))
-            module = getattr(step, "__module__", "")
+            name = getattr(step, '__qualname__', getattr(step, '__name__', repr(step)))
+            module = getattr(step, '__module__', '')
             try:
                 src = inspect.getsource(step)
-                src_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()[:10]
+                src_hash = hashlib.sha256(src.encode('utf-8')).hexdigest()[:10]
             except Exception:
-                src_hash = "unknown"
-            return f"{module}.{name} (src:{src_hash})"
+                src_hash = 'unknown'
+            return f'{module}.{name} (src:{src_hash})'
 
-    def _effect_identifier_for_step(
-        self,
-        step: typing.Union[str, typing.Callable[[Instance], None]],
-    ) -> str:
+    def _effect_identifier_for_step(self, step: typing.Union[str, typing.Callable[[Instance], None]]) -> str:
         """
         Build the effect-identifier string exactly like _cache_effect does:
           fn.__name__ + str(args) + str(kwargs)
@@ -1581,29 +1075,21 @@ class Snapshot(BaseModel):
         """
         import hashlib
         import inspect
-
         if isinstance(step, str):
-            # Must match Snapshot.exec(...)/_cache_effect bit-for-bit:
-            # fn=_run_command_effect, args=(), kwargs={"command": step, "background": False, "get_pty": True}
-            kwargs = {"command": step, "background": False, "get_pty": True}
-            return f"{self._run_command_effect.__name__}{str(())}{str(kwargs)}"
+            kwargs = {'command': step, 'background': False, 'get_pty': True}
+            return f'{self._run_command_effect.__name__}{str(())}{str(kwargs)}'
         else:
-            name = getattr(step, "__qualname__", getattr(step, "__name__", repr(step)))
-            module = getattr(step, "__module__", "")
+            name = getattr(step, '__qualname__', getattr(step, '__name__', repr(step)))
+            module = getattr(step, '__module__', '')
             try:
                 src = inspect.getsource(step)
-                src_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
+                src_hash = hashlib.sha256(src.encode('utf-8')).hexdigest()[:16]
             except Exception:
-                src_hash = hashlib.sha256(repr(step).encode("utf-8")).hexdigest()[:16]
-            # Mirror the simple pattern ("fn.__name__ + str(args) + str(kwargs)")
-            # Encode metadata in kwargs-like container (no real args/kwargs for the callable).
-            pseudo_kwargs = {"callable": f"{module}.{name}", "src": src_hash}
-            return f"{name}{str(())}{str(pseudo_kwargs)}"
+                src_hash = hashlib.sha256(repr(step).encode('utf-8')).hexdigest()[:16]
+            pseudo_kwargs = {'callable': f'{module}.{name}', 'src': src_hash}
+            return f'{name}{str(())}{str(pseudo_kwargs)}'
 
-    def _compute_all_digests(
-        self,
-        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
-    ) -> typing.List[str]:
+    def _compute_all_digests(self, steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]]) -> typing.List[str]:
         """
         Compute the digest for EACH step sequentially starting from the ORIGINAL parent
         (self.digest or self.id). This keeps indices aligned with the user’s list.
@@ -1616,19 +1102,13 @@ class Snapshot(BaseModel):
             digests.append(parent)
         return digests
 
-    def _scan_cached_prefix_with_digests(
-        self,
-        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
-        digests: typing.List[str],
-        list_func: typing.Callable[[str], typing.List["Snapshot"]],
-    ) -> typing.Tuple[int, typing.Optional["Snapshot"]]:
+    def _scan_cached_prefix_with_digests(self, steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]], digests: typing.List[str], list_func: typing.Callable[[str], typing.List['Snapshot']]) -> typing.Tuple[int, typing.Optional['Snapshot']]:
         """
         Given precomputed per-step digests, find the longest cached prefix.
         Logs a concise summary of skipped steps (friendly names).
         """
         cached_len = 0
-        last_snap: typing.Optional["Snapshot"] = None
-
+        last_snap: typing.Optional['Snapshot'] = None
         for i, d in enumerate(digests):
             candidates = list_func(d)
             if candidates:
@@ -1636,128 +1116,64 @@ class Snapshot(BaseModel):
                 last_snap = candidates[0]
             else:
                 break
-
         if cached_len > 0:
-            console.print(
-                f"[bold green]✅ Using cached snapshot[/bold green] "
-                f"through step [white]{cached_len}[/white] "
-                f"(digest [white]{digests[cached_len - 1]}[/white])."
-            )
-            console.print(f"[cyan]Skipping {cached_len} cached step(s):[/cyan]")
+            console.print(f'[bold green]✅ Using cached snapshot[/bold green] through step [white]{cached_len}[/white] (digest [white]{digests[cached_len - 1]}[/white]).')
+            console.print(f'[cyan]Skipping {cached_len} cached step(s):[/cyan]')
             for idx in range(cached_len):
-                console.print(f"  {idx + 1}. {self._format_step_for_log(steps[idx])}")
+                console.print(f'  {idx + 1}. {self._format_step_for_log(steps[idx])}')
+        return (cached_len, last_snap)
 
-        return cached_len, last_snap
-
-    def build(
-        self,
-        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
-    ) -> "Snapshot":
+    def build(self, steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]]) -> 'Snapshot':
         """
         Run a list of steps using ONE ephemeral instance, snapshotting after each step.
         Reuses the longest cached prefix and logs the skipped steps.
         """
         if not steps:
-            console.print(
-                "[cyan]Snapshot.build called with no steps; returning original snapshot.[/cyan]"
-            )
+            console.print('[cyan]Snapshot.build called with no steps; returning original snapshot.[/cyan]')
             return self
-
-        console.print(
-            f"[bold blue]🧱 Starting build[/bold blue] from snapshot "
-            f"[white]{self.id}[/white] with [white]{len(steps)}[/white] step(s)."
-        )
-
-        # 1) Compute canonical digests for ALL steps from the ORIGINAL parent
+        console.print(f'[bold blue]🧱 Starting build[/bold blue] from snapshot [white]{self.id}[/white] with [white]{len(steps)}[/white] step(s).')
         all_digests = self._compute_all_digests(steps)
-
-        # 2) Find longest cached prefix and print a friendly skip summary
-        cached_len, last_cached = self._scan_cached_prefix_with_digests(
-            steps,
-            all_digests,
-            lambda d: self._api.list(digest=d),
-        )
-
-        # Fully cached build
+        cached_len, last_cached = self._scan_cached_prefix_with_digests(steps, all_digests, lambda d: self._api.list(digest=d))
         if cached_len == len(steps):
-            return last_cached  # type: ignore[return-value]
-
-        # 3) Start ONE instance from the end of the cached prefix (or from self)
+            return last_cached
         base_snapshot = last_cached or self
         start_index = cached_len
-
         instance = self._api._client.instances.start(base_snapshot.id)
         try:
             instance.wait_until_ready(timeout=300)
-
-            current_snapshot: typing.Optional["Snapshot"] = last_cached
-
-            # 4) Apply remaining steps, snapshotting with the precomputed per-step digest
+            current_snapshot: typing.Optional['Snapshot'] = last_cached
             for idx in range(start_index, len(steps)):
                 step = steps[idx]
                 desired_digest = all_digests[idx]
-
-                console.print(
-                    f"\n[bold]Step {idx + 1}/{len(steps)}[/bold] "
-                    f"→ {self._format_step_for_log(step)}"
-                )
-
+                console.print(f'\n[bold]Step {idx + 1}/{len(steps)}[/bold] → {self._format_step_for_log(step)}')
                 if isinstance(step, str):
-                    # Execute as foreground PTY command (identical to .exec semantics)
-                    self._run_command_effect(
-                        instance, command=step, background=False, get_pty=True
-                    )
+                    self._run_command_effect(instance, command=step, background=False, get_pty=True)
                 else:
-                    # Callable step
                     step(instance)
-
-                console.print(
-                    f"[magenta]• Snapshotting step {idx + 1} with digest "
-                    f"[white]{desired_digest}[/white] ...[/magenta]"
-                )
+                console.print(f'[magenta]• Snapshotting step {idx + 1} with digest [white]{desired_digest}[/white] ...[/magenta]')
                 current_snapshot = instance.snapshot(digest=desired_digest)
-
             assert current_snapshot is not None
-            console.print(
-                f"\n[bold blue]🎉 Build complete[/bold blue] → final snapshot "
-                f"[white]{current_snapshot.id}[/white] "
-                f"(digest [white]{current_snapshot.digest}[/white])."
-            )
+            console.print(f'\n[bold blue]🎉 Build complete[/bold blue] → final snapshot [white]{current_snapshot.id}[/white] (digest [white]{current_snapshot.digest}[/white]).')
             return current_snapshot
-
         finally:
             try:
                 instance.stop()
             except Exception as e:
-                console.print(f"[red]Warning: failed to stop instance: {e}[/red]")
+                console.print(f'[red]Warning: failed to stop instance: {e}[/red]')
 
-    async def abuild(
-        self,
-        steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]],
-    ) -> "Snapshot":
+    async def abuild(self, steps: typing.List[typing.Union[str, typing.Callable[[Instance], None]]]) -> 'Snapshot':
         """
         Async variant: same semantics as build(...), using async API calls and
         offloading blocking work to threads where appropriate.
         """
         import asyncio
-
         if not steps:
-            console.print(
-                "[cyan]Snapshot.abuild called with no steps; returning original snapshot.[/cyan]"
-            )
+            console.print('[cyan]Snapshot.abuild called with no steps; returning original snapshot.[/cyan]')
             return self
-
-        console.print(
-            f"[bold blue]🧱 Starting async build[/bold blue] from snapshot "
-            f"[white]{self.id}[/white] with [white]{len(steps)}[/white] step(s)."
-        )
-
-        # 1) Compute canonical digests for ALL steps from the ORIGINAL parent
+        console.print(f'[bold blue]🧱 Starting async build[/bold blue] from snapshot [white]{self.id}[/white] with [white]{len(steps)}[/white] step(s).')
         all_digests = self._compute_all_digests(steps)
-
-        # 2) Find longest cached prefix (async list) and print a friendly skip summary
         cached_len = 0
-        last_cached: typing.Optional["Snapshot"] = None
+        last_cached: typing.Optional['Snapshot'] = None
         for i, d in enumerate(all_digests):
             candidates = await self._api.alist(digest=d)
             if candidates:
@@ -1765,124 +1181,75 @@ class Snapshot(BaseModel):
                 last_cached = candidates[0]
             else:
                 break
-
         if cached_len > 0:
-            console.print(
-                f"[bold green]✅ Using cached snapshot[/bold green] "
-                f"through step [white]{cached_len}[/white] "
-                f"(digest [white]{all_digests[cached_len - 1]}[/white])."
-            )
-            console.print(f"[cyan]Skipping {cached_len} cached step(s):[/cyan]")
+            console.print(f'[bold green]✅ Using cached snapshot[/bold green] through step [white]{cached_len}[/white] (digest [white]{all_digests[cached_len - 1]}[/white]).')
+            console.print(f'[cyan]Skipping {cached_len} cached step(s):[/cyan]')
             for idx in range(cached_len):
-                console.print(f"  {idx + 1}. {self._format_step_for_log(steps[idx])}")
-
-        # Fully cached build
+                console.print(f'  {idx + 1}. {self._format_step_for_log(steps[idx])}')
         if cached_len == len(steps):
-            return last_cached  # type: ignore[return-value]
-
-        # 3) Start ONE instance from the end of the cached prefix (or from self)
+            return last_cached
         base_snapshot = last_cached or self
         start_index = cached_len
-
         instance = await self._api._client.instances.astart(base_snapshot.id)
         try:
             await instance.await_until_ready(timeout=300)
-
-            current_snapshot: typing.Optional["Snapshot"] = last_cached
-
-            # 4) Apply remaining steps, snapshotting with the precomputed per-step digest
+            current_snapshot: typing.Optional['Snapshot'] = last_cached
             for idx in range(start_index, len(steps)):
                 step = steps[idx]
                 desired_digest = all_digests[idx]
-
-                console.print(
-                    f"\n[bold]Step {idx + 1}/{len(steps)}[/bold] "
-                    f"→ {self._format_step_for_log(step)}"
-                )
-
+                console.print(f'\n[bold]Step {idx + 1}/{len(steps)}[/bold] → {self._format_step_for_log(step)}')
                 if isinstance(step, str):
-                    # Offload the blocking SSH work to a thread
-                    await asyncio.to_thread(
-                        self._run_command_effect,
-                        instance,
-                        step,
-                        False,  # background
-                        True,  # get_pty
-                    )
+                    await asyncio.to_thread(self._run_command_effect, instance, step, False, True)
                 else:
-                    # Offload user callable to a thread
                     await asyncio.to_thread(step, instance)
-
-                console.print(
-                    f"[magenta]• Snapshotting step {idx + 1} with digest "
-                    f"[white]{desired_digest}[/white] ...[/magenta]"
-                )
+                console.print(f'[magenta]• Snapshotting step {idx + 1} with digest [white]{desired_digest}[/white] ...[/magenta]')
                 current_snapshot = await instance.asnapshot(digest=desired_digest)
-
             assert current_snapshot is not None
-            console.print(
-                f"\n[bold blue]🎉 Async build complete[/bold blue] → final snapshot "
-                f"[white]{current_snapshot.id}[/white] "
-                f"(digest [white]{current_snapshot.digest}[/white])."
-            )
+            console.print(f'\n[bold blue]🎉 Async build complete[/bold blue] → final snapshot [white]{current_snapshot.id}[/white] (digest [white]{current_snapshot.digest}[/white]).')
             return current_snapshot
-
         finally:
             try:
                 await instance.astop()
             except Exception as e:
-                console.print(f"[red]Warning: failed to stop instance: {e}[/red]")
-
+                console.print(f'[red]Warning: failed to stop instance: {e}[/red]')
 
 class InstanceStatus(StrEnum):
-    PENDING = "pending"
-    READY = "ready"
-    PAUSED = "paused"
-    SAVING = "saving"
-    ERROR = "error"
-
+    PENDING = 'pending'
+    READY = 'ready'
+    PAUSED = 'paused'
+    SAVING = 'saving'
+    ERROR = 'error'
 
 class InstanceHttpService(BaseModel):
     name: str
     port: int
     url: str
 
-
 class InstanceNetworking(BaseModel):
     internal_ip: typing.Optional[str] = None
     http_services: typing.List[InstanceHttpService] = Field(default_factory=list)
 
-
 class InstanceRefs(BaseModel):
     snapshot_id: str
     image_id: str
-
 
 class InstanceExecResponse(BaseModel):
     exit_code: int
     stdout: str
     stderr: str
 
-
 class InstanceAPI(BaseAPI):
-    def list(
-        self, metadata: typing.Optional[typing.Dict[str, str]] = None
-    ) -> typing.List[Instance]:
+
+    def list(self, metadata: typing.Optional[typing.Dict[str, str]]=None) -> typing.List[Instance]:
         """List all instances available to the user.
 
         Parameters:
             metadata: Optional metadata to filter instances by."""
-        response = self._client._http_client.get(
-            "/instance",
-            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
-        )
-        return [
-            Instance.model_validate(instance)._set_api(self)
-            for instance in response.json()["data"]
-        ]
+        response = self._client._http_client.get('/instance', params={f'metadata[{k}]': v for k, v in (metadata or {}).items()})
+        return [Instance.model_validate(instance)._set_api(self) for instance in response.json()['data']]
 
     class ListPaginatedResponse(BaseModel):
-        instances: typing.List["Instance"]
+        instances: typing.List['Instance']
         total: int
         page: int
         size: int
@@ -1890,13 +1257,7 @@ class InstanceAPI(BaseAPI):
         has_next: bool
         has_prev: bool
 
-    def list_paginated(
-        self,
-        page: int = 1,
-        limit: int = 50,
-        *,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-    ) -> "InstanceAPI.ListPaginatedResponse":
+    def list_paginated(self, page: int=1, limit: int=50, *, metadata: typing.Optional[typing.Dict[str, str]]=None) -> 'InstanceAPI.ListPaginatedResponse':
         """List instances with pagination using the /instance/list endpoint.
 
         Parameters:
@@ -1904,53 +1265,24 @@ class InstanceAPI(BaseAPI):
             limit: Page size
             metadata: Optional metadata to filter instances by
         """
-        params: typing.Dict[str, typing.Union[str, int]] = {
-            "page": page,
-            "limit": limit,
-        }
+        params: typing.Dict[str, typing.Union[str, int]] = {'page': page, 'limit': limit}
         if metadata is not None:
             for k, v in metadata.items():
-                params[f"metadata[{k}]"] = v
-        response = self._client._http_client.get("/instance/list", params=params)
+                params[f'metadata[{k}]'] = v
+        response = self._client._http_client.get('/instance/list', params=params)
         payload = response.json()
-        instances = [
-            Instance.model_validate(i)._set_api(self)
-            for i in payload.get("instances", [])
-        ]
-        return InstanceAPI.ListPaginatedResponse(
-            instances=instances,
-            total=payload.get("total", len(instances)),
-            page=payload.get("page", page),
-            size=payload.get("size", len(instances)),
-            total_pages=payload.get("total_pages", 1),
-            has_next=payload.get("has_next", False),
-            has_prev=payload.get("has_prev", False),
-        )
+        instances = [Instance.model_validate(i)._set_api(self) for i in payload.get('instances', [])]
+        return InstanceAPI.ListPaginatedResponse(instances=instances, total=payload.get('total', len(instances)), page=payload.get('page', page), size=payload.get('size', len(instances)), total_pages=payload.get('total_pages', 1), has_next=payload.get('has_next', False), has_prev=payload.get('has_prev', False))
 
-    async def alist(
-        self, metadata: typing.Optional[typing.Dict[str, str]] = None
-    ) -> typing.List[Instance]:
+    async def alist(self, metadata: typing.Optional[typing.Dict[str, str]]=None) -> typing.List[Instance]:
         """List all instances available to the user.
 
         Parameters:
             metadata: Optional metadata to filter instances by."""
-        response = await self._client._async_http_client.get(
-            "/instance",
-            params={f"metadata[{k}]": v for k, v in (metadata or {}).items()},
-        )
-        return [
-            Instance.model_validate(instance)._set_api(self)
-            for instance in response.json()["data"]
-        ]
+        response = await self._client._async_http_client.get('/instance', params={f'metadata[{k}]': v for k, v in (metadata or {}).items()})
+        return [Instance.model_validate(instance)._set_api(self) for instance in response.json()['data']]
 
-    def start(
-        self,
-        snapshot_id: str,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-        timeout: typing.Optional[float] = None,
-    ) -> Instance:
+    def start(self, snapshot_id: str, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None, timeout: typing.Optional[float]=None) -> Instance:
         """Create a new instance from a snapshot.
 
         Parameters:
@@ -1961,43 +1293,22 @@ class InstanceAPI(BaseAPI):
             timeout: Seconds to wait for instance to be ready. None or 0.0 means wait indefinitely.
         """
         if isinstance(snapshot_id, Snapshot):
-            assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
-        response = self._client._http_client.post(
-            "/instance",
-            params={"snapshot_id": snapshot_id},
-            json={
-                "metadata": metadata,
-                "ttl_seconds": ttl_seconds,
-                "ttl_action": ttl_action,
-            },
-        )
+            assert isinstance(snapshot_id, str), 'start(...) excepts a snapshot_id: str'
+        response = self._client._http_client.post('/instance', params={'snapshot_id': snapshot_id}, json={'metadata': metadata, 'ttl_seconds': ttl_seconds, 'ttl_action': ttl_action})
         instance = Instance.model_validate(response.json())._set_api(self)
-        # Pass timeout as-is: None = wait indefinitely, 0.0 = no wait
         try:
             instance.wait_until_ready(timeout=timeout)
         except Exception as e:
-            console.print(
-                f"[red]Failed to start instance {instance.id} with timeout: {e}[/red]"
-            )
-            # Clean up the instance if it fails to become ready
+            console.print(f'[red]Failed to start instance {instance.id} with timeout: {e}[/red]')
             try:
                 instance.stop()
             except Exception as cleanup_error:
-                console.print(
-                    f"[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]"
-                )
+                console.print(f'[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]')
                 raise cleanup_error from e
             raise e
         return instance
 
-    async def astart(
-        self,
-        snapshot_id: str,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-        timeout: typing.Optional[float] = None,
-    ) -> Instance:
+    async def astart(self, snapshot_id: str, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None, timeout: typing.Optional[float]=None) -> Instance:
         """Create a new instance from a snapshot.
 
         Parameters:
@@ -2008,68 +1319,42 @@ class InstanceAPI(BaseAPI):
             timeout: Seconds to wait for instance to be ready. None or 0.0 means wait indefinitely.
         """
         if isinstance(snapshot_id, Snapshot):
-            assert isinstance(snapshot_id, str), "start(...) excepts a snapshot_id: str"
-        response = await self._client._async_http_client.post(
-            "/instance",
-            params={"snapshot_id": snapshot_id},
-            json={
-                "metadata": metadata,
-                "ttl_seconds": ttl_seconds,
-                "ttl_action": ttl_action,
-            },
-        )
+            assert isinstance(snapshot_id, str), 'start(...) excepts a snapshot_id: str'
+        response = await self._client._async_http_client.post('/instance', params={'snapshot_id': snapshot_id}, json={'metadata': metadata, 'ttl_seconds': ttl_seconds, 'ttl_action': ttl_action})
         instance = Instance.model_validate(response.json())._set_api(self)
-        # Pass timeout as-is: None = wait indefinitely, 0.0 = no wait
         try:
             await instance.await_until_ready(timeout=timeout)
         except Exception as e:
-            console.print(
-                f"[red]Failed to start instance {instance.id} with timeout: {e}[/red]"
-            )
-            # Clean up the instance if it fails to become ready
+            console.print(f'[red]Failed to start instance {instance.id} with timeout: {e}[/red]')
             try:
                 await instance.astop()
             except Exception as cleanup_error:
-                console.print(
-                    f"[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]"
-                )
+                console.print(f'[red]Failed to cleanup instance {instance.id}: {cleanup_error}[/red]')
                 raise cleanup_error from e
             raise e
         return instance
 
     def get(self, instance_id: str) -> Instance:
         """Get an instance by its ID."""
-        response = self._client._http_client.get(f"/instance/{instance_id}")
+        response = self._client._http_client.get(f'/instance/{instance_id}')
         return Instance.model_validate(response.json())._set_api(self)
 
     async def aget(self, instance_id: str) -> Instance:
         """Get an instance by its ID."""
-        response = await self._client._async_http_client.get(f"/instance/{instance_id}")
+        response = await self._client._async_http_client.get(f'/instance/{instance_id}')
         return Instance.model_validate(response.json())._set_api(self)
 
     def stop(self, instance_id: str) -> None:
         """Stop an instance by its ID."""
-        response = self._client._http_client.delete(f"/instance/{instance_id}")
+        response = self._client._http_client.delete(f'/instance/{instance_id}')
         response.raise_for_status()
 
     async def astop(self, instance_id: str) -> None:
         """Stop an instance by its ID."""
-        response = await self._client._async_http_client.delete(
-            f"/instance/{instance_id}"
-        )
+        response = await self._client._async_http_client.delete(f'/instance/{instance_id}')
         response.raise_for_status()
 
-    def reboot(
-        self,
-        instance_id: str,
-        *,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> Instance:
+    def reboot(self, instance_id: str, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> Instance:
         """
         Reboot an instance by its ID, optionally applying a new machine configuration.
 
@@ -2078,138 +1363,85 @@ class InstanceAPI(BaseAPI):
         """
         body: typing.Dict[str, typing.Any] = {}
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
+            body['ttl_seconds'] = ttl_seconds
         if ttl_action is not None:
-            body["ttl_action"] = ttl_action
-
+            body['ttl_action'] = ttl_action
         if body:
-            response = self._client._http_client.post(
-                f"/instance/{instance_id}/reboot", json=body
-            )
+            response = self._client._http_client.post(f'/instance/{instance_id}/reboot', json=body)
         else:
-            response = self._client._http_client.post(f"/instance/{instance_id}/reboot")
+            response = self._client._http_client.post(f'/instance/{instance_id}/reboot')
         response.raise_for_status()
         return Instance.model_validate(response.json())._set_api(self)
 
-    async def areboot(
-        self,
-        instance_id: str,
-        *,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> Instance:
+    async def areboot(self, instance_id: str, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> Instance:
         """
         Async reboot of an instance, optionally applying a new machine configuration.
         """
         body: typing.Dict[str, typing.Any] = {}
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
+            body['ttl_seconds'] = ttl_seconds
         if ttl_action is not None:
-            body["ttl_action"] = ttl_action
-
+            body['ttl_action'] = ttl_action
         if body:
-            response = await self._client._async_http_client.post(
-                f"/instance/{instance_id}/reboot", json=body
-            )
+            response = await self._client._async_http_client.post(f'/instance/{instance_id}/reboot', json=body)
         else:
-            response = await self._client._async_http_client.post(
-                f"/instance/{instance_id}/reboot"
-            )
+            response = await self._client._async_http_client.post(f'/instance/{instance_id}/reboot')
         response.raise_for_status()
         return Instance.model_validate(response.json())._set_api(self)
 
-    def boot(
-        self,
-        snapshot_id: str,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> Instance:
+    def boot(self, snapshot_id: str, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
+            body['ttl_seconds'] = ttl_seconds
         if ttl_action is not None:
-            body["ttl_action"] = ttl_action
-
-        response = self._client._http_client.post(
-            f"/snapshot/{snapshot_id}/boot",
-            json=body,
-        )
+            body['ttl_action'] = ttl_action
+        response = self._client._http_client.post(f'/snapshot/{snapshot_id}/boot', json=body)
         return Instance.model_validate(response.json())._set_api(self)
 
-    async def aboot(
-        self,
-        snapshot_id: str,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> Instance:
+    async def aboot(self, snapshot_id: str, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> Instance:
         """Boot an instance from a snapshot."""
         body = {}
         if vcpus is not None:
-            body["vcpus"] = vcpus
+            body['vcpus'] = vcpus
         if memory is not None:
-            body["memory"] = memory
+            body['memory'] = memory
         if disk_size is not None:
-            body["disk_size"] = disk_size
+            body['disk_size'] = disk_size
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
+            body['ttl_seconds'] = ttl_seconds
         if ttl_action is not None:
-            body["ttl_action"] = ttl_action
-        response = await self._client._async_http_client.post(
-            f"/snapshot/{snapshot_id}/boot",
-            json=body,
-        )
+            body['ttl_action'] = ttl_action
+        response = await self._client._async_http_client.post(f'/snapshot/{snapshot_id}/boot', json=body)
         return Instance.model_validate(response.json())._set_api(self)
 
-    def cleanup(
-        self,
-        snapshot_pattern: typing.Optional[str] = None,
-        snapshot_exclude_pattern: typing.Optional[str] = None,
-        service_pattern: typing.Optional[str] = None,
-        service_exclude_pattern: typing.Optional[str] = None,
-        exclude_paused: bool = True,
-        action: str = "stop",
-        max_workers: int = 10,
-        confirm: bool = False,
-    ) -> typing.Dict[str, typing.Any]:
+    def cleanup(self, snapshot_pattern: typing.Optional[str]=None, snapshot_exclude_pattern: typing.Optional[str]=None, service_pattern: typing.Optional[str]=None, service_exclude_pattern: typing.Optional[str]=None, exclude_paused: bool=True, action: str='stop', max_workers: int=10, confirm: bool=False) -> typing.Dict[str, typing.Any]:
         """
         Clean up instances based on various filtering criteria.
 
@@ -2227,395 +1459,182 @@ class InstanceAPI(BaseAPI):
             Dictionary with cleanup results including success/failure counts and details
         """
         from rich.console import Console
-
         console = Console()
-
-        # Validate action parameter
-        valid_actions = ["stop", "pause"]
+        valid_actions = ['stop', 'pause']
         if action not in valid_actions:
-            raise ValueError(
-                f"Invalid action '{action}'. Must be one of: {valid_actions}"
-            )
-
-        console.print("[bold blue]Starting MorphCloud Instance Cleanup[/bold blue]")
-        console.print(f"Action: [cyan]{action}[/cyan]")
-
-        # List all instances
+            raise ValueError(f"Invalid action '{action}'. Must be one of: {valid_actions}")
+        console.print('[bold blue]Starting MorphCloud Instance Cleanup[/bold blue]')
+        console.print(f'Action: [cyan]{action}[/cyan]')
         try:
-            console.print("Fetching list of all instances...")
+            console.print('Fetching list of all instances...')
             all_instances = self.list()
-            console.print(f"Found {len(all_instances)} total instances.")
-
+            console.print(f'Found {len(all_instances)} total instances.')
             if not all_instances:
-                console.print("[green]No instances found. Nothing to clean up.[/green]")
-                return {
-                    "success": True,
-                    "total": 0,
-                    "processed": 0,
-                    "kept": 0,
-                    "errors": [],
-                }
-
+                console.print('[green]No instances found. Nothing to clean up.[/green]')
+                return {'success': True, 'total': 0, 'processed': 0, 'kept': 0, 'errors': []}
         except Exception as e:
-            console.print(
-                f"[bold red]Error listing instances:[/bold red] {e}", style="error"
-            )
-            return {"success": False, "error": str(e)}
-
-        # Filter instances
+            console.print(f'[bold red]Error listing instances:[/bold red] {e}', style='error')
+            return {'success': False, 'error': str(e)}
         instances_to_process: typing.List[Instance] = []
         instances_to_keep: typing.List[Instance] = []
-
-        console.print("\n[bold]Filtering instances...[/bold]")
-
+        console.print('\n[bold]Filtering instances...[/bold]')
         for instance in all_instances:
             should_process = True
             reasons_to_keep = []
             reasons_to_process = []
-
-            # Check if instance status is eligible for the action
-            if action == "stop":
+            if action == 'stop':
                 if instance.status not in [InstanceStatus.READY, InstanceStatus.PAUSED]:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"status is {instance.status.value} (not ready/paused)"
-                    )
-            elif action == "pause":
+                    reasons_to_keep.append(f'status is {instance.status.value} (not ready/paused)')
+            elif action == 'pause':
                 if instance.status != InstanceStatus.READY:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"status is {instance.status.value} (not ready)"
-                    )
-
-            # Check exclude_paused flag
+                    reasons_to_keep.append(f'status is {instance.status.value} (not ready)')
             if exclude_paused and instance.status == InstanceStatus.PAUSED:
                 should_process = False
-                reasons_to_keep.append("instance is paused (exclude_paused=True)")
-
-            # Check snapshot patterns
+                reasons_to_keep.append('instance is paused (exclude_paused=True)')
             snapshot_id = instance.refs.snapshot_id
 
-            # Helper function to check multiple patterns
             def matches_any_pattern(value, pattern_list):
                 if not pattern_list:
                     return False
-                patterns = [p.strip() for p in pattern_list.split(",")]
-                return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
-
-            # Include snapshot pattern check
-            if snapshot_pattern and not matches_any_pattern(
-                snapshot_id, snapshot_pattern
-            ):
+                patterns = [p.strip() for p in pattern_list.split(',')]
+                return any((fnmatch.fnmatch(value, pattern) for pattern in patterns))
+            if snapshot_pattern and (not matches_any_pattern(snapshot_id, snapshot_pattern)):
                 should_process = False
-                reasons_to_keep.append(
-                    f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'"
-                )
-            elif snapshot_pattern and matches_any_pattern(
-                snapshot_id, snapshot_pattern
-            ):
-                reasons_to_process.append(
-                    f"snapshot ID matches patterns '{snapshot_pattern}'"
-                )
-
-            # Exclude pattern check
-            if snapshot_exclude_pattern and matches_any_pattern(
-                snapshot_id, snapshot_exclude_pattern
-            ):
+                reasons_to_keep.append(f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'")
+            elif snapshot_pattern and matches_any_pattern(snapshot_id, snapshot_pattern):
+                reasons_to_process.append(f"snapshot ID matches patterns '{snapshot_pattern}'")
+            if snapshot_exclude_pattern and matches_any_pattern(snapshot_id, snapshot_exclude_pattern):
                 should_process = False
-                reasons_to_keep.append(
-                    f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'"
-                )
-
-            # Check service patterns
-            exposed_service_names = {
-                service.name for service in instance.networking.http_services
-            }
-
+                reasons_to_keep.append(f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'")
+            exposed_service_names = {service.name for service in instance.networking.http_services}
             if service_pattern or service_exclude_pattern:
                 service_match_found = False
                 service_exclude_found = False
                 matching_keep_services = []
                 matching_exclude_services = []
-
                 for service_name in exposed_service_names:
-                    # Include pattern check (keep instances with these services)
-                    if service_pattern and matches_any_pattern(
-                        service_name, service_pattern
-                    ):
+                    if service_pattern and matches_any_pattern(service_name, service_pattern):
                         service_match_found = True
                         matching_keep_services.append(service_name)
-
-                    # Exclude pattern check (also keep instances with these services)
-                    if service_exclude_pattern and matches_any_pattern(
-                        service_name, service_exclude_pattern
-                    ):
+                    if service_exclude_pattern and matches_any_pattern(service_name, service_exclude_pattern):
                         service_exclude_found = True
                         matching_exclude_services.append(service_name)
-
-                # If service_pattern is provided and we have matches, remove this instance
                 if service_pattern and service_match_found:
-                    reasons_to_keep.append(
-                        f"services {matching_keep_services} match cleanup patterns '{service_pattern}'"
-                    )
-                # If service_exclude_pattern is provided and we have matches, keep this instance
+                    reasons_to_keep.append(f"services {matching_keep_services} match cleanup patterns '{service_pattern}'")
                 elif service_exclude_pattern and service_exclude_found:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)"
-                    )
-                # If we have service patterns but no matches, this instance should be kept
-                elif service_pattern and not service_match_found:
+                    reasons_to_keep.append(f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)")
+                elif service_pattern and (not service_match_found):
                     should_process = False
-                    reasons_to_process.append(
-                        f"no services match keep patterns '{service_pattern}'"
-                    )
-                elif service_exclude_pattern and not service_exclude_found:
-                    reasons_to_process.append(
-                        f"no services match exclude patterns '{service_exclude_pattern}'"
-                    )
-
-            # Final decision
+                    reasons_to_process.append(f"no services match keep patterns '{service_pattern}'")
+                elif service_exclude_pattern and (not service_exclude_found):
+                    reasons_to_process.append(f"no services match exclude patterns '{service_exclude_pattern}'")
             if should_process:
                 instances_to_process.append(instance)
-                console.print(
-                    f"  - [yellow]Will {action} instance {instance.id}[/yellow]: "
-                    f"{', '.join(reasons_to_process) if reasons_to_process else 'meets criteria'}"
-                )
+                console.print(f"  - [yellow]Will {action} instance {instance.id}[/yellow]: {(', '.join(reasons_to_process) if reasons_to_process else 'meets criteria')}")
             else:
                 instances_to_keep.append(instance)
-                console.print(
-                    f"  - [green]Keeping instance {instance.id}[/green]: "
-                    f"{', '.join(reasons_to_keep)}"
-                )
-
-        # Summary
-        console.print("\n[bold]Summary:[/bold]")
-        console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
-        console.print(
-            f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
-        )
-
+                console.print(f"  - [green]Keeping instance {instance.id}[/green]: {', '.join(reasons_to_keep)}")
+        console.print('\n[bold]Summary:[/bold]')
+        console.print(f'  - Instances to keep: [green]{len(instances_to_keep)}[/green]')
+        console.print(f'  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]')
         if not instances_to_process:
-            console.print(f"\n[green]No instances marked for {action}ing.[/green]")
-            return {
-                "success": True,
-                "total": len(all_instances),
-                "processed": 0,
-                "kept": len(instances_to_keep),
-                "errors": [],
-            }
-
-        # User confirmation
+            console.print(f'\n[green]No instances marked for {action}ing.[/green]')
+            return {'success': True, 'total': len(all_instances), 'processed': 0, 'kept': len(instances_to_keep), 'errors': []}
         if confirm:
-            console.print(
-                f"\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]"
-            )
-
+            console.print(f'\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]')
             if instances_to_process:
-                # Display table of instances to be processed
-                console.print("\n[bold]Instances that will be processed:[/bold]")
+                console.print('\n[bold]Instances that will be processed:[/bold]')
 
-                # Helper function to print table
-                def print_instance_table(instances, title_color="yellow"):
-                    headers = [
-                        "Instance ID",
-                        "Snapshot ID",
-                        "Status",
-                        "VCPUs",
-                        "Memory (MB)",
-                        "Services",
-                    ]
+                def print_instance_table(instances, title_color='yellow'):
+                    headers = ['Instance ID', 'Snapshot ID', 'Status', 'VCPUs', 'Memory (MB)', 'Services']
                     rows = []
-
                     for inst in instances:
-                        services = ", ".join(
-                            f"{svc.name}:{svc.port}"
-                            for svc in inst.networking.http_services
-                        )
-                        rows.append(
-                            [
-                                inst.id,
-                                inst.refs.snapshot_id,
-                                inst.status.value,
-                                str(inst.spec.vcpus),
-                                str(inst.spec.memory),
-                                services if services else "None",
-                            ]
-                        )
-
-                    # Calculate column widths
+                        services = ', '.join((f'{svc.name}:{svc.port}' for svc in inst.networking.http_services))
+                        rows.append([inst.id, inst.refs.snapshot_id, inst.status.value, str(inst.spec.vcpus), str(inst.spec.memory), services if services else 'None'])
                     widths = []
                     for i in range(len(headers)):
                         width = len(headers[i])
                         if rows:
                             column_values = [row[i] for row in rows]
-                            width = max(width, max(len(val) for val in column_values))
+                            width = max(width, max((len(val) for val in column_values)))
                         widths.append(width)
-
-                    # Print header
-                    header_line = "  "
+                    header_line = '  '
                     for i, header in enumerate(headers):
-                        header_line += f"{header:<{widths[i]}}  "
-                    console.print(
-                        f"[bold {title_color}]{header_line}[/bold {title_color}]"
-                    )
-
-                    # Print separator
-                    separator_line = "  "
+                        header_line += f'{header:<{widths[i]}}  '
+                    console.print(f'[bold {title_color}]{header_line}[/bold {title_color}]')
+                    separator_line = '  '
                     for width in widths:
-                        separator_line += "-" * width + "  "
-                    console.print(f"[dim]{separator_line}[/dim]")
-
-                    # Print rows
+                        separator_line += '-' * width + '  '
+                    console.print(f'[dim]{separator_line}[/dim]')
                     for row in rows:
-                        row_line = "  "
+                        row_line = '  '
                         for i, value in enumerate(row):
-                            row_line += f"{value:<{widths[i]}}  "
+                            row_line += f'{value:<{widths[i]}}  '
                         console.print(row_line)
-
-                print_instance_table(instances_to_process, "yellow")
-
+                print_instance_table(instances_to_process, 'yellow')
             if instances_to_keep:
-                console.print(
-                    f"\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]"
-                )
-                print_instance_table(instances_to_keep, "green")
+                console.print(f'\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]')
+                print_instance_table(instances_to_keep, 'green')
+            response = input(f'\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): ').lower().strip()
+            if response not in ['y', 'yes']:
+                console.print('[cyan]Operation cancelled by user.[/cyan]')
+                return {'success': True, 'total': len(all_instances), 'processed': 0, 'kept': len(all_instances), 'cancelled': True, 'errors': []}
 
-            response = (
-                input(
-                    f"\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): "
-                )
-                .lower()
-                .strip()
-            )
-            if response not in ["y", "yes"]:
-                console.print("[cyan]Operation cancelled by user.[/cyan]")
-                return {
-                    "success": True,
-                    "total": len(all_instances),
-                    "processed": 0,
-                    "kept": len(all_instances),
-                    "cancelled": True,
-                    "errors": [],
-                }
-
-        # Worker function for concurrent operations
-        def process_instance_worker(
-            instance: Instance,
-        ) -> typing.Tuple[str, bool, typing.Optional[str]]:
+        def process_instance_worker(instance: Instance) -> typing.Tuple[str, bool, typing.Optional[str]]:
             """Worker function to process a single instance."""
             instance_id = instance.id
             try:
-                console.print(
-                    f"[yellow]Attempting to {action} instance {instance_id}..."
-                )
-
-                if action == "stop":
+                console.print(f'[yellow]Attempting to {action} instance {instance_id}...')
+                if action == 'stop':
                     instance.stop()
-                elif action == "pause":
+                elif action == 'pause':
                     instance.pause()
-
-                console.print(
-                    f"[green]Successfully {action}ped instance {instance_id}[/green]"
-                )
-                return instance_id, True, None
-
+                console.print(f'[green]Successfully {action}ped instance {instance_id}[/green]')
+                return (instance_id, True, None)
             except ApiError as e:
-                error_msg = f"API Error: {e.status_code}"
-                console.print(
-                    f"[bold red]API Error {action}ping instance {instance_id}:[/bold red] "
-                    f"Status {e.status_code} - {e.response_body}",
-                    style="error",
-                )
-                return instance_id, False, error_msg
+                error_msg = f'API Error: {e.status_code}'
+                console.print(f'[bold red]API Error {action}ping instance {instance_id}:[/bold red] Status {e.status_code} - {e.response_body}', style='error')
+                return (instance_id, False, error_msg)
             except Exception as e:
-                error_msg = f"Unexpected Error: {str(e)}"
-                console.print(
-                    f"[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}",
-                    style="error",
-                )
-                return instance_id, False, error_msg
-
-        # Execute operations concurrently
-        console.print(
-            f"\nStarting concurrent {action} operation (max_workers={max_workers})..."
-        )
-
+                error_msg = f'Unexpected Error: {str(e)}'
+                console.print(f'[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}', style='error')
+                return (instance_id, False, error_msg)
+        console.print(f'\nStarting concurrent {action} operation (max_workers={max_workers})...')
         processed_successfully = 0
         processed_failed = 0
         error_details = []
-
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Create futures mapping
-            future_to_instance = {
-                executor.submit(process_instance_worker, instance): instance.id
-                for instance in instances_to_process
-            }
-
-            # Process futures as they complete
+            future_to_instance = {executor.submit(process_instance_worker, instance): instance.id for instance in instances_to_process}
             for future in as_completed(future_to_instance):
                 instance_id = future_to_instance[future]
                 try:
-                    result = future.result()  # (instance_id, success, error_msg)
-                    if result[1]:  # success
+                    result = future.result()
+                    if result[1]:
                         processed_successfully += 1
                     else:
                         processed_failed += 1
-                        error_details.append(
-                            {"instance_id": result[0], "error": result[2]}
-                        )
+                        error_details.append({'instance_id': result[0], 'error': result[2]})
                 except Exception as exc:
-                    console.print(
-                        f"[bold red]Critical Error processing instance {instance_id}:[/bold red] {exc}",
-                        style="error",
-                    )
+                    console.print(f'[bold red]Critical Error processing instance {instance_id}:[/bold red] {exc}', style='error')
                     processed_failed += 1
-                    error_details.append(
-                        {
-                            "instance_id": instance_id,
-                            "error": f"Future Execution Error: {str(exc)}",
-                        }
-                    )
-
-        # Final report
-        console.print("\n[bold blue]Cleanup Operation Complete[/bold blue]")
-        console.print(
-            f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
-        )
-        console.print(f"  - Failed to {action}: [red]{processed_failed}[/red]")
-        console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
-
+                    error_details.append({'instance_id': instance_id, 'error': f'Future Execution Error: {str(exc)}'})
+        console.print('\n[bold blue]Cleanup Operation Complete[/bold blue]')
+        console.print(f'  - Successfully {action}ped: [green]{processed_successfully}[/green]')
+        console.print(f'  - Failed to {action}: [red]{processed_failed}[/red]')
+        console.print(f'  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]')
         if processed_failed > 0:
-            console.print("\n[bold red]Failures occurred:[/bold red]")
+            console.print('\n[bold red]Failures occurred:[/bold red]')
             for error in error_details:
                 console.print(f"  - Instance {error['instance_id']}: {error['error']}")
-
         success = processed_failed == 0
         if success:
-            console.print(
-                f"[bold green]All targeted instances {action}ped successfully![/bold green]"
-            )
+            console.print(f'[bold green]All targeted instances {action}ped successfully![/bold green]')
+        return {'success': success, 'total': len(all_instances), 'processed': processed_successfully, 'failed': processed_failed, 'kept': len(instances_to_keep), 'errors': error_details}
 
-        return {
-            "success": success,
-            "total": len(all_instances),
-            "processed": processed_successfully,
-            "failed": processed_failed,
-            "kept": len(instances_to_keep),
-            "errors": error_details,
-        }
-
-    async def acleanup(
-        self,
-        snapshot_pattern: typing.Optional[str] = None,
-        snapshot_exclude_pattern: typing.Optional[str] = None,
-        service_pattern: typing.Optional[str] = None,
-        service_exclude_pattern: typing.Optional[str] = None,
-        exclude_paused: bool = True,
-        action: str = "stop",
-        max_concurrency: int = 10,
-        confirm: bool = False,
-    ) -> typing.Dict[str, typing.Any]:
+    async def acleanup(self, snapshot_pattern: typing.Optional[str]=None, snapshot_exclude_pattern: typing.Optional[str]=None, service_pattern: typing.Optional[str]=None, service_exclude_pattern: typing.Optional[str]=None, exclude_paused: bool=True, action: str='stop', max_concurrency: int=10, confirm: bool=False) -> typing.Dict[str, typing.Any]:
         """
         Asynchronously clean up instances based on various filtering criteria.
 
@@ -2633,397 +1652,191 @@ class InstanceAPI(BaseAPI):
             Dictionary with cleanup results including success/failure counts and details
         """
         import asyncio
-
         from rich.console import Console
-
         console = Console()
-
-        # Validate action parameter
-        valid_actions = ["stop", "pause"]
+        valid_actions = ['stop', 'pause']
         if action not in valid_actions:
-            raise ValueError(
-                f"Invalid action '{action}'. Must be one of: {valid_actions}"
-            )
-
-        console.print(
-            "[bold blue]Starting Async MorphCloud Instance Cleanup[/bold blue]"
-        )
-        console.print(f"Action: [cyan]{action}[/cyan]")
-
-        # List all instances
+            raise ValueError(f"Invalid action '{action}'. Must be one of: {valid_actions}")
+        console.print('[bold blue]Starting Async MorphCloud Instance Cleanup[/bold blue]')
+        console.print(f'Action: [cyan]{action}[/cyan]')
         try:
-            console.print("Fetching list of all instances...")
+            console.print('Fetching list of all instances...')
             all_instances = await self.alist()
-            console.print(f"Found {len(all_instances)} total instances.")
-
+            console.print(f'Found {len(all_instances)} total instances.')
             if not all_instances:
-                console.print("[green]No instances found. Nothing to clean up.[/green]")
-                return {
-                    "success": True,
-                    "total": 0,
-                    "processed": 0,
-                    "kept": 0,
-                    "errors": [],
-                }
-
+                console.print('[green]No instances found. Nothing to clean up.[/green]')
+                return {'success': True, 'total': 0, 'processed': 0, 'kept': 0, 'errors': []}
         except Exception as e:
-            console.print(
-                f"[bold red]Error listing instances:[/bold red] {e}", style="error"
-            )
-            return {"success": False, "error": str(e)}
-
-        # Filter instances (same logic as sync version)
+            console.print(f'[bold red]Error listing instances:[/bold red] {e}', style='error')
+            return {'success': False, 'error': str(e)}
         instances_to_process: typing.List[Instance] = []
         instances_to_keep: typing.List[Instance] = []
-
-        console.print("\n[bold]Filtering instances...[/bold]")
-
+        console.print('\n[bold]Filtering instances...[/bold]')
         for instance in all_instances:
             should_process = True
             reasons_to_keep = []
             reasons_to_process = []
-
-            # Check if instance status is eligible for the action
-            if action == "stop":
+            if action == 'stop':
                 if instance.status not in [InstanceStatus.READY, InstanceStatus.PAUSED]:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"status is {instance.status.value} (not ready/paused)"
-                    )
-            elif action == "pause":
+                    reasons_to_keep.append(f'status is {instance.status.value} (not ready/paused)')
+            elif action == 'pause':
                 if instance.status != InstanceStatus.READY:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"status is {instance.status.value} (not ready)"
-                    )
-
-            # Check exclude_paused flag
+                    reasons_to_keep.append(f'status is {instance.status.value} (not ready)')
             if exclude_paused and instance.status == InstanceStatus.PAUSED:
                 should_process = False
-                reasons_to_keep.append("instance is paused (exclude_paused=True)")
-
-            # Check snapshot patterns
+                reasons_to_keep.append('instance is paused (exclude_paused=True)')
             snapshot_id = instance.refs.snapshot_id
 
-            # Helper function to check multiple patterns
             def matches_any_pattern(value, pattern_list):
                 if not pattern_list:
                     return False
-                patterns = [p.strip() for p in pattern_list.split(",")]
-                return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
-
-            # Include pattern check
-            if snapshot_pattern and not matches_any_pattern(
-                snapshot_id, snapshot_pattern
-            ):
+                patterns = [p.strip() for p in pattern_list.split(',')]
+                return any((fnmatch.fnmatch(value, pattern) for pattern in patterns))
+            if snapshot_pattern and (not matches_any_pattern(snapshot_id, snapshot_pattern)):
                 should_process = False
-                reasons_to_keep.append(
-                    f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'"
-                )
-            elif snapshot_pattern and matches_any_pattern(
-                snapshot_id, snapshot_pattern
-            ):
-                reasons_to_process.append(
-                    f"snapshot ID matches patterns '{snapshot_pattern}'"
-                )
-
-            # Exclude pattern check
-            if snapshot_exclude_pattern and matches_any_pattern(
-                snapshot_id, snapshot_exclude_pattern
-            ):
+                reasons_to_keep.append(f"snapshot ID '{snapshot_id}' doesn't match patterns '{snapshot_pattern}'")
+            elif snapshot_pattern and matches_any_pattern(snapshot_id, snapshot_pattern):
+                reasons_to_process.append(f"snapshot ID matches patterns '{snapshot_pattern}'")
+            if snapshot_exclude_pattern and matches_any_pattern(snapshot_id, snapshot_exclude_pattern):
                 should_process = False
-                reasons_to_keep.append(
-                    f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'"
-                )
-
-            # Check service patterns
-            exposed_service_names = {
-                service.name for service in instance.networking.http_services
-            }
-
+                reasons_to_keep.append(f"snapshot ID '{snapshot_id}' matches exclude patterns '{snapshot_exclude_pattern}'")
+            exposed_service_names = {service.name for service in instance.networking.http_services}
             if service_pattern or service_exclude_pattern:
                 service_match_found = False
                 service_exclude_found = False
                 matching_keep_services = []
                 matching_exclude_services = []
-
                 for service_name in exposed_service_names:
-                    # Include pattern check (keep instances with these services)
-                    if service_pattern and matches_any_pattern(
-                        service_name, service_pattern
-                    ):
+                    if service_pattern and matches_any_pattern(service_name, service_pattern):
                         service_match_found = True
                         matching_keep_services.append(service_name)
-
-                    # Exclude pattern check (also keep instances with these services)
-                    if service_exclude_pattern and matches_any_pattern(
-                        service_name, service_exclude_pattern
-                    ):
+                    if service_exclude_pattern and matches_any_pattern(service_name, service_exclude_pattern):
                         service_exclude_found = True
                         matching_exclude_services.append(service_name)
-
-                # If service_pattern is provided and we have matches, keep this instance
                 if service_pattern and service_match_found:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"services {matching_keep_services} match keep patterns '{service_pattern}'"
-                    )
-                # If service_exclude_pattern is provided and we have matches, keep this instance
+                    reasons_to_keep.append(f"services {matching_keep_services} match keep patterns '{service_pattern}'")
                 elif service_exclude_pattern and service_exclude_found:
                     should_process = False
-                    reasons_to_keep.append(
-                        f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)"
-                    )
-                # If we have service patterns but no matches, this instance can be processed
-                elif service_pattern and not service_match_found:
-                    reasons_to_process.append(
-                        f"no services match keep patterns '{service_pattern}'"
-                    )
-                elif service_exclude_pattern and not service_exclude_found:
-                    reasons_to_process.append(
-                        f"no services match exclude patterns '{service_exclude_pattern}'"
-                    )
-
-            # Final decision
+                    reasons_to_keep.append(f"services {matching_exclude_services} match exclude patterns '{service_exclude_pattern}' (excluded from processing)")
+                elif service_pattern and (not service_match_found):
+                    reasons_to_process.append(f"no services match keep patterns '{service_pattern}'")
+                elif service_exclude_pattern and (not service_exclude_found):
+                    reasons_to_process.append(f"no services match exclude patterns '{service_exclude_pattern}'")
             if should_process:
                 instances_to_process.append(instance)
-                console.print(
-                    f"  - [yellow]Will {action} instance {instance.id}[/yellow]: "
-                    f"{', '.join(reasons_to_process) if reasons_to_process else 'meets criteria'}"
-                )
+                console.print(f"  - [yellow]Will {action} instance {instance.id}[/yellow]: {(', '.join(reasons_to_process) if reasons_to_process else 'meets criteria')}")
             else:
                 instances_to_keep.append(instance)
-                console.print(
-                    f"  - [green]Keeping instance {instance.id}[/green]: "
-                    f"{', '.join(reasons_to_keep)}"
-                )
-
-        # Summary
-        console.print("\n[bold]Summary:[/bold]")
-        console.print(f"  - Instances to keep: [green]{len(instances_to_keep)}[/green]")
-        console.print(
-            f"  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]"
-        )
-
+                console.print(f"  - [green]Keeping instance {instance.id}[/green]: {', '.join(reasons_to_keep)}")
+        console.print('\n[bold]Summary:[/bold]')
+        console.print(f'  - Instances to keep: [green]{len(instances_to_keep)}[/green]')
+        console.print(f'  - Instances to {action}: [yellow]{len(instances_to_process)}[/yellow]')
         if not instances_to_process:
-            console.print(f"\n[green]No instances marked for {action}ing.[/green]")
-            return {
-                "success": True,
-                "total": len(all_instances),
-                "processed": 0,
-                "kept": len(instances_to_keep),
-                "errors": [],
-            }
-
-        # User confirmation (run in thread to avoid blocking)
+            console.print(f'\n[green]No instances marked for {action}ing.[/green]')
+            return {'success': True, 'total': len(all_instances), 'processed': 0, 'kept': len(instances_to_keep), 'errors': []}
         if confirm:
-            console.print(
-                f"\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]"
-            )
-
+            console.print(f'\n[bold yellow]Ready to {action} {len(instances_to_process)} instances.[/bold yellow]')
             if instances_to_process:
-                # Display table of instances to be processed
-                console.print("\n[bold]Instances that will be processed:[/bold]")
+                console.print('\n[bold]Instances that will be processed:[/bold]')
 
-                # Helper function to print table
-                def print_instance_table(instances, title_color="yellow"):
-                    headers = [
-                        "Instance ID",
-                        "Snapshot ID",
-                        "Status",
-                        "VCPUs",
-                        "Memory (MB)",
-                        "Services",
-                    ]
+                def print_instance_table(instances, title_color='yellow'):
+                    headers = ['Instance ID', 'Snapshot ID', 'Status', 'VCPUs', 'Memory (MB)', 'Services']
                     rows = []
-
                     for inst in instances:
-                        services = ", ".join(
-                            f"{svc.name}:{svc.port}"
-                            for svc in inst.networking.http_services
-                        )
-                        rows.append(
-                            [
-                                inst.id,
-                                inst.refs.snapshot_id,
-                                inst.status.value,
-                                str(inst.spec.vcpus),
-                                str(inst.spec.memory),
-                                services if services else "None",
-                            ]
-                        )
-
-                    # Calculate column widths
+                        services = ', '.join((f'{svc.name}:{svc.port}' for svc in inst.networking.http_services))
+                        rows.append([inst.id, inst.refs.snapshot_id, inst.status.value, str(inst.spec.vcpus), str(inst.spec.memory), services if services else 'None'])
                     widths = []
                     for i in range(len(headers)):
                         width = len(headers[i])
                         if rows:
                             column_values = [row[i] for row in rows]
-                            width = max(width, max(len(val) for val in column_values))
+                            width = max(width, max((len(val) for val in column_values)))
                         widths.append(width)
-
-                    # Print header
-                    header_line = "  "
+                    header_line = '  '
                     for i, header in enumerate(headers):
-                        header_line += f"{header:<{widths[i]}}  "
-                    console.print(
-                        f"[bold {title_color}]{header_line}[/bold {title_color}]"
-                    )
-
-                    # Print separator
-                    separator_line = "  "
+                        header_line += f'{header:<{widths[i]}}  '
+                    console.print(f'[bold {title_color}]{header_line}[/bold {title_color}]')
+                    separator_line = '  '
                     for width in widths:
-                        separator_line += "-" * width + "  "
-                    console.print(f"[dim]{separator_line}[/dim]")
-
-                    # Print rows
+                        separator_line += '-' * width + '  '
+                    console.print(f'[dim]{separator_line}[/dim]')
                     for row in rows:
-                        row_line = "  "
+                        row_line = '  '
                         for i, value in enumerate(row):
-                            row_line += f"{value:<{widths[i]}}  "
+                            row_line += f'{value:<{widths[i]}}  '
                         console.print(row_line)
-
-                print_instance_table(instances_to_process, "yellow")
-
+                print_instance_table(instances_to_process, 'yellow')
             if instances_to_keep:
-                console.print(
-                    f"\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]"
-                )
-                print_instance_table(instances_to_keep, "green")
+                console.print(f'\n[bold green]Instances that will be kept ({len(instances_to_keep)}):[/bold green]')
+                print_instance_table(instances_to_keep, 'green')
+            response = await asyncio.to_thread(lambda: input(f'\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): ').lower().strip())
+            if response not in ['y', 'yes']:
+                console.print('[cyan]Operation cancelled by user.[/cyan]')
+                return {'success': True, 'total': len(all_instances), 'processed': 0, 'kept': len(all_instances), 'cancelled': True, 'errors': []}
 
-            response = await asyncio.to_thread(
-                lambda: input(
-                    f"\nDo you want to proceed to {action} {len(instances_to_process)} instances? (y/N): "
-                )
-                .lower()
-                .strip()
-            )
-            if response not in ["y", "yes"]:
-                console.print("[cyan]Operation cancelled by user.[/cyan]")
-                return {
-                    "success": True,
-                    "total": len(all_instances),
-                    "processed": 0,
-                    "kept": len(all_instances),
-                    "cancelled": True,
-                    "errors": [],
-                }
-
-        # Async worker function
-        async def process_instance_worker(
-            instance: Instance,
-        ) -> typing.Tuple[str, bool, typing.Optional[str]]:
+        async def process_instance_worker(instance: Instance) -> typing.Tuple[str, bool, typing.Optional[str]]:
             """Async worker function to process a single instance."""
             instance_id = instance.id
             try:
-                console.print(
-                    f"[yellow]Attempting to {action} instance {instance_id}..."
-                )
-
-                if action == "stop":
+                console.print(f'[yellow]Attempting to {action} instance {instance_id}...')
+                if action == 'stop':
                     await instance.astop()
-                elif action == "pause":
+                elif action == 'pause':
                     await instance.apause()
-
-                console.print(
-                    f"[green]Successfully {action}ped instance {instance_id}[/green]"
-                )
-                return instance_id, True, None
-
+                console.print(f'[green]Successfully {action}ped instance {instance_id}[/green]')
+                return (instance_id, True, None)
             except ApiError as e:
-                error_msg = f"API Error: {e.status_code}"
-                console.print(
-                    f"[bold red]API Error {action}ping instance {instance_id}:[/bold red] "
-                    f"Status {e.status_code} - {e.response_body}",
-                    style="error",
-                )
-                return instance_id, False, error_msg
+                error_msg = f'API Error: {e.status_code}'
+                console.print(f'[bold red]API Error {action}ping instance {instance_id}:[/bold red] Status {e.status_code} - {e.response_body}', style='error')
+                return (instance_id, False, error_msg)
             except Exception as e:
-                error_msg = f"Unexpected Error: {str(e)}"
-                console.print(
-                    f"[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}",
-                    style="error",
-                )
-                return instance_id, False, error_msg
-
-        # Execute operations concurrently with asyncio
-        console.print(
-            f"\nStarting concurrent {action} operation (max_concurrency={max_concurrency})..."
-        )
-
-        # Use asyncio semaphore to limit concurrency
+                error_msg = f'Unexpected Error: {str(e)}'
+                console.print(f'[bold red]Unexpected Error {action}ping instance {instance_id}:[/bold red] {e}', style='error')
+                return (instance_id, False, error_msg)
+        console.print(f'\nStarting concurrent {action} operation (max_concurrency={max_concurrency})...')
         semaphore = asyncio.Semaphore(max_concurrency)
 
         async def limited_worker(instance):
             async with semaphore:
                 return await process_instance_worker(instance)
-
-        # Run all tasks concurrently
         tasks = [limited_worker(instance) for instance in instances_to_process]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results
         processed_successfully = 0
         processed_failed = 0
         error_details = []
-
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 instance_id = instances_to_process[i].id
-                console.print(
-                    f"[bold red]Critical Error processing instance {instance_id}:[/bold red] {result}",
-                    style="error",
-                )
+                console.print(f'[bold red]Critical Error processing instance {instance_id}:[/bold red] {result}', style='error')
                 processed_failed += 1
-                error_details.append(
-                    {
-                        "instance_id": instance_id,
-                        "error": f"Task Exception: {str(result)}",
-                    }
-                )
+                error_details.append({'instance_id': instance_id, 'error': f'Task Exception: {str(result)}'})
             else:
                 instance_id, success, error_msg = result
                 if success:
                     processed_successfully += 1
                 else:
                     processed_failed += 1
-                    error_details.append(
-                        {"instance_id": instance_id, "error": error_msg}
-                    )
-
-        # Final report
-        console.print("\n[bold blue]Async Cleanup Operation Complete[/bold blue]")
-        console.print(
-            f"  - Successfully {action}ped: [green]{processed_successfully}[/green]"
-        )
-        console.print(f"  - Failed to {action}: [red]{processed_failed}[/red]")
-        console.print(f"  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]")
-
+                    error_details.append({'instance_id': instance_id, 'error': error_msg})
+        console.print('\n[bold blue]Async Cleanup Operation Complete[/bold blue]')
+        console.print(f'  - Successfully {action}ped: [green]{processed_successfully}[/green]')
+        console.print(f'  - Failed to {action}: [red]{processed_failed}[/red]')
+        console.print(f'  - Kept alive: [cyan]{len(instances_to_keep)}[/cyan]')
         if processed_failed > 0:
-            console.print("\n[bold red]Failures occurred:[/bold red]")
+            console.print('\n[bold red]Failures occurred:[/bold red]')
             for error in error_details:
                 console.print(f"  - Instance {error['instance_id']}: {error['error']}")
-
         success = processed_failed == 0
         if success:
-            console.print(
-                f"[bold green]All targeted instances {action}ped successfully![/bold green]"
-            )
-
-        return {
-            "success": success,
-            "total": len(all_instances),
-            "processed": processed_successfully,
-            "failed": processed_failed,
-            "kept": len(instances_to_keep),
-            "errors": error_details,
-        }
-
+            console.print(f'[bold green]All targeted instances {action}ped successfully![/bold green]')
+        return {'success': success, 'total': len(all_instances), 'processed': processed_successfully, 'failed': processed_failed, 'kept': len(instances_to_keep), 'errors': error_details}
 
 class Instance(BaseModel):
     _api: InstanceAPI = PrivateAttr()
     id: str
-    object: typing.Literal["instance"] = "instance"
+    object: typing.Literal['instance'] = 'instance'
     created: int
     status: InstanceStatus = InstanceStatus.PENDING
     spec: ResourceSpec
@@ -3031,10 +1844,7 @@ class Instance(BaseModel):
     networking: InstanceNetworking
     ttl: TTL = Field(default_factory=TTL)
     wake_on: WakeOn = Field(default_factory=WakeOn)
-    metadata: typing.Dict[str, str] = Field(
-        default_factory=dict,
-        description="User provided metadata for the instance",
-    )
+    metadata: typing.Dict[str, str] = Field(default_factory=dict, description='User provided metadata for the instance')
 
     def _set_api(self, api: InstanceAPI) -> Instance:
         self._api = api
@@ -3050,38 +1860,29 @@ class Instance(BaseModel):
 
     def pause(self) -> None:
         """Pause the instance."""
-        response = self._api._client._http_client.post(f"/instance/{self.id}/pause")
+        response = self._api._client._http_client.post(f'/instance/{self.id}/pause')
         response.raise_for_status()
         self._refresh()
 
     async def apause(self) -> None:
         """Pause the instance."""
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/pause"
-        )
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/pause')
         response.raise_for_status()
         await self._refresh_async()
 
     def resume(self) -> None:
         """Resume the instance."""
-        response = self._api._client._http_client.post(f"/instance/{self.id}/resume")
+        response = self._api._client._http_client.post(f'/instance/{self.id}/resume')
         response.raise_for_status()
         self._refresh()
 
     async def aresume(self) -> None:
         """Resume the instance."""
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/resume"
-        )
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/resume')
         response.raise_for_status()
         await self._refresh_async()
 
-    def snapshot(
-        self,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-    ) -> Snapshot:
+    def snapshot(self, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None) -> Snapshot:
         """Save the instance as a snapshot.
 
         Parameters:
@@ -3093,153 +1894,74 @@ class Instance(BaseModel):
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         params = {}
         if digest is not None:
-            params["digest"] = digest
+            params['digest'] = digest
         body: typing.Dict[str, typing.Any] = {}
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=body
-        )
-        return Snapshot.model_validate(response.json())._set_api(
-            self._api._client.snapshots,
-        )
+            body['ttl_seconds'] = ttl_seconds
+        response = self._api._client._http_client.post(f'/instance/{self.id}/snapshot', params=params, json=body)
+        return Snapshot.model_validate(response.json())._set_api(self._api._client.snapshots)
 
-    async def asnapshot(
-        self,
-        digest: typing.Optional[str] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-    ) -> Snapshot:
+    async def asnapshot(self, digest: typing.Optional[str]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None) -> Snapshot:
         """Async version of snapshot()."""
         if ttl_seconds is not None:
             _validate_snapshot_ttl_seconds(ttl_seconds, allow_none=False)
         params = {}
         if digest is not None:
-            params = {"digest": digest}
+            params = {'digest': digest}
         body: typing.Dict[str, typing.Any] = {}
         if metadata is not None:
-            body["metadata"] = metadata
+            body['metadata'] = metadata
         if ttl_seconds is not None:
-            body["ttl_seconds"] = ttl_seconds
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/snapshot", params=params, json=body
-        )
-        return Snapshot.model_validate(response.json())._set_api(
-            self._api._client.snapshots
-        )
+            body['ttl_seconds'] = ttl_seconds
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/snapshot', params=params, json=body)
+        return Snapshot.model_validate(response.json())._set_api(self._api._client.snapshots)
 
-    def reboot(
-        self,
-        *,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> None:
+    def reboot(self, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> None:
         """
         Reboot the instance, optionally applying a new machine configuration.
         """
-        self._api.reboot(
-            self.id,
-            vcpus=vcpus,
-            memory=memory,
-            disk_size=disk_size,
-            metadata=metadata,
-            ttl_seconds=ttl_seconds,
-            ttl_action=ttl_action,
-        )
+        self._api.reboot(self.id, vcpus=vcpus, memory=memory, disk_size=disk_size, metadata=metadata, ttl_seconds=ttl_seconds, ttl_action=ttl_action)
         self._refresh()
 
-    async def areboot(
-        self,
-        *,
-        vcpus: typing.Optional[int] = None,
-        memory: typing.Optional[int] = None,
-        disk_size: typing.Optional[int] = None,
-        metadata: typing.Optional[typing.Dict[str, str]] = None,
-        ttl_seconds: typing.Optional[int] = None,
-        ttl_action: typing.Union[None, typing.Literal["stop", "pause"]] = None,
-    ) -> None:
+    async def areboot(self, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> None:
         """
         Async reboot of the instance, optionally applying a new machine configuration.
         """
-        await self._api.areboot(
-            self.id,
-            vcpus=vcpus,
-            memory=memory,
-            disk_size=disk_size,
-            metadata=metadata,
-            ttl_seconds=ttl_seconds,
-            ttl_action=ttl_action,
-        )
+        await self._api.areboot(self.id, vcpus=vcpus, memory=memory, disk_size=disk_size, metadata=metadata, ttl_seconds=ttl_seconds, ttl_action=ttl_action)
         await self._refresh_async()
 
     def branch(self, count: int) -> typing.Tuple[Snapshot, typing.List[Instance]]:
         """Branch the instance into multiple copies in parallel."""
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/branch", params={"count": count}
-        )
+        response = self._api._client._http_client.post(f'/instance/{self.id}/branch', params={'count': count})
         _json = response.json()
-        snapshot = Snapshot.model_validate(_json["snapshot"])._set_api(
-            self._api._client.snapshots
-        )
-
-        instance_ids = [instance["id"] for instance in _json["instances"]]
+        snapshot = Snapshot.model_validate(_json['snapshot'])._set_api(self._api._client.snapshots)
+        instance_ids = [instance['id'] for instance in _json['instances']]
 
         def start_and_wait(instance_id: str) -> Instance:
-            instance = Instance.model_validate(
-                {
-                    "id": instance_id,
-                    "status": InstanceStatus.PENDING,
-                    **_json["instances"][instance_ids.index(instance_id)],
-                }
-            )._set_api(self._api)
+            instance = Instance.model_validate({'id': instance_id, 'status': InstanceStatus.PENDING, **_json['instances'][instance_ids.index(instance_id)]})._set_api(self._api)
             instance.wait_until_ready()
             return instance
-
         with ThreadPoolExecutor(max_workers=min(count, 10)) as executor:
             instances = list(executor.map(start_and_wait, instance_ids))
+        return (snapshot, instances)
 
-        return snapshot, instances
-
-    async def abranch(
-        self, count: int
-    ) -> typing.Tuple[Snapshot, typing.List[Instance]]:
+    async def abranch(self, count: int) -> typing.Tuple[Snapshot, typing.List[Instance]]:
         """Branch the instance into multiple copies in parallel using asyncio."""
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/branch", params={"count": count}
-        )
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/branch', params={'count': count})
         _json = response.json()
-        snapshot = Snapshot.model_validate(_json["snapshot"])._set_api(
-            self._api._client.snapshots
-        )
-
-        instance_ids = [instance["id"] for instance in _json["instances"]]
+        snapshot = Snapshot.model_validate(_json['snapshot'])._set_api(self._api._client.snapshots)
+        instance_ids = [instance['id'] for instance in _json['instances']]
 
         async def start_and_wait(instance_id: str) -> Instance:
-            instance = Instance.model_validate(
-                {
-                    "id": instance_id,
-                    "status": InstanceStatus.PENDING,
-                    **_json["instances"][instance_ids.index(instance_id)],
-                }
-            )._set_api(self._api)
+            instance = Instance.model_validate({'id': instance_id, 'status': InstanceStatus.PENDING, **_json['instances'][instance_ids.index(instance_id)]})._set_api(self._api)
             await instance.await_until_ready()
             return instance
+        instances = await asyncio.gather(*(start_and_wait(instance_id) for instance_id in instance_ids))
+        return (snapshot, instances)
 
-        instances = await asyncio.gather(
-            *(start_and_wait(instance_id) for instance_id in instance_ids)
-        )
-
-        return snapshot, instances
-
-    def expose_http_service(
-        self, name: str, port: int, auth_mode: typing.Optional[str] = None
-    ) -> str:
+    def expose_http_service(self, name: str, port: int, auth_mode: typing.Optional[str]=None) -> str:
         """
         Expose an HTTP service.
 
@@ -3251,26 +1973,16 @@ class Instance(BaseModel):
         Returns:
             The URL of the exposed service.
         """
-        payload = {"name": name, "port": port}
+        payload = {'name': name, 'port': port}
         if auth_mode is not None:
-            payload["auth_mode"] = auth_mode
-
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/http",
-            json=payload,
-        )
+            payload['auth_mode'] = auth_mode
+        response = self._api._client._http_client.post(f'/instance/{self.id}/http', json=payload)
         response.raise_for_status()
         self._refresh()
-        url = next(
-            service.url
-            for service in self.networking.http_services
-            if service.name == name
-        )
+        url = next((service.url for service in self.networking.http_services if service.name == name))
         return url
 
-    async def aexpose_http_service(
-        self, name: str, port: int, auth_mode: typing.Optional[str] = None
-    ) -> str:
+    async def aexpose_http_service(self, name: str, port: int, auth_mode: typing.Optional[str]=None) -> str:
         """
         Expose an HTTP service asynchronously.
 
@@ -3282,46 +1994,28 @@ class Instance(BaseModel):
         Returns:
             The URL of the exposed service
         """
-        payload = {"name": name, "port": port}
+        payload = {'name': name, 'port': port}
         if auth_mode is not None:
-            payload["auth_mode"] = auth_mode
-
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/http",
-            json=payload,
-        )
+            payload['auth_mode'] = auth_mode
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/http', json=payload)
         response.raise_for_status()
         await self._refresh_async()
-        url = next(
-            service.url
-            for service in self.networking.http_services
-            if service.name == name
-        )
+        url = next((service.url for service in self.networking.http_services if service.name == name))
         return url
 
     def hide_http_service(self, name: str) -> None:
         """Unexpose an HTTP service."""
-        response = self._api._client._http_client.delete(
-            f"/instance/{self.id}/http/{name}"
-        )
+        response = self._api._client._http_client.delete(f'/instance/{self.id}/http/{name}')
         response.raise_for_status()
         self._refresh()
 
     async def ahide_http_service(self, name: str) -> None:
         """Unexpose an HTTP service."""
-        response = await self._api._client._async_http_client.delete(
-            f"/instance/{self.id}/http/{name}"
-        )
+        response = await self._api._client._async_http_client.delete(f'/instance/{self.id}/http/{name}')
         response.raise_for_status()
         await self._refresh_async()
 
-    def exec(
-        self,
-        command: typing.Union[str, typing.List[str]],
-        timeout: typing.Optional[float] = None,
-        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
-        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-    ) -> InstanceExecResponse:
+    def exec(self, command: typing.Union[str, typing.List[str]], timeout: typing.Optional[float]=None, on_stdout: typing.Optional[typing.Callable[[str], None]]=None, on_stderr: typing.Optional[typing.Callable[[str], None]]=None) -> InstanceExecResponse:
         """Execute a command on the instance.
 
         Args:
@@ -3338,151 +2032,73 @@ class Instance(BaseModel):
             will be used for real-time output. Otherwise, the traditional endpoint is used.
         """
         command = [command] if isinstance(command, str) else command
-
-        # Smart endpoint selection: use streaming if callbacks provided
         if on_stdout is not None or on_stderr is not None:
             return self._exec_streaming(command, timeout, on_stdout, on_stderr)
         else:
-            # Use traditional endpoint
-            effective_retries = getattr(self._api._client, "_exec_retries", 0)
-            effective_backoff = getattr(
-                self._api._client, "_exec_retry_backoff_s", 0.05
-            )
-
-            transient_errors: tuple[type[BaseException], ...] = (
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.ConnectError,
-                httpx.WriteError,
-                httpx.PoolTimeout,
-            )
-
+            effective_retries = getattr(self._api._client, '_exec_retries', 0)
+            effective_backoff = getattr(self._api._client, '_exec_retry_backoff_s', 0.05)
+            transient_errors: tuple[type[BaseException], ...] = (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.WriteError, httpx.PoolTimeout)
             attempt = 0
             while True:
                 try:
-                    response = self._api._client._http_client.post(
-                        f"/instance/{self.id}/exec",
-                        json={"command": command},
-                        timeout=timeout,
-                    )
+                    response = self._api._client._http_client.post(f'/instance/{self.id}/exec', json={'command': command}, timeout=timeout)
                     return InstanceExecResponse.model_validate(response.json())
                 except Exception as e:
-                    # Convert HTTP timeout errors to more user-friendly TimeoutError
                     if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                        raise TimeoutError(
-                            f"Command execution timed out after {timeout} seconds"
-                        ) from e
-
-                    if attempt < int(effective_retries or 0) and isinstance(
-                        e, transient_errors
-                    ):
-                        delay = float(effective_backoff) * (2**attempt)
+                        raise TimeoutError(f'Command execution timed out after {timeout} seconds') from e
+                    if attempt < int(effective_retries or 0) and isinstance(e, transient_errors):
+                        delay = float(effective_backoff) * 2 ** attempt
                         time.sleep(delay)
                         attempt += 1
                         continue
-
-                    # Re-raise other exceptions as-is
                     raise
 
-    def _exec_streaming(
-        self,
-        command: typing.List[str],
-        timeout: typing.Optional[float] = None,
-        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
-        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-    ) -> InstanceExecResponse:
+    def _exec_streaming(self, command: typing.List[str], timeout: typing.Optional[float]=None, on_stdout: typing.Optional[typing.Callable[[str], None]]=None, on_stderr: typing.Optional[typing.Callable[[str], None]]=None) -> InstanceExecResponse:
         """Execute command using SSE streaming endpoint."""
-
-        # Prepare headers for SSE
-        headers = {
-            "Accept": "text/event-stream",
-            "Authorization": f"Bearer {self._api._client.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        # Accumulate output for final response
+        headers = {'Accept': 'text/event-stream', 'Authorization': f'Bearer {self._api._client.api_key}', 'Content-Type': 'application/json'}
         stdout_chunks = []
         stderr_chunks = []
         exit_code = 0
-
-        # Make streaming request
         try:
-            with self._api._client._http_client.stream(
-                "POST",
-                f"{self._api._client.base_url}/instance/{self.id}/exec/sse",
-                json={"command": command},
-                headers=headers,
-                timeout=timeout,
-            ) as response:
+            with self._api._client._http_client.stream('POST', f'{self._api._client.base_url}/instance/{self.id}/exec/sse', json={'command': command}, headers=headers, timeout=timeout) as response:
                 response.raise_for_status()
-
                 for line in response.iter_lines():
                     if not line.strip():
                         continue
-
-                    # Skip lines that don't start with 'data: '
-                    if not line.startswith("data: "):
+                    if not line.startswith('data: '):
                         continue
-
-                    data_content = line[6:]  # Remove 'data: ' prefix
-
-                    # Check for stream end
-                    if data_content.strip() == "[DONE]":
+                    data_content = line[6:]
+                    if data_content.strip() == '[DONE]':
                         break
-
                     try:
                         event = json.loads(data_content)
-                        event_type = event.get("type")
-                        content = event.get("content", "")
-
-                        if event_type == "stdout":
+                        event_type = event.get('type')
+                        content = event.get('content', '')
+                        if event_type == 'stdout':
                             stdout_chunks.append(content)
                             if on_stdout:
                                 try:
                                     on_stdout(content)
                                 except Exception:
-                                    # Log callback errors but don't interrupt stream
                                     pass
-
-                        elif event_type == "stderr":
+                        elif event_type == 'stderr':
                             stderr_chunks.append(content)
                             if on_stderr:
                                 try:
                                     on_stderr(content)
                                 except Exception:
-                                    # Log callback errors but don't interrupt stream
                                     pass
-
-                        elif event_type == "exit_code":
+                        elif event_type == 'exit_code':
                             exit_code = int(content)
-
                     except (json.JSONDecodeError, KeyError, ValueError):
-                        # Skip malformed events and continue processing
                         continue
         except Exception as e:
-            # Convert HTTP timeout errors to more user-friendly TimeoutError
             if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(
-                    f"Command execution timed out after {timeout} seconds"
-                ) from e
-            # Re-raise other exceptions as-is
+                raise TimeoutError(f'Command execution timed out after {timeout} seconds') from e
             raise
+        return InstanceExecResponse.model_validate({'exit_code': exit_code, 'stdout': ''.join(stdout_chunks), 'stderr': ''.join(stderr_chunks)})
 
-        return InstanceExecResponse.model_validate(
-            {
-                "exit_code": exit_code,
-                "stdout": "".join(stdout_chunks),
-                "stderr": "".join(stderr_chunks),
-            }
-        )
-
-    async def aexec(
-        self,
-        command: typing.Union[str, typing.List[str]],
-        timeout: typing.Optional[float] = None,
-        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
-        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-    ) -> InstanceExecResponse:
+    async def aexec(self, command: typing.Union[str, typing.List[str]], timeout: typing.Optional[float]=None, on_stdout: typing.Optional[typing.Callable[[str], None]]=None, on_stderr: typing.Optional[typing.Callable[[str], None]]=None) -> InstanceExecResponse:
         """Execute a command on the instance asynchronously.
 
         Args:
@@ -3499,189 +2115,107 @@ class Instance(BaseModel):
             will be used for real-time output. Otherwise, the traditional endpoint is used.
         """
         command = [command] if isinstance(command, str) else command
-
-        # Smart endpoint selection: use streaming if callbacks provided
         if on_stdout is not None or on_stderr is not None:
             return await self._aexec_streaming(command, timeout, on_stdout, on_stderr)
         else:
-            # Use traditional endpoint
-            effective_retries = getattr(self._api._client, "_exec_retries", 0)
-            effective_backoff = getattr(
-                self._api._client, "_exec_retry_backoff_s", 0.05
-            )
-
-            transient_errors: tuple[type[BaseException], ...] = (
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.ConnectError,
-                httpx.WriteError,
-                httpx.PoolTimeout,
-            )
-
+            effective_retries = getattr(self._api._client, '_exec_retries', 0)
+            effective_backoff = getattr(self._api._client, '_exec_retry_backoff_s', 0.05)
+            transient_errors: tuple[type[BaseException], ...] = (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.WriteError, httpx.PoolTimeout)
             attempt = 0
             while True:
                 try:
-                    response = await self._api._client._async_http_client.post(
-                        f"/instance/{self.id}/exec",
-                        json={"command": command},
-                        timeout=timeout,
-                    )
+                    response = await self._api._client._async_http_client.post(f'/instance/{self.id}/exec', json={'command': command}, timeout=timeout)
                     return InstanceExecResponse.model_validate(response.json())
                 except Exception as e:
-                    # Convert HTTP timeout errors to more user-friendly TimeoutError
                     if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                        raise TimeoutError(
-                            f"Command execution timed out after {timeout} seconds"
-                        ) from e
-
-                    if attempt < int(effective_retries or 0) and isinstance(
-                        e, transient_errors
-                    ):
-                        delay = float(effective_backoff) * (2**attempt)
+                        raise TimeoutError(f'Command execution timed out after {timeout} seconds') from e
+                    if attempt < int(effective_retries or 0) and isinstance(e, transient_errors):
+                        delay = float(effective_backoff) * 2 ** attempt
                         await asyncio.sleep(delay)
                         attempt += 1
                         continue
-
-                    # Re-raise other exceptions as-is
                     raise
 
-    async def _aexec_streaming(
-        self,
-        command: typing.List[str],
-        timeout: typing.Optional[float] = None,
-        on_stdout: typing.Optional[typing.Callable[[str], None]] = None,
-        on_stderr: typing.Optional[typing.Callable[[str], None]] = None,
-    ) -> InstanceExecResponse:
+    async def _aexec_streaming(self, command: typing.List[str], timeout: typing.Optional[float]=None, on_stdout: typing.Optional[typing.Callable[[str], None]]=None, on_stderr: typing.Optional[typing.Callable[[str], None]]=None) -> InstanceExecResponse:
         """Execute command using SSE streaming endpoint asynchronously."""
-
-        # Prepare headers for SSE
-        headers = {
-            "Accept": "text/event-stream",
-            "Authorization": f"Bearer {self._api._client.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        # Accumulate output for final response
+        headers = {'Accept': 'text/event-stream', 'Authorization': f'Bearer {self._api._client.api_key}', 'Content-Type': 'application/json'}
         stdout_chunks = []
         stderr_chunks = []
         exit_code = 0
-
-        # Make streaming request
         try:
-            async with self._api._client._async_http_client.stream(
-                "POST",
-                f"/instance/{self.id}/exec/sse",
-                json={"command": command},
-                headers=headers,
-                timeout=timeout,
-            ) as response:
+            async with self._api._client._async_http_client.stream('POST', f'/instance/{self.id}/exec/sse', json={'command': command}, headers=headers, timeout=timeout) as response:
                 response.raise_for_status()
-
                 async for line in response.aiter_lines():
                     if not line.strip():
                         continue
-
-                    # Skip lines that don't start with 'data: '
-                    if not line.startswith("data: "):
+                    if not line.startswith('data: '):
                         continue
-
-                    data_content = line[6:]  # Remove 'data: ' prefix
-
-                    # Check for stream end
-                    if data_content.strip() == "[DONE]":
+                    data_content = line[6:]
+                    if data_content.strip() == '[DONE]':
                         break
-
                     try:
                         event = json.loads(data_content)
-                        event_type = event.get("type")
-                        content = event.get("content", "")
-
-                        if event_type == "stdout":
+                        event_type = event.get('type')
+                        content = event.get('content', '')
+                        if event_type == 'stdout':
                             stdout_chunks.append(content)
                             if on_stdout:
                                 try:
                                     on_stdout(content)
                                 except Exception:
-                                    # Log callback errors but don't interrupt stream
                                     pass
-
-                        elif event_type == "stderr":
+                        elif event_type == 'stderr':
                             stderr_chunks.append(content)
                             if on_stderr:
                                 try:
                                     on_stderr(content)
                                 except Exception:
-                                    # Log callback errors but don't interrupt stream
                                     pass
-
-                        elif event_type == "exit_code":
+                        elif event_type == 'exit_code':
                             exit_code = int(content)
-
                     except (json.JSONDecodeError, KeyError, ValueError):
-                        # Skip malformed events and continue processing
                         continue
         except Exception as e:
-            # Convert HTTP timeout errors to more user-friendly TimeoutError
             if isinstance(e, (httpx.ReadTimeout, httpx.TimeoutException)):
-                raise TimeoutError(
-                    f"Command execution timed out after {timeout} seconds"
-                ) from e
-            # Re-raise other exceptions as-is
+                raise TimeoutError(f'Command execution timed out after {timeout} seconds') from e
             raise
+        return InstanceExecResponse.model_validate({'exit_code': exit_code, 'stdout': ''.join(stdout_chunks), 'stderr': ''.join(stderr_chunks)})
 
-        return InstanceExecResponse.model_validate(
-            {
-                "exit_code": exit_code,
-                "stdout": "".join(stdout_chunks),
-                "stderr": "".join(stderr_chunks),
-            }
-        )
-
-    def wait_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+    def wait_until_ready(self, timeout: typing.Optional[float]=None) -> None:
         """Wait until the instance is ready."""
         start_time = time.time()
         while self.status != InstanceStatus.READY:
             if timeout is not None and time.time() - start_time > timeout:
-                raise TimeoutError("Instance did not become ready before timeout")
+                raise TimeoutError('Instance did not become ready before timeout')
             time.sleep(1)
             self._refresh()
             if self.status == InstanceStatus.ERROR:
-                raise RuntimeError("Instance encountered an error")
+                raise RuntimeError('Instance encountered an error')
 
-    async def await_until_ready(self, timeout: typing.Optional[float] = None) -> None:
+    async def await_until_ready(self, timeout: typing.Optional[float]=None) -> None:
         """Wait until the instance is ready."""
         start_time = time.time()
         while self.status != InstanceStatus.READY:
             if timeout is not None and time.time() - start_time > timeout:
-                raise TimeoutError("Instance did not become ready before timeout")
+                raise TimeoutError('Instance did not become ready before timeout')
             await asyncio.sleep(1)
             await self._refresh_async()
             if self.status == InstanceStatus.ERROR:
-                raise RuntimeError("Instance encountered an error")
+                raise RuntimeError('Instance encountered an error')
 
     def set_metadata(self, metadata: typing.Dict[str, str]) -> None:
         """Set metadata for the instance."""
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/metadata",
-            json=metadata,
-        )
+        response = self._api._client._http_client.post(f'/instance/{self.id}/metadata', json=metadata)
         response.raise_for_status()
         self._refresh()
 
     async def aset_metadata(self, metadata: typing.Dict[str, str]) -> None:
         """Set metadata for the instance."""
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/metadata",
-            json=metadata,
-        )
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/metadata', json=metadata)
         response.raise_for_status()
         await self._refresh_async()
 
-    def set_wake_on(
-        self,
-        wake_on_ssh: typing.Optional[bool] = None,
-        wake_on_http: typing.Optional[bool] = None,
-    ) -> None:
+    def set_wake_on(self, wake_on_ssh: typing.Optional[bool]=None, wake_on_http: typing.Optional[bool]=None) -> None:
         """
         Configure the wake-on-event settings for the instance.
 
@@ -3691,26 +2225,16 @@ class Instance(BaseModel):
         """
         payload = {}
         if wake_on_ssh is not None:
-            payload["wake_on_ssh"] = wake_on_ssh
+            payload['wake_on_ssh'] = wake_on_ssh
         if wake_on_http is not None:
-            payload["wake_on_http"] = wake_on_http
-
+            payload['wake_on_http'] = wake_on_http
         if not payload:
-            # Nothing to do if no parameters are provided
             return
-
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/wake-on",
-            json=payload,
-        )
+        response = self._api._client._http_client.post(f'/instance/{self.id}/wake-on', json=payload)
         response.raise_for_status()
         self._refresh()
 
-    async def aset_wake_on(
-        self,
-        wake_on_ssh: typing.Optional[bool] = None,
-        wake_on_http: typing.Optional[bool] = None,
-    ) -> None:
+    async def aset_wake_on(self, wake_on_ssh: typing.Optional[bool]=None, wake_on_http: typing.Optional[bool]=None) -> None:
         """
         Asynchronously configure the wake-on-event settings for the instance.
 
@@ -3720,18 +2244,12 @@ class Instance(BaseModel):
         """
         payload = {}
         if wake_on_ssh is not None:
-            payload["wake_on_ssh"] = wake_on_ssh
+            payload['wake_on_ssh'] = wake_on_ssh
         if wake_on_http is not None:
-            payload["wake_on_http"] = wake_on_http
-
+            payload['wake_on_http'] = wake_on_http
         if not payload:
-            # Nothing to do if no parameters are provided
             return
-
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/wake-on",
-            json=payload,
-        )
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/wake-on', json=payload)
         response.raise_for_status()
         await self._refresh_async()
 
@@ -3751,102 +2269,64 @@ class Instance(BaseModel):
         """Create a paramiko SSHClient and connect to the instance"""
         import random
         import socket
-
         import paramiko
-
         hostname = self._api._client.ssh_hostname
         port = int(self._api._client.ssh_port)
-
-        connect_timeout = float(os.getenv("MORPH_SSH_CONNECT_TIMEOUT_SECS", 5.0))
-        banner_timeout = float(os.getenv("MORPH_SSH_BANNER_TIMEOUT_SECS", 5.0))
-        auth_timeout = float(os.getenv("MORPH_SSH_AUTH_TIMEOUT_SECS", 5.0))
-        total_timeout = float(os.getenv("MORPH_SSH_TOTAL_TIMEOUT_SECS", 5.0 * 60.0))
-        retry_base_sleep = float(os.getenv("MORPH_SSH_RETRY_BASE_SLEEP_SECS", 0.25))
-        retry_max_sleep = float(os.getenv("MORPH_SSH_RETRY_MAX_SLEEP_SECS", 5.0))
-        log_every = int(os.getenv("MORPH_SSH_RETRY_LOG_EVERY", 1))
-
+        connect_timeout = float(os.getenv('MORPH_SSH_CONNECT_TIMEOUT_SECS', 5.0))
+        banner_timeout = float(os.getenv('MORPH_SSH_BANNER_TIMEOUT_SECS', 5.0))
+        auth_timeout = float(os.getenv('MORPH_SSH_AUTH_TIMEOUT_SECS', 5.0))
+        total_timeout = float(os.getenv('MORPH_SSH_TOTAL_TIMEOUT_SECS', 5.0 * 60.0))
+        retry_base_sleep = float(os.getenv('MORPH_SSH_RETRY_BASE_SLEEP_SECS', 0.25))
+        retry_max_sleep = float(os.getenv('MORPH_SSH_RETRY_MAX_SLEEP_SECS', 5.0))
+        log_every = int(os.getenv('MORPH_SSH_RETRY_LOG_EVERY', 1))
         if self._api._client.api_key is None:
-            raise ValueError("API key must be provided to connect to the instance")
-
-        username = self.id + ":" + self._api._client.api_key
-
+            raise ValueError('API key must be provided to connect to the instance')
+        username = self.id + ':' + self._api._client.api_key
         if self.status == InstanceStatus.PAUSED:
             self._refresh()
-            # Update this condition to use the nested WakeOn model
             if self.wake_on.wake_on_ssh:
-                console.print(
-                    f"[yellow]Instance {self.id} is paused. Resuming for SSH access...[/yellow]"
-                )
+                console.print(f'[yellow]Instance {self.id} is paused. Resuming for SSH access...[/yellow]')
                 self.resume()
-                console.print(
-                    f"[yellow]Waiting for instance {self.id} to become ready...[/yellow]"
-                )
+                console.print(f'[yellow]Waiting for instance {self.id} to become ready...[/yellow]')
                 self.wait_until_ready(timeout=300)
-                console.print(f"[green]Instance {self.id} is now ready.[/green]")
+                console.print(f'[green]Instance {self.id} is now ready.[/green]')
             else:
-                raise RuntimeError(
-                    f"Instance {self.id} is paused and wake_on_ssh is not enabled. Cannot connect via SSH."
-                )
-
+                raise RuntimeError(f'Instance {self.id} is paused and wake_on_ssh is not enabled. Cannot connect via SSH.')
         deadline = time.time() + max(0.0, total_timeout)
         attempt = 0
-
         while True:
             attempt += 1
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
-                client.connect(
-                    hostname,
-                    port=port,
-                    username=username,
-                    pkey=_dummy_key(),
-                    look_for_keys=False,
-                    allow_agent=False,
-                    timeout=connect_timeout,
-                    banner_timeout=banner_timeout,
-                    auth_timeout=auth_timeout,
-                )
+                client.connect(hostname, port=port, username=username, pkey=_dummy_key(), look_for_keys=False, allow_agent=False, timeout=connect_timeout, banner_timeout=banner_timeout, auth_timeout=auth_timeout)
                 break
             except (socket.timeout, TimeoutError, paramiko.SSHException, OSError) as e:
                 try:
                     client.close()
                 except Exception:
                     pass
-
                 now = time.time()
                 if total_timeout <= 0.0 or now >= deadline:
-                    raise TimeoutError(
-                        f"SSH connect timed out after {total_timeout:.1f}s "
-                        f"(attempts={attempt}, instance_id={self.id}, host={hostname}:{port})."
-                    ) from e
-
-                # Exponential backoff with jitter (bounded)
-                backoff = retry_base_sleep * (2 ** min(attempt - 1, 10))
+                    raise TimeoutError(f'SSH connect timed out after {total_timeout:.1f}s (attempts={attempt}, instance_id={self.id}, host={hostname}:{port}).') from e
+                backoff = retry_base_sleep * 2 ** min(attempt - 1, 10)
                 sleep_for = min(retry_max_sleep, max(0.0, backoff))
-                sleep_for = sleep_for * (0.5 + random.random())  # jitter in [0.5, 1.5)
+                sleep_for = sleep_for * (0.5 + random.random())
                 sleep_for = min(sleep_for, max(0.0, deadline - now))
-
                 if log_every > 0 and attempt % log_every == 0:
-                    console.print(
-                        f"[yellow]SSH connect retrying[/yellow] "
-                        f"(attempt={attempt}, instance_id={self.id}, host={hostname}:{port}, err={type(e).__name__})"
-                    )
+                    console.print(f'[yellow]SSH connect retrying[/yellow] (attempt={attempt}, instance_id={self.id}, host={hostname}:{port}, err={type(e).__name__})')
                 time.sleep(sleep_for)
                 continue
             except Exception:
-                # Unknown error types should fail fast.
                 try:
                     client.close()
                 except Exception:
                     pass
                 raise
-
-        # Enable SSH keepalive packets to prevent idle disconnects during long transfers
         transport = client.get_transport()
         if transport is not None:
             try:
-                keepalive_secs = int(os.environ.get("MORPH_SSH_KEEPALIVE_SECS", "15"))
+                keepalive_secs = int(os.environ.get('MORPH_SSH_KEEPALIVE_SECS', '15'))
             except ValueError:
                 keepalive_secs = 15
             transport.set_keepalive(keepalive_secs)
@@ -3854,67 +2334,42 @@ class Instance(BaseModel):
 
     def ssh(self):
         """Return an SSHClient instance for this instance"""
-        from morphcloud._ssh import SSHClient  # as in your snippet
-
+        from morphcloud._ssh import SSHClient
         return SSHClient(self.ssh_connect())
 
-    def upload(
-        self, local_path: str, remote_path: str, recursive: bool = False
-    ) -> None:
+    def upload(self, local_path: str, remote_path: str, recursive: bool=False) -> None:
         """
         Synchronously upload a local file/directory to 'remote_path' on this instance.
         If 'recursive' is True and local_path is a directory, upload that entire directory.
         """
-        self.wait_until_ready()  # Ensure instance is READY for SFTP
-        copy_into_or_from_instance(
-            instance_obj=self,
-            local_path=local_path,
-            remote_path=remote_path,
-            uploading=True,
-            recursive=recursive,
-        )
+        self.wait_until_ready()
+        copy_into_or_from_instance(instance_obj=self, local_path=local_path, remote_path=remote_path, uploading=True, recursive=recursive)
 
-    def download(
-        self, remote_path: str, local_path: str, recursive: bool = False
-    ) -> None:
+    def download(self, remote_path: str, local_path: str, recursive: bool=False) -> None:
         """
         Synchronously download from 'remote_path' on this instance to a local path.
         If 'recursive' is True, treat 'remote_path' as a directory and download everything inside it.
         """
         self.wait_until_ready()
-        copy_into_or_from_instance(
-            instance_obj=self,
-            local_path=local_path,
-            remote_path=remote_path,
-            uploading=False,
-            recursive=recursive,
-        )
+        copy_into_or_from_instance(instance_obj=self, local_path=local_path, remote_path=remote_path, uploading=False, recursive=recursive)
 
-    async def aupload(
-        self, local_path: str, remote_path: str, recursive: bool = False
-    ) -> None:
+    async def aupload(self, local_path: str, remote_path: str, recursive: bool=False) -> None:
         """
         Asynchronously upload a local file/directory to 'remote_path' on this instance.
         If 'recursive' is True and local_path is a directory, upload that entire directory.
         Runs in a background thread so it doesn't block the event loop.
         """
         await self.await_until_ready()
-        await asyncio.to_thread(
-            copy_into_or_from_instance, self, local_path, remote_path, True, recursive
-        )
+        await asyncio.to_thread(copy_into_or_from_instance, self, local_path, remote_path, True, recursive)
 
-    async def adownload(
-        self, remote_path: str, local_path: str, recursive: bool = False
-    ) -> None:
+    async def adownload(self, remote_path: str, local_path: str, recursive: bool=False) -> None:
         """
         Asynchronously download from 'remote_path' on this instance to a local path.
         If 'recursive' is True, treat 'remote_path' as a directory and download everything inside it.
         Runs in a background thread so it doesn't block the event loop.
         """
         await self.await_until_ready()
-        await asyncio.to_thread(
-            copy_into_or_from_instance, self, local_path, remote_path, False, recursive
-        )
+        await asyncio.to_thread(copy_into_or_from_instance, self, local_path, remote_path, False, recursive)
 
     def __enter__(self):
         return self
@@ -3928,18 +2383,7 @@ class Instance(BaseModel):
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.astop()
 
-    def as_container(
-        self,
-        image: typing.Optional[str] = None,
-        dockerfile: typing.Optional[str] = None,
-        build_context: typing.Optional[str] = None,
-        container_name: str = "container",
-        container_args: typing.Optional[typing.List[str]] = None,
-        ports: typing.Optional[typing.Dict[int, int]] = None,
-        volumes: typing.Optional[typing.List[str]] = None,
-        env: typing.Optional[typing.Dict[str, str]] = None,
-        restart_policy: str = "unless-stopped",
-    ) -> None:
+    def as_container(self, image: typing.Optional[str]=None, dockerfile: typing.Optional[str]=None, build_context: typing.Optional[str]=None, container_name: str='container', container_args: typing.Optional[typing.List[str]]=None, ports: typing.Optional[typing.Dict[int, int]]=None, volumes: typing.Optional[typing.List[str]]=None, env: typing.Optional[typing.Dict[str, str]]=None, restart_policy: str='unless-stopped') -> None:
         """
         Configure the instance to redirect all SSH connections to a Docker container.
 
@@ -3972,583 +2416,215 @@ class Instance(BaseModel):
         """
         import hashlib
         import time
-
-        # Validate parameters
-        if not image and not dockerfile:
+        if not image and (not dockerfile):
             raise ValueError("Either 'image' or 'dockerfile' must be provided")
-
-        # Initialize log buffer
-        log_output = ["Debugging logs:"]
-
+        log_output = ['Debugging logs:']
         try:
-            # Make sure the instance is ready
             self.wait_until_ready()
-
-            # Establish SSH connection
             with self.ssh() as ssh:
-                # --- Start: Added Package Check and Installation ---
-                required_packages = ["docker.io", "git", "curl"]
+                required_packages = ['docker.io', 'git', 'curl']
                 missing_packages = []
-                log_output.append("Checking for required packages...")
-
+                log_output.append('Checking for required packages...')
                 for pkg in required_packages:
-                    # Use dpkg -s which exits non-zero if package is not installed or unknown
-                    result = ssh.run(["dpkg", "-s", pkg])
+                    result = ssh.run(['dpkg', '-s', pkg])
                     if result.exit_code != 0:
                         log_output.append(f"Package '{pkg}' not found.")
                         missing_packages.append(pkg)
-
                 if missing_packages:
-                    log_output.append("Updating package lists (apt-get update)...")
-                    # Run apt-get update first
-                    update_result = ssh.run(["apt-get", "update", "-y"])
+                    log_output.append('Updating package lists (apt-get update)...')
+                    update_result = ssh.run(['apt-get', 'update', '-y'])
                     if update_result.exit_code != 0:
-                        error_msg = f"Failed to update apt package lists: {update_result.stderr}"
+                        error_msg = f'Failed to update apt package lists: {update_result.stderr}'
                         log_output.append(error_msg)
-                        raise RuntimeError("\n".join(log_output))
-
-                    # Install all missing packages at once
-                    log_output.append(
-                        f"Installing missing packages: {', '.join(missing_packages)}..."
-                    )
-                    install_cmd = ["apt-get", "install", "-y"] + missing_packages
+                        raise RuntimeError('\n'.join(log_output))
+                    log_output.append(f"Installing missing packages: {', '.join(missing_packages)}...")
+                    install_cmd = ['apt-get', 'install', '-y'] + missing_packages
                     install_result = ssh.run(install_cmd)
                     if install_result.exit_code != 0:
                         error_msg = f"Failed to install packages ({', '.join(missing_packages)}): {install_result.stderr}"
                         log_output.append(error_msg)
-                        raise RuntimeError("\n".join(log_output))
-                    log_output.append("Required packages installed successfully.")
+                        raise RuntimeError('\n'.join(log_output))
+                    log_output.append('Required packages installed successfully.')
                 else:
-                    log_output.append("All required packages are already installed.")
-                # --- End: Added Package Check and Installation ---
-
-                # Verify docker service is running
-                result = ssh.run(["systemctl", "is-active", "docker"])
+                    log_output.append('All required packages are already installed.')
+                result = ssh.run(['systemctl', 'is-active', 'docker'])
                 if result.exit_code != 0:
-                    log_output.append(
-                        "Docker service not active, attempting to start..."
-                    )
-                    # Attempt to start services
-                    ssh.run(["systemctl", "start", "containerd.service"])
-                    ssh.run(["systemctl", "start", "docker.service"])
-
-                    # Re-check docker status after attempting to start
-                    time.sleep(2)  # Give services a moment to start
-                    result = ssh.run(["systemctl", "is-active", "docker"])
+                    log_output.append('Docker service not active, attempting to start...')
+                    ssh.run(['systemctl', 'start', 'containerd.service'])
+                    ssh.run(['systemctl', 'start', 'docker.service'])
+                    time.sleep(2)
+                    result = ssh.run(['systemctl', 'is-active', 'docker'])
                     if result.exit_code != 0:
-                        error_msg = f"Docker service failed to start or is not installed correctly. Status check stderr: {result.stderr}"
+                        error_msg = f'Docker service failed to start or is not installed correctly. Status check stderr: {result.stderr}'
                         log_output.append(error_msg)
-                        log_output.append(
-                            "Hint: A system reboot might be required after Docker installation."
-                        )
-                        raise RuntimeError("\n".join(log_output))
+                        log_output.append('Hint: A system reboot might be required after Docker installation.')
+                        raise RuntimeError('\n'.join(log_output))
                     else:
-                        log_output.append("Docker service started successfully.")
+                        log_output.append('Docker service started successfully.')
                 else:
-                    log_output.append("Docker service is active.")
-
-                # Handle image preparation (either pull existing or build from Dockerfile)
+                    log_output.append('Docker service is active.')
                 final_image_name = image
-
                 if dockerfile:
-                    # Build image from Dockerfile contents
-                    log_output.append("Building Docker image from Dockerfile...")
-
-                    # Generate a unique image name based on Dockerfile contents if not provided
+                    log_output.append('Building Docker image from Dockerfile...')
                     if not image:
-                        dockerfile_hash = hashlib.sha256(
-                            dockerfile.encode()
-                        ).hexdigest()[:12]
-                        final_image_name = f"morphcloud-custom:{dockerfile_hash}"
+                        dockerfile_hash = hashlib.sha256(dockerfile.encode()).hexdigest()[:12]
+                        final_image_name = f'morphcloud-custom:{dockerfile_hash}'
                     else:
                         final_image_name = image
-
-                    # Check if image already exists to avoid rebuilding
-                    check_result = ssh.run(["docker", "images", "-q", final_image_name])
+                    check_result = ssh.run(['docker', 'images', '-q', final_image_name])
                     if check_result.exit_code == 0 and check_result.stdout.strip():
-                        log_output.append(
-                            f"Image '{final_image_name}' already exists, skipping build."
-                        )
+                        log_output.append(f"Image '{final_image_name}' already exists, skipping build.")
                     else:
-                        # Set up build context directory
-                        build_dir = build_context or "/tmp/docker-build"
-                        ssh.run(["mkdir", "-p", build_dir])
-
+                        build_dir = build_context or '/tmp/docker-build'
+                        ssh.run(['mkdir', '-p', build_dir])
                         try:
-                            # Write Dockerfile to remote instance
-                            dockerfile_path = f"{build_dir}/Dockerfile"
+                            dockerfile_path = f'{build_dir}/Dockerfile'
                             ssh.write_file(dockerfile_path, dockerfile)
-                            log_output.append(
-                                f"Dockerfile written to {dockerfile_path}"
-                            )
-
-                            # Build the Docker image
+                            log_output.append(f'Dockerfile written to {dockerfile_path}')
                             log_output.append(f"Building image '{final_image_name}'...")
-                            build_cmd = [
-                                "docker",
-                                "build",
-                                "-t",
-                                final_image_name,
-                                build_dir,
-                            ]
+                            build_cmd = ['docker', 'build', '-t', final_image_name, build_dir]
                             build_result = ssh.run(build_cmd)
-
                             if build_result.exit_code != 0:
-                                # Only include the last 50 lines of stdout for brevity
                                 stdout_lines = build_result.stdout.splitlines()
-                                last_stdout = (
-                                    "\n".join(stdout_lines[-50:])
-                                    if len(stdout_lines) > 50
-                                    else build_result.stdout
-                                )
-                                error_msg = (
-                                    f"Failed to build Docker image: {last_stdout}"
-                                )
+                                last_stdout = '\n'.join(stdout_lines[-50:]) if len(stdout_lines) > 50 else build_result.stdout
+                                error_msg = f'Failed to build Docker image: {last_stdout}'
                                 log_output.append(error_msg)
-                                raise RuntimeError("\n".join(log_output))
-
-                            log_output.append(
-                                f"Successfully built image '{final_image_name}'"
-                            )
-
+                                raise RuntimeError('\n'.join(log_output))
+                            log_output.append(f"Successfully built image '{final_image_name}'")
                         finally:
-                            # Clean up build directory
-                            ssh.run(["rm", "-rf", build_dir])
-                            log_output.append(f"Cleaned up build directory {build_dir}")
-
+                            ssh.run(['rm', '-rf', build_dir])
+                            log_output.append(f'Cleaned up build directory {build_dir}')
                 elif image:
-                    # Pull the specified image if it doesn't exist locally
                     log_output.append(f"Checking if image '{image}' exists locally...")
-                    check_result = ssh.run(["docker", "images", "-q", image])
-
+                    check_result = ssh.run(['docker', 'images', '-q', image])
                     if not check_result.stdout.strip():
-                        log_output.append(
-                            f"Image '{image}' not found locally, pulling..."
-                        )
-                        pull_result = ssh.run(["docker", "pull", image])
+                        log_output.append(f"Image '{image}' not found locally, pulling...")
+                        pull_result = ssh.run(['docker', 'pull', image])
                         if pull_result.exit_code != 0:
                             error_msg = f"Failed to pull Docker image '{image}': {pull_result.stderr}"
                             log_output.append(error_msg)
-                            raise RuntimeError("\n".join(log_output))
+                            raise RuntimeError('\n'.join(log_output))
                         log_output.append(f"Successfully pulled image '{image}'")
                     else:
                         log_output.append(f"Image '{image}' found locally")
-
-                # Build docker run command
-                docker_cmd = [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--name",
-                    container_name,
-                    "--network",
-                    "host",
-                    "--entrypoint=''",
-                ]
-
-                # Add restart policy
-                docker_cmd.extend([f"--restart={restart_policy}"])
-
-                # Add port mappings if provided
+                docker_cmd = ['docker', 'run', '-d', '--name', container_name, '--network', 'host', "--entrypoint=''"]
+                docker_cmd.extend([f'--restart={restart_policy}'])
                 if ports:
                     for host_port, container_port in ports.items():
-                        docker_cmd.extend(["-p", f"{host_port}:{container_port}"])
-
-                # Add volume mounts if provided
+                        docker_cmd.extend(['-p', f'{host_port}:{container_port}'])
                 if volumes:
                     for volume in volumes:
-                        docker_cmd.extend(["-v", volume])
-
-                # Add environment variables if provided
+                        docker_cmd.extend(['-v', volume])
                 if env:
                     for key, value in env.items():
-                        docker_cmd.extend(["-e", f"{key}={value}"])
-
-                # Add any additional docker run arguments
+                        docker_cmd.extend(['-e', f'{key}={value}'])
                 if container_args:
                     docker_cmd.extend(container_args)
-
-                # Add the final image name and command
                 docker_cmd.append(final_image_name)
-                docker_cmd.extend(
-                    ["tail", "-f", "/dev/null"]
-                )  # Keep the container alive
-
-                # Run the docker container
-                log_output.append(
-                    f"Starting container '{container_name}' from image '{final_image_name}'..."
-                )
-                log_output.append(f"Docker command: {docker_cmd}")
+                docker_cmd.extend(['tail', '-f', '/dev/null'])
+                log_output.append(f"Starting container '{container_name}' from image '{final_image_name}'...")
+                log_output.append(f'Docker command: {docker_cmd}')
                 result = ssh.run(docker_cmd)
-                log_output.append(f"Docker run command executed: {result.stdout}")
+                log_output.append(f'Docker run command executed: {result.stdout}')
                 if result.exit_code != 0:
-                    error_msg = f"Failed to start container: {result.stderr}"
+                    error_msg = f'Failed to start container: {result.stderr}'
                     log_output.append(error_msg)
-                    raise RuntimeError("\n".join(log_output))
-
-                log_output.append("Testing container status and connectivity...")
-
-                # Check if container is running
-                status_result = ssh.run(
-                    [
-                        "docker",
-                        "inspect",
-                        container_name,
-                        "--format",
-                        "{{.State.Status}}",
-                    ]
-                )
-                if (
-                    status_result.exit_code != 0
-                    or status_result.stdout.strip() != "running"
-                ):
-                    container_status = (
-                        status_result.stdout.strip()
-                        if status_result.exit_code == 0
-                        else "unknown"
-                    )
-
-                    # Build detailed error message like the bash version
+                    raise RuntimeError('\n'.join(log_output))
+                log_output.append('Testing container status and connectivity...')
+                status_result = ssh.run(['docker', 'inspect', container_name, '--format', '{{.State.Status}}'])
+                if status_result.exit_code != 0 or status_result.stdout.strip() != 'running':
+                    container_status = status_result.stdout.strip() if status_result.exit_code == 0 else 'unknown'
                     error_lines = []
-                    error_lines.append(
-                        f"ERROR: Container '{container_name}' is not running."
-                    )
-                    error_lines.append(f"Current status: {container_status}")
-                    error_lines.append("")
-
-                    # Handle specific container states with detailed info
-                    if container_status == "exited":
-                        exit_code_result = ssh.run(
-                            [
-                                "docker",
-                                "inspect",
-                                container_name,
-                                "--format",
-                                "{{.State.ExitCode}}",
-                            ]
-                        )
-                        exit_code = (
-                            exit_code_result.stdout.strip()
-                            if exit_code_result.exit_code == 0
-                            else "unknown"
-                        )
-                        error_lines.append(f"Container exited with code: {exit_code}")
-                        error_lines.append("")
-                        error_lines.append("Recent container logs:")
-                        logs_result = ssh.run(
-                            ["docker", "logs", "--tail=20", container_name]
-                        )
+                    error_lines.append(f"ERROR: Container '{container_name}' is not running.")
+                    error_lines.append(f'Current status: {container_status}')
+                    error_lines.append('')
+                    if container_status == 'exited':
+                        exit_code_result = ssh.run(['docker', 'inspect', container_name, '--format', '{{.State.ExitCode}}'])
+                        exit_code = exit_code_result.stdout.strip() if exit_code_result.exit_code == 0 else 'unknown'
+                        error_lines.append(f'Container exited with code: {exit_code}')
+                        error_lines.append('')
+                        error_lines.append('Recent container logs:')
+                        logs_result = ssh.run(['docker', 'logs', '--tail=20', container_name])
                         if logs_result.exit_code == 0 and logs_result.stdout.strip():
                             for line in logs_result.stdout.splitlines():
-                                error_lines.append(f"  {line}")
+                                error_lines.append(f'  {line}')
                         else:
-                            error_lines.append("  Could not get logs")
-
-                    elif container_status == "paused":
-                        error_lines.append(
-                            f"Container is paused. Try: docker unpause {container_name}"
-                        )
-
-                    elif container_status == "restarting":
-                        restart_count_result = ssh.run(
-                            [
-                                "docker",
-                                "inspect",
-                                container_name,
-                                "--format",
-                                "{{.RestartCount}}",
-                            ]
-                        )
-                        restart_count = (
-                            restart_count_result.stdout.strip()
-                            if restart_count_result.exit_code == 0
-                            else "unknown"
-                        )
-                        error_lines.append(
-                            f"Container is stuck restarting (restart count: {restart_count})"
-                        )
-                        error_lines.append("")
-                        error_lines.append("Recent container logs:")
-                        logs_result = ssh.run(
-                            ["docker", "logs", "--tail=20", container_name]
-                        )
+                            error_lines.append('  Could not get logs')
+                    elif container_status == 'paused':
+                        error_lines.append(f'Container is paused. Try: docker unpause {container_name}')
+                    elif container_status == 'restarting':
+                        restart_count_result = ssh.run(['docker', 'inspect', container_name, '--format', '{{.RestartCount}}'])
+                        restart_count = restart_count_result.stdout.strip() if restart_count_result.exit_code == 0 else 'unknown'
+                        error_lines.append(f'Container is stuck restarting (restart count: {restart_count})')
+                        error_lines.append('')
+                        error_lines.append('Recent container logs:')
+                        logs_result = ssh.run(['docker', 'logs', '--tail=20', container_name])
                         if logs_result.exit_code == 0 and logs_result.stdout.strip():
                             for line in logs_result.stdout.splitlines():
-                                error_lines.append(f"  {line}")
+                                error_lines.append(f'  {line}')
                         else:
-                            error_lines.append("  Could not get logs")
-
-                    elif container_status == "dead":
-                        error_lines.append(
-                            "Container is in a dead state. May need to remove and recreate."
-                        )
-                        error_lines.append("")
-                        error_lines.append("Recent container logs:")
-                        logs_result = ssh.run(
-                            ["docker", "logs", "--tail=20", container_name]
-                        )
+                            error_lines.append('  Could not get logs')
+                    elif container_status == 'dead':
+                        error_lines.append('Container is in a dead state. May need to remove and recreate.')
+                        error_lines.append('')
+                        error_lines.append('Recent container logs:')
+                        logs_result = ssh.run(['docker', 'logs', '--tail=20', container_name])
                         if logs_result.exit_code == 0 and logs_result.stdout.strip():
                             for line in logs_result.stdout.splitlines():
-                                error_lines.append(f"  {line}")
+                                error_lines.append(f'  {line}')
                         else:
-                            error_lines.append("  Could not get logs")
-
-                    elif container_status not in ["running", "unknown"]:
-                        error_lines.append(
-                            f"Unknown container status: {container_status}"
-                        )
-                        error_lines.append("")
-                        error_lines.append("Container details:")
-                        state_result = ssh.run(
-                            [
-                                "docker",
-                                "inspect",
-                                container_name,
-                                "--format",
-                                "{{json .State}}",
-                            ]
-                        )
+                            error_lines.append('  Could not get logs')
+                    elif container_status not in ['running', 'unknown']:
+                        error_lines.append(f'Unknown container status: {container_status}')
+                        error_lines.append('')
+                        error_lines.append('Container details:')
+                        state_result = ssh.run(['docker', 'inspect', container_name, '--format', '{{json .State}}'])
                         if state_result.exit_code == 0:
                             for line in state_result.stdout.splitlines():
-                                error_lines.append(f"  {line}")
+                                error_lines.append(f'  {line}')
                         else:
-                            error_lines.append("  Could not get container details")
-
-                    # Always add container overview at the end
-                    error_lines.append("")
-                    error_lines.append("Container overview:")
-                    ps_result = ssh.run(
-                        [
-                            "docker",
-                            "ps",
-                            "-a",
-                            "--filter",
-                            f"name={container_name}",
-                            "--format",
-                            "table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}",
-                        ]
-                    )
+                            error_lines.append('  Could not get container details')
+                    error_lines.append('')
+                    error_lines.append('Container overview:')
+                    ps_result = ssh.run(['docker', 'ps', '-a', '--filter', f'name={container_name}', '--format', 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}'])
                     if ps_result.exit_code == 0:
                         for line in ps_result.stdout.splitlines():
                             error_lines.append(line)
                     else:
                         error_lines.pop()
                         error_lines.pop()
-
-                    # Add all error details to log_output
                     log_output.extend(error_lines)
-                    raise RuntimeError("\n".join(log_output))
-
-                # Test shell availability (keep this as a separate health check)
-                shell_test_result = ssh.run(
-                    ["docker", "exec", container_name, "echo", "test"]
-                )
+                    raise RuntimeError('\n'.join(log_output))
+                shell_test_result = ssh.run(['docker', 'exec', container_name, 'echo', 'test'])
                 if shell_test_result.exit_code != 0:
-                    log_output.append(
-                        "Warning: Container is running but not responsive to commands"
-                    )
-
-                    # Get more debugging info
-                    logs_result = ssh.run(
-                        ["docker", "logs", "--tail=10", container_name]
-                    )
-                    log_output.append(f"Recent container logs:\n{logs_result.stdout}")
-
+                    log_output.append('Warning: Container is running but not responsive to commands')
+                    logs_result = ssh.run(['docker', 'logs', '--tail=10', container_name])
+                    log_output.append(f'Recent container logs:\n{logs_result.stdout}')
                 else:
-                    log_output.append("Container is running and responsive")
-
-                # Create improved container.sh script with TTY detection
-                container_script = (
-                    f"""#!/bin/bash
-        # container.sh - Redirects SSH commands to the Docker container
-        CONTAINER_NAME={container_name}"""
-                    + """
-# Function to check container status and provide detailed error information
-check_container_status() {
-    # Check if container exists at all
-    if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-        echo "ERROR: Container '$CONTAINER_NAME' does not exist." >&2
-        echo "Available containers:" >&2
-        docker ps -a --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}" >&2
-        return 1
-    fi
-
-    # Get container status
-    CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format "{{.State.Status}}" 2>/dev/null)
-    
-    if [ "$CONTAINER_STATUS" != "running" ]; then
-        echo "ERROR: Container '$CONTAINER_NAME' is not running." >&2
-        echo "Current status: $CONTAINER_STATUS" >&2
-        
-        case "$CONTAINER_STATUS" in
-            "exited")
-                EXIT_CODE=$(docker inspect "$CONTAINER_NAME" --format "{{.State.ExitCode}}" 2>/dev/null)
-                echo "Container exited with code: $EXIT_CODE" >&2
-                echo "" >&2
-                echo "Recent container logs:" >&2
-                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
-                ;;
-            "paused")
-                echo "Container is paused. Try: docker unpause $CONTAINER_NAME" >&2
-                ;;
-            "restarting")
-                RESTART_COUNT=$(docker inspect "$CONTAINER_NAME" --format "{{.RestartCount}}" 2>/dev/null)
-                echo "Container is stuck restarting (restart count: $RESTART_COUNT)" >&2
-                echo "" >&2
-                echo "Recent container logs:" >&2
-                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
-                ;;
-            "dead")
-                echo "Container is in a dead state. May need to remove and recreate." >&2
-                echo "" >&2
-                echo "Recent container logs:" >&2
-                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
-                ;;
-            *)
-                echo "Unknown container status: $CONTAINER_STATUS" >&2
-                echo "" >&2
-                echo "Container details:" >&2
-                docker inspect "$CONTAINER_NAME" --format "{{json .State}}" 2>&1 | sed 's/^/  /' >&2
-                ;;
-        esac
-        
-        echo "" >&2
-        echo "Container overview:" >&2
-        docker ps -a --filter "name=$CONTAINER_NAME" --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}" >&2
-        
-        return 1
-    fi
-    
-    # Additional health check - try a simple command
-    if ! docker exec "$CONTAINER_NAME" echo "health-check" >/dev/null 2>&1; then
-        echo "ERROR: Container '$CONTAINER_NAME' is running but not responsive." >&2
-        echo "The container may be overloaded or in an unhealthy state." >&2
-        echo "" >&2
-        echo "Recent container logs:" >&2
-        docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed 's/^/  /' >&2
-        echo "" >&2
-        echo "Container processes:" >&2
-        docker exec "$CONTAINER_NAME" ps aux 2>&1 | sed 's/^/  /' >&2 || echo "  Could not list processes" >&2
-        return 1
-    fi
-    
-    return 0
-}
-
-# Check container status before proceeding
-if ! check_container_status; then
-    exit 1
-fi
-
-# Function to check if the container has the specified shell
-check_shell() {
-    if docker exec "$CONTAINER_NAME" which "$1" >/dev/null 2>&1; then
-        echo "$1"
-        return 0
-    fi
-    return 1
-}
-
-# Determine the best shell available in the container
-SHELL_TO_USE=""
-for shell in bash sh ash; do
-    if SHELL_PATH=$(check_shell "$shell"); then
-        SHELL_TO_USE="$SHELL_PATH"
-        break
-    fi
-done
-
-# If no shell was found, provide better error messaging
-if [ -z "$SHELL_TO_USE" ]; then
-    echo "ERROR: No usable shell found in container '$CONTAINER_NAME'." >&2
-    echo "This usually means the container is too minimal (like distroless images)." >&2
-    echo "" >&2
-    echo "Available executables in common locations:" >&2
-    docker exec "$CONTAINER_NAME" find /bin /usr/bin -type f -executable 2>/dev/null | head -10 | sed 's/^/  /' >&2 || echo "  Could not list executables" >&2
-    echo "" >&2
-    echo "Container image details:" >&2
-    docker inspect "$CONTAINER_NAME" --format "{{.Config.Image}}" | sed 's/^/  Image: /' >&2
-    docker inspect "$CONTAINER_NAME" --format "{{.Config.Entrypoint}}" | sed 's/^/  Entrypoint: /' >&2
-    docker inspect "$CONTAINER_NAME" --format "{{.Config.Cmd}}" | sed 's/^/  Cmd: /' >&2
-    exit 1
-fi
-
-# Main execution logic
-if [ -z "$SSH_ORIGINAL_COMMAND" ]; then
-    # Interactive login shell - use -it flags but WITHOUT -l
-    exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE"
-else
-    # Command execution - detect if TTY is available
-    if [ -t 0 ]; then
-        # TTY is available, use interactive mode WITHOUT -l
-        exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"
-    else
-        # No TTY available, run without -it flags and without -l
-        exec docker exec "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"
-    fi
-fi"""
-                )
-
-                # Write the container.sh script to the instance
-                log_output.append("Installing container redirection script...")
-                ssh.write_file("/root/container.sh", container_script, mode=0o755)
-
-                # Update SSH configuration to force commands through the script
-                log_output.append("Configuring SSH to redirect to container...")
-
-                # Check if ForceCommand already exists in sshd_config
+                    log_output.append('Container is running and responsive')
+                container_script = f'#!/bin/bash\n        # container.sh - Redirects SSH commands to the Docker container\n        CONTAINER_NAME={container_name}' + '\n# Function to check container status and provide detailed error information\ncheck_container_status() {\n    # Check if container exists at all\n    if ! docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then\n        echo "ERROR: Container \'$CONTAINER_NAME\' does not exist." >&2\n        echo "Available containers:" >&2\n        docker ps -a --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}" >&2\n        return 1\n    fi\n\n    # Get container status\n    CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format "{{.State.Status}}" 2>/dev/null)\n    \n    if [ "$CONTAINER_STATUS" != "running" ]; then\n        echo "ERROR: Container \'$CONTAINER_NAME\' is not running." >&2\n        echo "Current status: $CONTAINER_STATUS" >&2\n        \n        case "$CONTAINER_STATUS" in\n            "exited")\n                EXIT_CODE=$(docker inspect "$CONTAINER_NAME" --format "{{.State.ExitCode}}" 2>/dev/null)\n                echo "Container exited with code: $EXIT_CODE" >&2\n                echo "" >&2\n                echo "Recent container logs:" >&2\n                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed \'s/^/  /\' >&2\n                ;;\n            "paused")\n                echo "Container is paused. Try: docker unpause $CONTAINER_NAME" >&2\n                ;;\n            "restarting")\n                RESTART_COUNT=$(docker inspect "$CONTAINER_NAME" --format "{{.RestartCount}}" 2>/dev/null)\n                echo "Container is stuck restarting (restart count: $RESTART_COUNT)" >&2\n                echo "" >&2\n                echo "Recent container logs:" >&2\n                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed \'s/^/  /\' >&2\n                ;;\n            "dead")\n                echo "Container is in a dead state. May need to remove and recreate." >&2\n                echo "" >&2\n                echo "Recent container logs:" >&2\n                docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed \'s/^/  /\' >&2\n                ;;\n            *)\n                echo "Unknown container status: $CONTAINER_STATUS" >&2\n                echo "" >&2\n                echo "Container details:" >&2\n                docker inspect "$CONTAINER_NAME" --format "{{json .State}}" 2>&1 | sed \'s/^/  /\' >&2\n                ;;\n        esac\n        \n        echo "" >&2\n        echo "Container overview:" >&2\n        docker ps -a --filter "name=$CONTAINER_NAME" --format "table {{.Names}}\\t{{.Status}}\\t{{.Image}}\\t{{.Command}}" >&2\n        \n        return 1\n    fi\n    \n    # Additional health check - try a simple command\n    if ! docker exec "$CONTAINER_NAME" echo "health-check" >/dev/null 2>&1; then\n        echo "ERROR: Container \'$CONTAINER_NAME\' is running but not responsive." >&2\n        echo "The container may be overloaded or in an unhealthy state." >&2\n        echo "" >&2\n        echo "Recent container logs:" >&2\n        docker logs --tail=20 "$CONTAINER_NAME" 2>&1 | sed \'s/^/  /\' >&2\n        echo "" >&2\n        echo "Container processes:" >&2\n        docker exec "$CONTAINER_NAME" ps aux 2>&1 | sed \'s/^/  /\' >&2 || echo "  Could not list processes" >&2\n        return 1\n    fi\n    \n    return 0\n}\n\n# Check container status before proceeding\nif ! check_container_status; then\n    exit 1\nfi\n\n# Function to check if the container has the specified shell\ncheck_shell() {\n    if docker exec "$CONTAINER_NAME" which "$1" >/dev/null 2>&1; then\n        echo "$1"\n        return 0\n    fi\n    return 1\n}\n\n# Determine the best shell available in the container\nSHELL_TO_USE=""\nfor shell in bash sh ash; do\n    if SHELL_PATH=$(check_shell "$shell"); then\n        SHELL_TO_USE="$SHELL_PATH"\n        break\n    fi\ndone\n\n# If no shell was found, provide better error messaging\nif [ -z "$SHELL_TO_USE" ]; then\n    echo "ERROR: No usable shell found in container \'$CONTAINER_NAME\'." >&2\n    echo "This usually means the container is too minimal (like distroless images)." >&2\n    echo "" >&2\n    echo "Available executables in common locations:" >&2\n    docker exec "$CONTAINER_NAME" find /bin /usr/bin -type f -executable 2>/dev/null | head -10 | sed \'s/^/  /\' >&2 || echo "  Could not list executables" >&2\n    echo "" >&2\n    echo "Container image details:" >&2\n    docker inspect "$CONTAINER_NAME" --format "{{.Config.Image}}" | sed \'s/^/  Image: /\' >&2\n    docker inspect "$CONTAINER_NAME" --format "{{.Config.Entrypoint}}" | sed \'s/^/  Entrypoint: /\' >&2\n    docker inspect "$CONTAINER_NAME" --format "{{.Config.Cmd}}" | sed \'s/^/  Cmd: /\' >&2\n    exit 1\nfi\n\n# Main execution logic\nif [ -z "$SSH_ORIGINAL_COMMAND" ]; then\n    # Interactive login shell - use -it flags but WITHOUT -l\n    exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE"\nelse\n    # Command execution - detect if TTY is available\n    if [ -t 0 ]; then\n        # TTY is available, use interactive mode WITHOUT -l\n        exec docker exec -it "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"\n    else\n        # No TTY available, run without -it flags and without -l\n        exec docker exec "$CONTAINER_NAME" "$SHELL_TO_USE" -c "$SSH_ORIGINAL_COMMAND"\n    fi\nfi'
+                log_output.append('Installing container redirection script...')
+                ssh.write_file('/root/container.sh', container_script, mode=493)
+                log_output.append('Configuring SSH to redirect to container...')
                 grep_result = ssh.run("grep -q '^ForceCommand' /etc/ssh/sshd_config")
-
                 if grep_result.returncode == 0:
-                    # ForceCommand already exists, update it
-                    ssh.run(
-                        "sed -i 's|^ForceCommand.*|ForceCommand /root/container.sh|' /etc/ssh/sshd_config"
-                    )
+                    ssh.run("sed -i 's|^ForceCommand.*|ForceCommand /root/container.sh|' /etc/ssh/sshd_config")
                 else:
-                    # Add ForceCommand to the end of sshd_config
-                    ssh.run(
-                        'echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config'
-                    )
-
-                # Restart SSH service
-                log_output.append("Restarting SSH service...")
-                ssh.run(["systemctl", "restart", "sshd"])
-
-                # Test the container setup
-                log_output.append("Testing ssh redirection...")
+                    ssh.run('echo "ForceCommand /root/container.sh" >> /etc/ssh/sshd_config')
+                log_output.append('Restarting SSH service...')
+                ssh.run(['systemctl', 'restart', 'sshd'])
+                log_output.append('Testing ssh redirection...')
                 test_result = ssh.run('echo "Container setup test"')
                 if test_result.returncode != 0:
-                    log_output.append(
-                        "Warning: Container setup test returned non-zero exit code. Check container configuration."
-                    )
-
-            # If we reach here, everything succeeded
-            log_output.append(
-                f"✅ Instance now redirects all SSH sessions to the '{container_name}' container"
-            )
+                    log_output.append('Warning: Container setup test returned non-zero exit code. Check container configuration.')
+            log_output.append(f"✅ Instance now redirects all SSH sessions to the '{container_name}' container")
             if dockerfile:
-                log_output.append(
-                    f"Built custom image '{final_image_name}' from provided Dockerfile"
-                )
-            log_output.append(
-                "Note: This change cannot be easily reversed. Consider creating a snapshot before using this method."
-            )
-
+                log_output.append(f"Built custom image '{final_image_name}' from provided Dockerfile")
+            log_output.append('Note: This change cannot be easily reversed. Consider creating a snapshot before using this method.')
         except Exception:
             raise
 
-    async def aas_container(
-        self,
-        image: typing.Optional[str] = None,
-        dockerfile: typing.Optional[str] = None,
-        build_context: typing.Optional[str] = None,
-        container_name: str = "container",
-        container_args: typing.Optional[typing.List[str]] = None,
-        ports: typing.Optional[typing.Dict[int, int]] = None,
-        volumes: typing.Optional[typing.List[str]] = None,
-        env: typing.Optional[typing.Dict[str, str]] = None,
-        restart_policy: str = "unless-stopped",
-    ) -> None:
+    async def aas_container(self, image: typing.Optional[str]=None, dockerfile: typing.Optional[str]=None, build_context: typing.Optional[str]=None, container_name: str='container', container_args: typing.Optional[typing.List[str]]=None, ports: typing.Optional[typing.Dict[int, int]]=None, volumes: typing.Optional[typing.List[str]]=None, env: typing.Optional[typing.Dict[str, str]]=None, restart_policy: str='unless-stopped') -> None:
         """
         Async version of as_container. Configure the instance to redirect all SSH connections to a Docker container.
 
@@ -4580,26 +2656,9 @@ fi"""
             None
         """
         await self.await_until_ready()
+        return await asyncio.to_thread(self.as_container, image=image, dockerfile=dockerfile, build_context=build_context, container_name=container_name, container_args=container_args, ports=ports, volumes=volumes, env=env, restart_policy=restart_policy)
 
-        # Run the synchronous version in a thread pool
-        return await asyncio.to_thread(
-            self.as_container,
-            image=image,
-            dockerfile=dockerfile,
-            build_context=build_context,
-            container_name=container_name,
-            container_args=container_args,
-            ports=ports,
-            volumes=volumes,
-            env=env,
-            restart_policy=restart_policy,
-        )
-
-    def set_ttl(
-        self,
-        ttl_seconds: typing.Optional[int],
-        ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = None,
-    ) -> None:
+    def set_ttl(self, ttl_seconds: typing.Optional[int], ttl_action: typing.Optional[typing.Literal['stop', 'pause']]=None) -> None:
         """
         Update the TTL (Time To Live) for the instance.
 
@@ -4614,22 +2673,14 @@ fi"""
         Returns:
             None
         """
-        payload = {"ttl_seconds": ttl_seconds}
+        payload = {'ttl_seconds': ttl_seconds}
         if ttl_action is not None:
-            payload["ttl_action"] = ttl_action
-
-        response = self._api._client._http_client.post(
-            f"/instance/{self.id}/ttl",
-            json=payload,
-        )
+            payload['ttl_action'] = ttl_action
+        response = self._api._client._http_client.post(f'/instance/{self.id}/ttl', json=payload)
         response.raise_for_status()
         self._refresh()
 
-    async def aset_ttl(
-        self,
-        ttl_seconds: typing.Optional[int],
-        ttl_action: typing.Optional[typing.Literal["stop", "pause"]] = None,
-    ) -> None:
+    async def aset_ttl(self, ttl_seconds: typing.Optional[int], ttl_action: typing.Optional[typing.Literal['stop', 'pause']]=None) -> None:
         """
         Asynchronously update the TTL (Time To Live) for the instance.
 
@@ -4644,14 +2695,10 @@ fi"""
         Returns:
             None
         """
-        payload = {"ttl_seconds": ttl_seconds}
+        payload = {'ttl_seconds': ttl_seconds}
         if ttl_action is not None:
-            payload["ttl_action"] = ttl_action
-
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/ttl",
-            json=payload,
-        )
+            payload['ttl_action'] = ttl_action
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/ttl', json=payload)
         response.raise_for_status()
         await self._refresh_async()
 
@@ -4668,11 +2715,9 @@ fi"""
             ApiError: If the instance is not found or other API errors occur.
         """
         if not self._api:
-            raise ValueError("Instance object is not associated with an API client")
-
-        response = self._api._client._http_client.get(f"/instance/{self.id}/ssh/key")
+            raise ValueError('Instance object is not associated with an API client')
+        response = self._api._client._http_client.get(f'/instance/{self.id}/ssh/key')
         key_data = response.json()
-
         return InstanceSshKey.model_validate(key_data)
 
     async def assh_key(self) -> InstanceSshKey:
@@ -4688,13 +2733,9 @@ fi"""
             ApiError: If the instance is not found or other API errors occur.
         """
         if not self._api:
-            raise ValueError("Instance object is not associated with an API client")
-
-        response = await self._api._client._async_http_client.get(
-            f"/instance/{self.id}/ssh/key"
-        )
+            raise ValueError('Instance object is not associated with an API client')
+        response = await self._api._client._async_http_client.get(f'/instance/{self.id}/ssh/key')
         key_data = response.json()
-
         return InstanceSshKey.model_validate(key_data)
 
     def ssh_key_rotate(self) -> InstanceSshKey:
@@ -4710,11 +2751,9 @@ fi"""
             ApiError: If the instance is not found or other API errors occur.
         """
         if not self._api:
-            raise ValueError("Instance object is not associated with an API client")
-
-        response = self._api._client._http_client.post(f"/instance/{self.id}/ssh/key")
+            raise ValueError('Instance object is not associated with an API client')
+        response = self._api._client._http_client.post(f'/instance/{self.id}/ssh/key')
         key_data = response.json()
-
         return InstanceSshKey.model_validate(key_data)
 
     async def assh_key_rotate(self) -> InstanceSshKey:
@@ -4730,28 +2769,13 @@ fi"""
             ApiError: If the instance is not found or other API errors occur.
         """
         if not self._api:
-            raise ValueError("Instance object is not associated with an API client")
-
-        response = await self._api._client._async_http_client.post(
-            f"/instance/{self.id}/ssh/key"
-        )
+            raise ValueError('Instance object is not associated with an API client')
+        response = await self._api._client._async_http_client.post(f'/instance/{self.id}/ssh/key')
         key_data = response.json()
-
         return InstanceSshKey.model_validate(key_data)
-
-
-# Helper functions
 import click
 
-
-def copy_into_or_from_instance(
-    instance_obj,
-    local_path,
-    remote_path,
-    uploading,
-    recursive=False,
-    verbose=False,
-):
+def copy_into_or_from_instance(instance_obj, local_path, remote_path, uploading, recursive=False, verbose=False):
     """
     Generic helper to copy files/directories between 'local_path' and
     'remote_path' on an already-ready instance via SFTP.
@@ -4762,12 +2786,10 @@ def copy_into_or_from_instance(
     :param uploading:    If True, copy local → remote; if False, copy remote → local.
     :param recursive:    If True, copy entire directories recursively.
     """
-
     import os
     import os.path
     import pathlib
     import stat
-
     from tqdm import tqdm
 
     def sftp_exists(sftp, path):
@@ -4787,10 +2809,10 @@ def copy_into_or_from_instance(
 
     def sftp_makedirs(sftp, path):
         dirs = []
-        while path not in ["/", "."]:
+        while path not in ['/', '.']:
             if sftp_exists(sftp, path):
                 if not sftp_isdir(sftp, path):
-                    raise IOError(f"Remote path {path} exists but is not a directory.")
+                    raise IOError(f'Remote path {path} exists but is not a directory.')
                 break
             dirs.append(path)
             path = os.path.dirname(path)
@@ -4798,17 +2820,13 @@ def copy_into_or_from_instance(
             sftp.mkdir(d)
 
     def upload_directory(sftp, local_dir, remote_dir):
-        items = list(local_dir.rglob("*"))
+        items = list(local_dir.rglob('*'))
         total_files = len([i for i in items if i.is_file()])
-        with tqdm(
-            total=total_files, unit="file", desc=f"Uploading {local_dir.name}"
-        ) as pbar:
+        with tqdm(total=total_files, unit='file', desc=f'Uploading {local_dir.name}') as pbar:
             sftp_makedirs(sftp, remote_dir)
             for item in items:
                 relative_path = item.relative_to(local_dir)
-                remote_item_path = os.path.join(
-                    remote_dir, *relative_path.parts
-                ).replace("\\", "/")
+                remote_item_path = os.path.join(remote_dir, *relative_path.parts).replace('\\', '/')
                 if item.is_dir():
                     sftp_makedirs(sftp, remote_item_path)
                 else:
@@ -4817,23 +2835,14 @@ def copy_into_or_from_instance(
 
     def upload_file(sftp, local_file, remote_file):
         parent = os.path.dirname(remote_file)
-        if parent and parent != ".":
+        if parent and parent != '.':
             sftp_makedirs(sftp, parent)
-
-        # Show a byte-level progress bar for single-file upload
         try:
             file_size = os.path.getsize(local_file)
         except Exception:
             file_size = None
-
         if file_size and file_size > 0:
-            with tqdm(
-                total=file_size,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                desc=f"Uploading {os.path.basename(str(local_file))}",
-            ) as pbar:
+            with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f'Uploading {os.path.basename(str(local_file))}') as pbar:
                 last = 0
 
                 def _cb(transferred, total=None):
@@ -4842,44 +2851,27 @@ def copy_into_or_from_instance(
                     if inc:
                         pbar.update(inc)
                         last += inc
-
                 sftp.put(str(local_file), remote_file, callback=_cb)
         else:
-            # Fallback without progress if size unknown
             sftp.put(str(local_file), remote_file)
 
     def download_directory(sftp, remote_dir, local_dir):
         items_to_explore = [remote_dir]
         files_to_download = []
-
-        # Gather items from the remote directory
         while items_to_explore:
             current_dir = items_to_explore.pop()
             try:
                 for entry in sftp.listdir_attr(current_dir):
-                    full_remote = os.path.join(current_dir, entry.filename).replace(
-                        "\\", "/"
-                    )
+                    full_remote = os.path.join(current_dir, entry.filename).replace('\\', '/')
                     if stat.S_ISDIR(entry.st_mode):
                         items_to_explore.append(full_remote)
                     else:
                         files_to_download.append(full_remote)
             except FileNotFoundError:
-                click.echo(
-                    f"Warning: Remote directory {current_dir} not found.", err=True
-                )
+                click.echo(f'Warning: Remote directory {current_dir} not found.', err=True)
             except IOError as e:
-                click.echo(
-                    f"Warning: Error listing remote directory {current_dir}: {e}",
-                    err=True,
-                )
-
-        # Create local subdirs and download files
-        with tqdm(
-            total=len(files_to_download),
-            unit="file",
-            desc=f"Downloading {os.path.basename(remote_dir)}",
-        ) as pbar:
+                click.echo(f'Warning: Error listing remote directory {current_dir}: {e}', err=True)
+        with tqdm(total=len(files_to_download), unit='file', desc=f'Downloading {os.path.basename(remote_dir)}') as pbar:
             for file_path in files_to_download:
                 rel = os.path.relpath(file_path, remote_dir)
                 local_file = local_dir / rel
@@ -4890,22 +2882,13 @@ def copy_into_or_from_instance(
     def download_file(sftp, remote_file, local_file):
         local_file_path = pathlib.Path(local_file)
         local_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Determine remote file size for progress bar
         try:
             remote_stat = sftp.stat(remote_file)
-            remote_size = getattr(remote_stat, "st_size", None)
+            remote_size = getattr(remote_stat, 'st_size', None)
         except Exception:
             remote_size = None
-
         if remote_size and remote_size > 0:
-            with tqdm(
-                total=remote_size,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                desc=f"Downloading {os.path.basename(remote_file)}",
-            ) as pbar:
+            with tqdm(total=remote_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f'Downloading {os.path.basename(remote_file)}') as pbar:
                 last = 0
 
                 def _cb(transferred, total=None):
@@ -4914,55 +2897,33 @@ def copy_into_or_from_instance(
                     if inc:
                         pbar.update(inc)
                         last += inc
-
                 sftp.get(remote_file, str(local_file_path), callback=_cb)
         else:
-            # Fallback without progress if size unknown
             sftp.get(remote_file, str(local_file_path))
-
     with instance_obj.ssh() as ssh:
         sftp = ssh._client.open_sftp()
-
         if uploading:
-            # local → remote
             local_path_obj = pathlib.Path(local_path).resolve()
-
             if recursive:
                 if local_path_obj.is_file():
-                    raise click.UsageError(
-                        "Cannot recursively upload a single file without a directory."
-                    )
+                    raise click.UsageError('Cannot recursively upload a single file without a directory.')
                 if not local_path_obj.exists():
-                    raise click.UsageError(
-                        f"Local path does not exist: {local_path_obj}"
-                    )
+                    raise click.UsageError(f'Local path does not exist: {local_path_obj}')
                 upload_directory(sftp, local_path_obj, remote_path)
             else:
                 if local_path_obj.is_dir():
-                    raise click.UsageError(
-                        f"Source '{local_path_obj}' is a directory. Use --recursive."
-                    )
+                    raise click.UsageError(f"Source '{local_path_obj}' is a directory. Use --recursive.")
                 if not local_path_obj.exists():
-                    raise click.UsageError(f"Local file not found: {local_path_obj}")
+                    raise click.UsageError(f'Local file not found: {local_path_obj}')
                 upload_file(sftp, local_path_obj, remote_path)
-
         else:
-            # remote → local
             local_path_obj = pathlib.Path(local_path).resolve()
-
             if recursive:
-                # We consider remote_path to be a directory or a non-existent path we treat as directory
                 download_directory(sftp, remote_path, local_path_obj)
             else:
-                # Single-file download
-                # If remote_path is a directory, error out (user must supply --recursive).
                 if sftp_isdir(sftp, remote_path):
-                    raise click.UsageError(
-                        f"Remote source '{remote_path}' is a directory. Use --recursive."
-                    )
+                    raise click.UsageError(f"Remote source '{remote_path}' is a directory. Use --recursive.")
                 download_file(sftp, remote_path, local_path_obj)
-
         sftp.close()
-
     if verbose:
-        click.echo("\nCopy complete.")
+        click.echo('\nCopy complete.')

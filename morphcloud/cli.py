@@ -1,2985 +1,845 @@
-# morphcloud/cli.py
+"""Command-line interface."""
 
-import datetime
-import importlib.metadata
+from __future__ import annotations
+
+import dataclasses
 import json
-import os
-import pathlib
-import shlex
 import sys
-import termios
-import threading
-import time
-import tty
-import typing
+import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any
 
 import click
-import requests
-from packaging import version
+import yaml
+from pydantic import BaseModel
 
-import morphcloud.api as api
-import morphcloud.config as config
-from morphcloud._utils import Spinner
-from morphcloud.api import copy_into_or_from_instance
-from morphcloud.cli_helpers import (
-    format_json,
-    get_client,
-    handle_api_error,
-    print_docker_style_table,
-)
+import importlib
 
-# ─────────────────────────────────────────────────────────────
-#  Version & CLI Setup
-# ─────────────────────────────────────────────────────────────
+SDK_MODULES = {
+    'morphcloud._synapse': importlib.import_module('morphcloud._synapse'),
+    'morphcloud.api': importlib.import_module('morphcloud.api'),
+    'morphcloud.cli_runtime': importlib.import_module('morphcloud.cli_runtime'),
+    'morphcloud.devbox.gen.types.devbox_response': importlib.import_module('morphcloud.devbox.gen.types.devbox_response'),
+    'morphcloud.devbox.gen.types.template_detail': importlib.import_module('morphcloud.devbox.gen.types.template_detail'),
+    'morphcloud.devbox.gen.types.tmux_session': importlib.import_module('morphcloud.devbox.gen.types.tmux_session'),
+    'morphcloud.devbox_commands': importlib.import_module('morphcloud.devbox_commands'),
+    'morphcloud.images': importlib.import_module('morphcloud.images'),
+    'morphcloud.instances': importlib.import_module('morphcloud.instances'),
+    'morphcloud.plugin_commands': importlib.import_module('morphcloud.plugin_commands'),
+    'morphcloud.profiles': importlib.import_module('morphcloud.profiles'),
+    'morphcloud.simple_index.client': importlib.import_module('morphcloud.simple_index.client'),
+    'morphcloud.snapshots': importlib.import_module('morphcloud.snapshots'),
+    'morphcloud.users': importlib.import_module('morphcloud.users'),
+    'morphcloud.volume_commands': importlib.import_module('morphcloud.volume_commands'),
+    'morphcloud.volumes.client': importlib.import_module('morphcloud.volumes.client'),
+}
 
-try:
-    __version__ = importlib.metadata.version("morphcloud")
-except importlib.metadata.PackageNotFoundError:
-    __version__ = "0.0.0-dev"  # Fallback if package not installed
-
-
-def check_for_package_update(display_mode="normal"):
-    """
-    Check if the installed version of morphcloud is the latest available on PyPI.
-    Display a notification if a newer version is available.
-
-    Args:
-        display_mode (str): How to display the notification:
-            - "normal": Standard output (for --help, --version)
-            - "error": To stderr with spacing (for exception hook)
-            - "silent": Just return values, don't display anything
-
-    Returns:
-        tuple: (current_version, latest_version, is_latest) or None if check fails
-    """
-    # Skip for development versions
-    if __version__ == "0.0.0-dev":
-        return None
-
-    try:
-        # Query PyPI API for the latest version
-        response = requests.get("https://pypi.org/pypi/morphcloud/json", timeout=2)
-        response.raise_for_status()
-
-        latest_version = response.json()["info"]["version"]
-
-        # Compare versions
-        is_latest = version.parse(__version__) >= version.parse(latest_version)
-
-        # Display notification if not using the latest version
-        if not is_latest:
-            message = (
-                f"NOTE: You are using morphcloud version {__version__}, however version {latest_version} "
-                f"is available. Consider upgrading via: pip install --upgrade morphcloud"
-            )
-
-            if display_mode == "normal":
-                click.secho(f"\n{message}\n", fg="yellow")
-            elif display_mode == "error":
-                # When coming from exception hook, add spacing and output to stderr
-                click.secho(f"\n{message}", fg="yellow", err=True)
-
-        return (__version__, latest_version, is_latest)
-
-    except Exception:
-        # Silently handle any errors (network issues, package not found, etc.)
-        return None
+SCHEMA = {'version': 1, 'resources': [{'resource': 'api-key', 'class_name': 'APIKey', 'class_module': 'morphcloud.api', 'cli_name': 'api-key', 'cli_parent': ['user'], 'help': 'Manage user API keys.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'api_key', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'create', 'python_name': 'create_api_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Create a new API key.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['new'], 'renderer': {'kind': 'api-key-created', 'title': None, 'success': None, 'progress': 'Creating API key…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'delete', 'python_name': 'delete_api_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Delete an API key.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['rm'], 'renderer': {'kind': 'success', 'title': None, 'success': 'API key deleted', 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'api_key_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_api_keys', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'List API keys.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'api-key-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'devbox', 'class_name': 'DevboxResponse', 'class_module': 'morphcloud.devbox.gen.types.devbox_response', 'cli_name': 'devbox', 'cli_parent': [], 'help': 'Manage devboxes in MorphCloud.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'devbox', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'chat', 'python_name': 'chat_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Open a managed Codex chat attached to this devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'force', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'detach', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'copy', 'python_name': 'copy_devbox_files', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Copy files or directories between the local machine and a devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'source', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'destination', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'recursive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--recursive', '-r'], 'secondary': None, 'help': 'Copy directories recursively.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'delete', 'python_name': 'delete_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Delete a devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'expose-http', 'python_name': 'expose_http_service', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Expose a local port as an HTTP service on the devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Unique name for the HTTP service.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'port', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--port'], 'secondary': None, 'help': 'Local port on the devbox to expose.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'auth_mode', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['none', 'api_key'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--auth-mode'], 'secondary': None, 'help': 'Authentication mode for the HTTP service.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': False}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'get', 'python_name': 'get_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Get details for a specific devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'hide-http', 'python_name': 'hide_http_service', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Hide an HTTP service on the devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Name of the HTTP service to hide.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_devboxes', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'List devboxes for the authenticated account.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'pause', 'python_name': 'pause_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Pause a running devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'reboot', 'python_name': 'reboot_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Reboot a devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'resume', 'python_name': 'resume_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Resume a paused devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'save', 'python_name': 'save_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Create a snapshot of a devbox.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'ssh', 'python_name': 'ssh_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Open an SSH session to a devbox or run a remote command.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'remote_command', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': True, 'unprocessed': True, 'option': None}, {'name': 'timeout', 'kind': 'int', 'required': False, 'optional': False, 'default': 300, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--timeout'], 'secondary': None, 'help': 'Seconds to wait for the devbox to become READY.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'keepalive', 'kind': 'int', 'required': False, 'optional': False, 'default': 15, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--keepalive'], 'secondary': None, 'help': 'Seconds between SSH keepalive packets.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'start', 'python_name': 'start_devbox', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Start a devbox from a template.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Optional display name for the new devbox.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata_items', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Additional metadata entries (key=value). Can be provided multiple times.', 'metavar': None, 'multiple': True, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'image', 'class_name': 'Image', 'class_module': 'morphcloud.api', 'cli_name': 'image', 'cli_parent': [], 'help': 'Manage Morph base images.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'image', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'list', 'python_name': 'list_images', 'function_module': 'morphcloud.images', 'scope': 'collection', 'summary': 'List all available base images.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'image-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output in JSON format.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'instance', 'class_name': 'Instance', 'class_module': 'morphcloud.api', 'cli_name': 'instance', 'cli_parent': [], 'help': 'Manage Morph instances.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'morphvm', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'boot', 'python_name': 'boot_instance', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Boot a new instance from a snapshot.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Booted instance {id}', 'progress': 'Booting instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'snapshot_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'vcpus', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'memory', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'disk_size', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'cleanup', 'python_name': 'cleanup_instances', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Clean up instances selected by snapshot and service patterns.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-cleanup', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'snapshot_pattern', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'snapshot_exclude_pattern', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'service_pattern', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'service_exclude_pattern', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'exclude_paused', 'kind': 'bool', 'required': False, 'optional': False, 'default': True, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--exclude-paused'], 'secondary': '--include-paused', 'help': 'Exclude paused instances from cleanup.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'action', 'kind': 'choice', 'required': False, 'optional': False, 'default': 'stop', 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['stop', 'pause'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'max_workers', 'kind': 'int', 'required': False, 'optional': False, 'default': 10, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'yes', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--yes', '-y'], 'secondary': None, 'help': 'Skip confirmation.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output results as JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'copy', 'python_name': 'copy_instance_files', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Copy files or directories between the local machine and an instance.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Copy complete', 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'source', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'destination', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'recursive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--recursive', '-r'], 'secondary': None, 'help': 'Copy directories recursively.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_instances', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'List all instances.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'instance-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Filter by metadata as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'page', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'limit', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'interactive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--interactive', '-i'], 'secondary': None, 'help': 'Interactive pagination with keyboard controls.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': '--no-json', 'help': 'Output in JSON format.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'ssh-key', 'python_name': 'instance_ssh_key', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Retrieve ephemeral SSH credentials for an instance.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-ssh-key', 'title': None, 'success': None, 'progress': 'Retrieving SSH key…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'instance_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'show_password_only', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--password'], 'secondary': None, 'help': 'Output only the password value.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'start', 'python_name': 'start_instance', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Start an instance from a snapshot and wait until it is ready.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'summary', 'title': 'Instance started', 'success': None, 'progress': 'Starting instance…', 'columns': [], 'items_path': None, 'lines': ['ID={id}', 'Status={status}', 'Resources={spec[vcpus]} vCPU · {spec[memory]} MB RAM · {spec[disk_size]} MB disk'], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'snapshot_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'ttl_seconds', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_action', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['stop', 'pause'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'stop', 'python_name': 'stop_instance', 'function_module': 'morphcloud.instances', 'scope': 'collection', 'summary': 'Stop a running or paused instance.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Stopped instance {instance_id}', 'progress': 'Stopping instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'instance_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'branch', 'python_name': 'branch_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Snapshot an instance and launch one or more branches.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-branch', 'title': None, 'success': None, 'progress': 'Branching instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'count', 'kind': 'int', 'required': False, 'optional': False, 'default': 1, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--count'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': True, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'chat', 'python_name': 'chat_instance', 'function_module': 'morphcloud._synapse', 'scope': 'entity', 'summary': 'Open a managed Codex chat attached to this instance.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'force', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'detach', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'exec', 'python_name': 'exec_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Execute a command inside an instance.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-exec', 'title': None, 'success': None, 'progress': 'Executing command…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'command_args', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': True, 'unprocessed': False, 'option': None}, {'name': 'stream', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--stream'], 'secondary': None, 'help': 'Stream output incrementally as it arrives.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'expose-http', 'python_name': 'expose_instance_http', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Expose an HTTP service on a public URL.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'summary', 'title': 'HTTP service exposed', 'success': None, 'progress': 'Exposing HTTP service…', 'columns': [], 'items_path': None, 'lines': ['URL={url}', 'Authentication={authentication}'], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'port', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'auth_mode', 'kind': 'choice', 'required': False, 'optional': False, 'default': 'none', 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['none', 'api_key'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'get', 'python_name': 'get_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Get detailed information about a specific instance as JSON.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'json', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'hide-http', 'python_name': 'hide_instance_http', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Hide a previously exposed HTTP service.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Service {name} hidden on {id}', 'progress': 'Hiding HTTP service…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'pause', 'python_name': 'pause', 'function_module': 'morphcloud.api', 'scope': 'entity', 'summary': 'Pause the instance.', 'binding': 'inline', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Paused instance {id}', 'progress': 'Pausing instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'self', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'port-forward', 'python_name': 'port_forward_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Forward a remote instance port to the local machine.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'auto', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'remote_port', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'local_port', 'kind': 'int', 'required': False, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'reboot', 'python_name': 'reboot_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Reboot an instance, optionally updating resources and settings.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Rebooted instance {id}', 'progress': 'Rebooting instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'vcpus', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'memory', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'disk_size', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_seconds', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_action', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['stop', 'pause'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'resume', 'python_name': 'resume', 'function_module': 'morphcloud.api', 'scope': 'entity', 'summary': 'Resume the instance.', 'binding': 'inline', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Resumed instance {id}', 'progress': 'Resuming instance…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'self', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'set-metadata', 'python_name': 'set_instance_metadata', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Set or replace instance metadata.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'json', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata_args', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': True, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'set-ttl', 'python_name': 'set_instance_ttl', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Set or remove the instance time-to-live policy.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-ttl', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_seconds', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ttl-seconds'], 'secondary': None, 'help': 'Time-to-live in seconds. Use -1 to remove TTL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'ttl_action', 'kind': 'choice', 'required': False, 'optional': False, 'default': 'stop', 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['stop', 'pause'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'set-wake-on', 'python_name': 'set_instance_wake_on', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Configure the wake-on-event settings for an instance.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Updated wake settings for {id}', 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'wake_on_ssh', 'kind': 'bool', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ssh'], 'secondary': None, 'help': 'Enable or disable wake-on-SSH.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'wake_on_http', 'kind': 'bool', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--http'], 'secondary': None, 'help': 'Enable or disable wake-on-HTTP.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'snapshot', 'python_name': 'snapshot_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Create a new snapshot from an instance.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'snapshot-summary', 'title': None, 'success': None, 'progress': 'Creating snapshot…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'digest', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_seconds', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ttl-seconds'], 'secondary': None, 'help': 'Snapshot retention period in seconds.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'ssh', 'python_name': 'ssh_instance', 'function_module': 'morphcloud.instances', 'scope': 'entity', 'summary': 'Start an interactive SSH shell or run an optional remote command.', 'binding': 'external', 'subject_parameter': 'instance', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'instance-ssh', 'title': None, 'success': None, 'progress': 'Connecting via SSH…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'instance', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'rm', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--rm'], 'secondary': None, 'help': 'Stop the instance after SSH.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'create_snapshot_on_exit', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--snapshot'], 'secondary': None, 'help': 'Create a snapshot when the SSH session exits.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'remote_command', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': True, 'unprocessed': True, 'option': None}], 'preconditions': []}]}, {'resource': 'plugin', 'class_name': 'PluginCatalogEntry', 'class_module': 'morphcloud.simple_index.client', 'cli_name': 'plugin', 'cli_parent': [], 'help': 'Manage installable Morph Cloud CLI plugins.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'name', 'identity_prefix': 'plugin', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'delete', 'python_name': 'delete_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Delete a plugin catalog entry.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'visibility', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['global', 'org'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--visibility'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'organization_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--organization-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'yes', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--yes'], 'secondary': None, 'help': 'Do not prompt for confirmation.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'disable', 'python_name': 'disable_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Disable a plugin catalog entry.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'visibility', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['global', 'org'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--visibility'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'organization_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--organization-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'doctor', 'python_name': 'doctor_plugins', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Report plugin configuration and registration status.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'enable', 'python_name': 'enable_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Enable a plugin catalog entry.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'visibility', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['global', 'org'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--visibility'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'organization_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--organization-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'install', 'python_name': 'install_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Install a plugin into the current Python environment.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'upgrade', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--upgrade'], 'secondary': None, 'help': 'Upgrade if already installed.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'skip_verify', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--skip-verify'], 'secondary': None, 'help': 'Skip post-install CLI verification.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'python_executable', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--python'], 'secondary': None, 'help': 'Install into the selected Python executable.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'venv', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--venv'], 'secondary': None, 'help': 'Install into the selected virtual environment.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'directory', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'dry_run', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--dry-run'], 'secondary': None, 'help': 'Resolve the plugin without installing it.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_plugins', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'List visible plugins.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'query', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'include_disabled', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--include-disabled'], 'secondary': None, 'help': 'Include disabled plugins.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'publish', 'python_name': 'publish_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Upload a plugin wheel and register its catalog entry.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'wheel', 'kind': 'path', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--wheel'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': True, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'manifest_path', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--manifest'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': False, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'package_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--package-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'version_spec', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--version-spec'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'entry_point', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--entry-point'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'command_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--command-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'display_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--display-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'plugin_version', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--version'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'visibility', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['global', 'org'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--visibility'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'organization_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--organization-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'allow_overwrite', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--allow-overwrite'], 'secondary': None, 'help': 'Overwrite an existing wheel.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'skip_existing_package', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--skip-existing-package'], 'secondary': None, 'help': 'Continue to catalog registration when the wheel already exists.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'disabled', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--disabled'], 'secondary': None, 'help': 'Register the plugin as disabled.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'register', 'python_name': 'register_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Register or update a plugin catalog entry.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'manifest_path', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--manifest'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': False, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'package_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--package-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'version_spec', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--version-spec'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'artifact_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--artifact-url'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'entry_point', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--entry-point'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'command_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--command-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'display_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--display-name'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'plugin_version', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--version'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'visibility', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['global', 'org'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--visibility'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'organization_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--organization-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'disabled', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--disabled'], 'secondary': None, 'help': 'Register the plugin as disabled.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'search', 'python_name': 'search_plugins', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Search visible plugins.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'query', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'include_disabled', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--include-disabled'], 'secondary': None, 'help': 'Include disabled plugins.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'show', 'python_name': 'show_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Show plugin details.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['info'], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output JSON.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'uninstall', 'python_name': 'uninstall_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Uninstall a plugin package from the current Python environment.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'python_executable', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--python'], 'secondary': None, 'help': 'Uninstall from the selected Python executable.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'venv', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--venv'], 'secondary': None, 'help': 'Uninstall from the selected virtual environment.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'directory', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'upgrade', 'python_name': 'upgrade_plugin', 'function_module': 'morphcloud.plugin_commands', 'scope': 'collection', 'summary': 'Upgrade an installed plugin.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['update'], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'skip_verify', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--skip-verify'], 'secondary': None, 'help': 'Skip post-upgrade CLI verification.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'python_executable', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--python'], 'secondary': None, 'help': 'Upgrade in the selected Python executable.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'venv', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--venv'], 'secondary': None, 'help': 'Upgrade in the selected virtual environment.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'directory', 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'dry_run', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--dry-run'], 'secondary': None, 'help': 'Resolve the plugin without upgrading it.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'secret', 'class_name': 'Secret', 'class_module': 'morphcloud.api', 'cli_name': 'secret', 'cli_parent': ['user'], 'help': 'Manage user secrets.', 'aliases': [], 'alternate_paths': [['secrets']], 'exposed': True, 'identity_field': 'name', 'identity_prefix': 'secret', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'create', 'python_name': 'create_secret', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Create or replace a user secret.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['new', 'set'], 'renderer': {'kind': 'secret-created', 'title': None, 'success': None, 'progress': 'Creating secret…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Unique secret name.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'value', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--value'], 'secondary': None, 'help': 'Secret value. Prefer --value-stdin or interactive prompt to avoid shell history leaks.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'value_stdin', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--value-stdin'], 'secondary': None, 'help': 'Read secret value from stdin.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': 'Optional description.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Optional metadata (key=value).', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'delete', 'python_name': 'delete_secret', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Delete a user secret.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['rm'], 'renderer': {'kind': 'success', 'title': None, 'success': 'Secret deleted', 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_secrets', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'List user secrets without revealing their values.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'secret-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'snapshot', 'class_name': 'Snapshot', 'class_module': 'morphcloud.api', 'cli_name': 'snapshot', 'cli_parent': [], 'help': 'Manage Morph snapshots (VM states).', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'snapshot', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'create', 'python_name': 'create_snapshot', 'function_module': 'morphcloud.snapshots', 'scope': 'collection', 'summary': 'Create a snapshot from an image and machine configuration.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'snapshot-summary', 'title': None, 'success': None, 'progress': 'Creating snapshot…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'image_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--image-id'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'vcpus', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--vcpus'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'memory', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--memory'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'disk_size', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--disk-size'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'digest', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_seconds', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ttl-seconds'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': 1, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_snapshots', 'function_module': 'morphcloud.snapshots', 'scope': 'collection', 'summary': 'List all snapshots.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'snapshot-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Filter by metadata as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'interactive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--interactive', '-i'], 'secondary': None, 'help': 'Interactive pagination with keyboard controls.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'page', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'limit', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': '--no-json', 'help': 'Output in JSON format.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'delete', 'python_name': 'delete', 'function_module': 'morphcloud.api', 'scope': 'entity', 'summary': 'delete Snapshot', 'binding': 'inline', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'success', 'title': None, 'success': 'Deleted snapshot {id}', 'progress': 'Deleting snapshot…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'self', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'get', 'python_name': 'get_snapshot', 'function_module': 'morphcloud.snapshots', 'scope': 'entity', 'summary': 'Get detailed information about a snapshot as JSON.', 'binding': 'external', 'subject_parameter': 'snapshot', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'json', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'snapshot', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'set-metadata', 'python_name': 'set_snapshot_metadata', 'function_module': 'morphcloud.snapshots', 'scope': 'entity', 'summary': 'Set or replace snapshot metadata.', 'binding': 'external', 'subject_parameter': 'snapshot', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'json', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'snapshot', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'metadata', 'kind': 'kv', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--metadata', '-m'], 'secondary': None, 'help': 'Metadata to attach as KEY=VALUE.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'metadata_args', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': True, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'set-ttl', 'python_name': 'set_snapshot_ttl', 'function_module': 'morphcloud.snapshots', 'scope': 'entity', 'summary': 'Set snapshot retention in seconds, or use -1 to clear it.', 'binding': 'external', 'subject_parameter': 'snapshot', 'subject_binding': 'model', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'snapshot-ttl', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'snapshot', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ttl_seconds', 'kind': 'int', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ttl-seconds'], 'secondary': None, 'help': 'Snapshot TTL in seconds. Use -1 to remove TTL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'ssh-key', 'class_name': 'ManagedSSHKey', 'class_module': 'morphcloud.api', 'cli_name': 'ssh-key', 'cli_parent': ['user'], 'help': 'Manage user-owned SSH public keys used for direct SSH.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'ssh_key', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'add', 'python_name': 'add_ssh_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Add a managed SSH public key.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['create'], 'renderer': {'kind': 'ssh-key-created', 'title': None, 'success': None, 'progress': 'Adding SSH public key…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'A unique, recognizable device name.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'public_key', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--public-key'], 'secondary': None, 'help': 'One OpenSSH public-key value.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'public_key_file', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--public-key-file'], 'secondary': None, 'help': 'Read the public key from a .pub file.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': True, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'expires', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--expires'], 'secondary': None, 'help': 'Optional expiry as Unix seconds or ISO 8601 (naive values are UTC).', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'edit', 'python_name': 'edit_ssh_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': "Edit a managed key's name or expiry; public material is immutable.", 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'ssh-key-edited', 'title': None, 'success': None, 'progress': 'Editing SSH public key…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ssh_key_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'New recognizable device name.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'expires', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--expires'], 'secondary': None, 'help': 'New expiry as Unix seconds or ISO 8601.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'clear_expiry', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--clear-expiry'], 'secondary': None, 'help': "Remove the key's existing expiry.", 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'get', 'python_name': 'get_ssh_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Get a managed key by ID, or the legacy singular key when ID is omitted.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': {'kind': 'ssh-key-detail', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ssh_key_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_ssh_keys', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'List managed SSH public keys.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['ls'], 'renderer': {'kind': 'ssh-key-list', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'revoke', 'python_name': 'revoke_ssh_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Revoke one managed key across all current organization memberships.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['rm'], 'renderer': {'kind': 'success', 'title': None, 'success': 'SSH public key revoked.', 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': False}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'ssh_key_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'yes', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--yes'], 'secondary': None, 'help': 'Skip the confirmation prompt.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'set', 'python_name': 'set_legacy_ssh_key', 'function_module': 'morphcloud.users', 'scope': 'collection', 'summary': 'Set the legacy singular compatibility key.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': ['update'], 'renderer': {'kind': 'legacy-ssh-key-set', 'title': None, 'success': None, 'progress': 'Updating SSH key…', 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'public_key', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--public-key'], 'secondary': None, 'help': "SSH public key string (e.g., 'ssh-rsa AAAA...')", 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'template', 'class_name': 'TemplateDetail', 'class_module': 'morphcloud.devbox.gen.types.template_detail', 'cli_name': 'template', 'cli_parent': ['devbox'], 'help': 'Manage devbox templates.', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'tpl', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'cache', 'python_name': 'cache_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Start caching/building a template.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'secret_items', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--secret'], 'secondary': None, 'help': 'Runtime secret to provide during build (key=value). Repeat for multiple secrets.', 'metavar': None, 'multiple': True, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'cancel-cache', 'python_name': 'cancel_template_cache', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Cancel a running template build.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'create', 'python_name': 'create_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Create a new template.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Display name for the template.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'base_snapshot_option', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--base-snapshot'], 'secondary': None, 'help': 'Snapshot identifier used as the base for this template.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'yaml_file', 'kind': 'path', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--file'], 'secondary': None, 'help': 'Path to the template YAML definition.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': True, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': 'Optional template description.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'delete', 'python_name': 'delete_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Delete a template and associated aliases.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'events', 'python_name': 'template_events', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Fetch build events for a template run.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'run_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--run-id'], 'secondary': None, 'help': 'Run ID returned from the cache command.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'force', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--force'], 'secondary': None, 'help': 'Force fetching cached events.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'get', 'python_name': 'get_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Show template details.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'list_templates', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'List available devbox templates.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'run', 'python_name': 'run_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Run a template workflow from a template id, shared alias, or browser.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'target', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'param_items', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--param'], 'secondary': None, 'help': 'Workflow input to provide for this run (key=value). Repeat for multiple inputs.', 'metavar': None, 'multiple': True, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'secret_items', 'kind': 'str', 'required': False, 'optional': False, 'default': [], 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--secret'], 'secondary': None, 'help': 'Runtime secret override for this run (key=value). Repeat for multiple secrets.', 'metavar': None, 'multiple': True, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'force', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--force'], 'secondary': None, 'help': 'Bypass cache and rebuild all non-secret steps for this run.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'attach_run_id', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--attach'], 'secondary': None, 'help': 'Attach to an existing template run instead of starting a new build.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'plain', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--plain'], 'secondary': None, 'help': 'Disable the interactive TUI and use plain text output.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output structured JSON', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'handoff_ttl_seconds', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--handoff-ttl-seconds'], 'secondary': None, 'help': 'Set a handoff TTL on the created devbox.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'handoff_ttl_action', 'kind': 'choice', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': ['pause', 'stop'], 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--handoff-ttl-action'], 'secondary': None, 'help': 'Action to take when the handoff TTL expires.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'experimental_run_locally', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--experimental-run-locally'], 'secondary': None, 'help': 'Treat TARGET as a local template YAML path or shared alias YAML and execute it locally in the template TUI.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'deprecated_experimental_run_local', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--experimental-run-local'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': True, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'share', 'python_name': 'share_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Share a template via a public alias.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'alias', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--alias'], 'secondary': None, 'help': 'Alias slug to publish for this template.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': 'Optional alias description.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'submit-secrets', 'python_name': 'submit_template_secrets', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Submit secrets while a template build is awaiting input.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'run_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--run-id'], 'secondary': None, 'help': 'Run ID awaiting secrets.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'secret_items', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--secret'], 'secondary': None, 'help': 'Secret to submit (key=value). Repeat for multiple secrets.', 'metavar': None, 'multiple': True, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'update', 'python_name': 'update_template', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Update an existing template.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'template_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Updated display name.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'base_snapshot_option', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--base-snapshot'], 'secondary': None, 'help': 'Updated base snapshot identifier.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'yaml_file', 'kind': 'path', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--file'], 'secondary': None, 'help': 'Path to updated template YAML content.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': 'file', 'path_exists': True, 'path_type': 'path', 'case_sensitive': True}}, {'name': 'description', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--description'], 'secondary': None, 'help': 'Updated description.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'terminal', 'class_name': 'TmuxSession', 'class_module': 'morphcloud.devbox.gen.types.tmux_session', 'cli_name': 'terminal', 'cli_parent': ['devbox'], 'help': 'Manage devbox terminals (tmux sessions).', 'aliases': [], 'alternate_paths': [], 'exposed': True, 'identity_field': 'id', 'identity_prefix': 'tmux', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'connect', 'python_name': 'terminal_connect', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Connect to a devbox terminal (tmux session) over SSH.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'session', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'initial_command', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--command'], 'secondary': None, 'help': 'Optional command to run when creating the session (name targets only).', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'timeout', 'kind': 'int', 'required': False, 'optional': False, 'default': 300, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--timeout'], 'secondary': None, 'help': 'Seconds to wait for the devbox to become READY.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'keepalive', 'kind': 'int', 'required': False, 'optional': False, 'default': 15, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--keepalive'], 'secondary': None, 'help': 'Seconds between SSH keepalive packets.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'list', 'python_name': 'terminal_list', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'List devbox terminals (tmux sessions).', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'socket', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--socket'], 'secondary': None, 'help': 'Optional tmux socket name/path.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'timeout', 'kind': 'int', 'required': False, 'optional': False, 'default': 300, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--timeout'], 'secondary': None, 'help': 'Seconds to wait for the devbox to become READY.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'start', 'python_name': 'terminal_start', 'function_module': 'morphcloud.devbox_commands', 'scope': 'collection', 'summary': 'Start a new devbox terminal (tmux session).', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'devbox_id', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'session_name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--name'], 'secondary': None, 'help': 'Tmux session name.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'timeout', 'kind': 'int', 'required': False, 'optional': False, 'default': 300, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--timeout'], 'secondary': None, 'help': 'Seconds to wait for the devbox to become READY.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_output', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': 'Output raw JSON response', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}, {'resource': 'volume', 'class_name': 'VolumeBucket', 'class_module': 'morphcloud.volumes.client', 'cli_name': 'volumes', 'cli_parent': [], 'help': 'Manage Morph Volumes via the S3-compatible gateway.', 'aliases': ['volume'], 'alternate_paths': [], 'exposed': True, 'identity_field': 'name', 'identity_prefix': 'volume', 'mutability': 'mutable', 'relations': [], 'operations': [{'name': 'cat', 'python_name': 'cat_volume_object', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': "Print an object's contents to stdout.", 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'target', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'cp', 'python_name': 'copy_volume_objects', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'Copy between local paths and volumes.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'source', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'destination', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'recursive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--recursive', '-r'], 'secondary': None, 'help': 'Copy directories or prefixes recursively.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'ls', 'python_name': 'list_volumes', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'List buckets, prefixes, or objects.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'target', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'recursive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--recursive', '-r'], 'secondary': None, 'help': 'List all objects recursively under the given prefix.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'mb', 'python_name': 'make_bucket', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'Create a bucket.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'bucket', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'rb', 'python_name': 'remove_bucket', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'Remove an empty bucket.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'bucket', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}], 'preconditions': []}, {'name': 'rm', 'python_name': 'remove_volume_objects', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'Delete an object or a prefix worth of objects.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'target', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'recursive', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--recursive', '-r'], 'secondary': None, 'help': 'Delete every object under a prefix.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'yes', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--yes', '-y'], 'secondary': None, 'help': 'Skip recursive delete confirmation.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}, {'name': 'tree', 'python_name': 'tree_volumes', 'function_module': 'morphcloud.volume_commands', 'scope': 'collection', 'summary': 'Render a file-explorer style tree for a bucket or prefix.', 'binding': 'external', 'subject_parameter': None, 'subject_binding': None, 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'target', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'json_mode', 'kind': 'bool', 'required': False, 'optional': False, 'default': False, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--json'], 'secondary': None, 'help': None, 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}], 'preconditions': []}]}], 'command_groups': [{'path': ['profile'], 'help': 'Manage MorphCloud CLI profiles.'}, {'path': ['user'], 'help': 'Manage settings for the current authenticated user.'}], 'commands': [{'path': ['profile'], 'name': 'current', 'python_name': 'current_profile', 'function_module': 'morphcloud.profiles', 'summary': 'Print the active profile.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': []}, {'path': ['profile'], 'name': 'delete', 'python_name': 'delete_profile', 'function_module': 'morphcloud.profiles', 'summary': 'Delete a configured profile.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}]}, {'path': ['profile'], 'name': 'env', 'python_name': 'profile_environment', 'function_module': 'morphcloud.profiles', 'summary': 'Render shell exports for a profile.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'include_api_key', 'kind': 'bool', 'required': False, 'optional': False, 'default': True, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--include-api-key'], 'secondary': '--no-api-key', 'help': 'Include MORPH_API_KEY in the output.', 'metavar': None, 'multiple': None, 'is_flag': True, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}]}, {'path': ['profile'], 'name': 'list', 'python_name': 'list_profiles', 'function_module': 'morphcloud.profiles', 'summary': 'List configured profiles.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': []}, {'path': ['profile'], 'name': 'set', 'python_name': 'set_profile', 'function_module': 'morphcloud.profiles', 'summary': 'Create or update a profile.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'api_key', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--api-key'], 'secondary': None, 'help': 'API key for this profile.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--base-url'], 'secondary': None, 'help': 'Override the API base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'api_host', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--api-host'], 'secondary': None, 'help': 'API host used to derive defaults.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'ssh_hostname', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ssh-hostname'], 'secondary': None, 'help': 'Override SSH hostname.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'ssh_port', 'kind': 'int', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--ssh-port'], 'secondary': None, 'help': 'Override SSH port.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'service_base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--service-base-url'], 'secondary': None, 'help': 'Override the services API base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'volumes_base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--volumes-base-url'], 'secondary': None, 'help': 'Override the volumes API base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'admin_base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--admin-base-url'], 'secondary': None, 'help': 'Override the admin API base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'db_base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--db-base-url'], 'secondary': None, 'help': 'Override the db API base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}, {'name': 'simple_index_base_url', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--simple-index-base-url'], 'secondary': None, 'help': 'Override the simple-index base URL.', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}]}, {'path': ['profile'], 'name': 'show', 'python_name': 'show_profile', 'function_module': 'morphcloud.profiles', 'summary': 'Show one profile with its API key masked.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}]}, {'path': ['profile'], 'name': 'use', 'python_name': 'use_profile', 'function_module': 'morphcloud.profiles', 'summary': 'Set the active profile.', 'hidden': False, 'aliases': [], 'renderer': None, 'parameters': [{'name': 'name', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': True, 'variadic': False, 'unprocessed': False, 'option': None}]}, {'path': ['user'], 'name': 'usage', 'python_name': 'user_usage', 'function_module': 'morphcloud.users', 'summary': 'Show usage for the current authenticated user.', 'hidden': False, 'aliases': [], 'renderer': {'kind': 'user-usage', 'title': None, 'success': None, 'progress': None, 'columns': [], 'items_path': None, 'lines': [], 'stdout_path': None, 'stderr_path': None, 'exit_code_path': None, 'json_option': True}, 'parameters': [{'name': 'ctx', 'kind': 'str', 'required': True, 'optional': False, 'default': None, 'context': True, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': None}, {'name': 'interval', 'kind': 'str', 'required': False, 'optional': True, 'default': None, 'context': False, 'target_class': None, 'target_cli': None, 'target_module': None, 'choices': None, 'positional': False, 'variadic': False, 'unprocessed': False, 'option': {'declarations': ['--interval'], 'secondary': None, 'help': 'Lookback window (e.g., 30m, 3h, 7d)', 'metavar': None, 'multiple': None, 'is_flag': None, 'hidden': False, 'show_default': None, 'minimum': None, 'maximum': None, 'clamp': False, 'path_kind': None, 'path_exists': False, 'path_type': 'str', 'case_sensitive': True}}]}], 'renderers': {'api-key-created': {'module': 'morphcloud.users', 'function': 'render_api_key_created'}, 'api-key-list': {'module': 'morphcloud.users', 'function': 'render_api_key_list'}, 'image-list': {'module': 'morphcloud.images', 'function': 'render_image_list'}, 'instance-branch': {'module': 'morphcloud.instances', 'function': 'render_instance_branch'}, 'instance-cleanup': {'module': 'morphcloud.instances', 'function': 'render_instance_cleanup'}, 'instance-exec': {'module': 'morphcloud.instances', 'function': 'render_instance_exec'}, 'instance-list': {'module': 'morphcloud.instances', 'function': 'render_instance_list'}, 'instance-ssh': {'module': 'morphcloud.instances', 'function': 'render_instance_ssh'}, 'instance-ssh-key': {'module': 'morphcloud.instances', 'function': 'render_instance_ssh_key'}, 'instance-ttl': {'module': 'morphcloud.instances', 'function': 'render_instance_ttl'}, 'legacy-ssh-key-set': {'module': 'morphcloud.users', 'function': 'render_legacy_ssh_key_set'}, 'secret-created': {'module': 'morphcloud.users', 'function': 'render_secret_created'}, 'secret-list': {'module': 'morphcloud.users', 'function': 'render_secret_list'}, 'snapshot-list': {'module': 'morphcloud.snapshots', 'function': 'render_snapshot_list'}, 'snapshot-summary': {'module': 'morphcloud.instances', 'function': 'render_snapshot_summary'}, 'snapshot-ttl': {'module': 'morphcloud.snapshots', 'function': 'render_snapshot_ttl'}, 'ssh-key-created': {'module': 'morphcloud.users', 'function': 'render_ssh_key_created'}, 'ssh-key-detail': {'module': 'morphcloud.users', 'function': 'render_ssh_key_detail'}, 'ssh-key-edited': {'module': 'morphcloud.users', 'function': 'render_ssh_key_edited'}, 'ssh-key-list': {'module': 'morphcloud.users', 'function': 'render_ssh_key_list'}, 'user-usage': {'module': 'morphcloud.users', 'function': 'render_user_usage'}}}
+CONTEXT_CLASS = getattr(SDK_MODULES['morphcloud.cli_runtime'], 'MorphRuntimeContext')
 
 
-# Custom command class that supports aliases
-class AliasedCommand(click.Command):
-    def __init__(self, name, aliases=None, **kwargs):
-        super().__init__(name, **kwargs)
-        self.aliases = aliases or []
+class DocumentType(click.ParamType):
+    name = "document"
+
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> Any:
+        if value is None or isinstance(value, (dict, list)):
+            return value
+        text = str(value)
+        if text == "@-":
+            text = sys.stdin.read()
+        elif text.startswith("@"):
+            try:
+                text = Path(text[1:]).read_text(encoding="utf-8")
+            except OSError as exc:
+                self.fail(str(exc), param, ctx)
+        try:
+            value = yaml.safe_load(text)
+        except Exception as exc:
+            self.fail(f"invalid document: {exc}", param, ctx)
+        if value is None:
+            return {}
+        if not isinstance(value, (dict, list)):
+            self.fail("document must decode to an object or array", param, ctx)
+        return value
 
 
-# Custom group class that supports command aliases
-class AliasedGroup(click.Group):
-    def command(self, *args, **kwargs):
-        """Custom command decorator that supports aliases."""
-        aliases = kwargs.pop("aliases", None)
-        decorator = super().command(*args, **kwargs)
+class KeyValueType(click.ParamType):
+    name = "key=value"
 
-        if aliases:
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> tuple[str, str]:
+        text = str(value)
+        if "=" not in text:
+            self.fail("expected KEY=VALUE", param, ctx)
+        key, item = text.split("=", 1)
+        if not key:
+            self.fail("key cannot be empty", param, ctx)
+        return key, item
 
-            def _decorator(f):
-                cmd = decorator(f)
-                if cmd.name:
-                    for alias in aliases:
-                        self.add_command(cmd, name=alias)
-                return cmd
 
-            return _decorator
-        return decorator
+DOCUMENT = DocumentType()
+KEY_VALUE = KeyValueType()
+RESOURCE_BY_CLASS = {
+    (item["class_module"], item["class_name"]): item
+    for item in SCHEMA["resources"]
+}
+CUSTOM_RENDERERS = {
+    name: getattr(SDK_MODULES[definition["module"]], definition["function"])
+    for name, definition in SCHEMA["renderers"].items()
+}
 
-    def get_command(self, ctx, name):
-        rv = click.Group.get_command(self, ctx, name)
-        if rv is not None:
-            return rv
-        matches = [x for x in self.list_commands(ctx) if x.startswith(name)]
+
+class PrefixGroup(click.Group):
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        exact = super().get_command(ctx, cmd_name)
+        if exact is not None:
+            return exact
+        matches = [name for name in self.list_commands(ctx) if name.startswith(cmd_name)]
         if not matches:
             return None
-        elif len(matches) == 1:
-            return click.Group.get_command(self, ctx, matches[0])
+        if len(matches) == 1:
+            return super().get_command(ctx, matches[0])
         ctx.fail(f"Too many matches: {', '.join(sorted(matches))}")
-
-
-# Replace your CustomGroup class with this enhanced version
-
-
-class VersionCheckGroup(AliasedGroup):
-    """
-    Custom Click Group that adds version checking on help display
-    and also when errors occur.
-    """
-
-    def format_help(self, ctx, formatter):
-        # Prepend version information to help text
-        formatter.write_text(f"Version: {__version__}\n\n")
-        super().format_help(ctx, formatter)
-
-        # Check for updates after displaying help
-        if "--help" in sys.argv or "-h" in sys.argv:
-            check_for_package_update()
-
-    def get_command(self, ctx, cmd_name):
-        # Add update check when --version is run
-        if cmd_name == "--version":
-            check_for_package_update()
-        return super().get_command(ctx, cmd_name)
-
-    def main(self, *args, **kwargs):
-        try:
-            return super().main(*args, **kwargs)
-        except click.exceptions.ClickException:
-            # Let Click handle its own exceptions, but check version after
-            # We need to raise first so Click can display the error
-            raise
-        except Exception:
-            # For non-Click exceptions, check version before letting the exception propagate
-            check_for_package_update(display_mode="error")
-            raise
-
-
-def load_cli_plugins(cli_group: click.Group):
-    """Load CLI plugins from entry points."""
-    import importlib.metadata
-
-    try:
-        plugin_entry_points = importlib.metadata.entry_points(
-            group="morphcloud.cli_plugins"
-        )
-        for entry_point in plugin_entry_points:
-            plugin_loader_func = entry_point.load()
-            plugin_loader_func(cli_group)
-    except Exception:
-        pass
-
-
-@click.group(cls=VersionCheckGroup)
-@click.version_option(version=__version__, package_name="morphcloud")
-@click.option(
-    "--profile",
-    default=None,
-    help="Use a named profile for this command (overrides active profile).",
-)
-@click.pass_context
-def cli(ctx, profile):
-    """
-    Morph Cloud CLI - A tool for creating, managing, and interacting with Morph Cloud resources.
-    """
-    ctx.ensure_object(dict)
-    ctx.obj["profile"] = profile
-
-
-# ─────────────────────────────────────────────────────────────
-#  Utilities
-# ─────────────────────────────────────────────────────────────
-
-
-def unix_timestamp_to_datetime(timestamp):
-    """Convert a Unix timestamp to a human-readable UTC datetime string."""
-    try:
-        if timestamp is None or not isinstance(timestamp, (int, float)):
-            return "N/A"
-        dt_object = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
-        return dt_object.strftime("%Y-%m-%d %H:%M:%S %Z")
-    except (OSError, TypeError, ValueError):
-        try:
-            dt_object = datetime.datetime.utcfromtimestamp(timestamp)
-            return dt_object.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except Exception:
-            return "Invalid Timestamp"
-
-
-def _validate_positive_snapshot_ttl(ctx, param, value):
-    if value is None:
-        return value
-    if value <= 0:
-        raise click.BadParameter("must be greater than 0")
-    return value
-
-
-def _validate_snapshot_ttl_or_clear(ctx, param, value):
-    if value is None:
-        return value
-    if value == -1 or value > 0:
-        return value
-    raise click.BadParameter("must be greater than 0, or -1 to clear")
-
-
-# ─────────────────────────────────────────────────────────────
-#  Profiles
-# ─────────────────────────────────────────────────────────────
-
-
-def _mask_secret(value: typing.Optional[str]) -> typing.Optional[str]:
-    if not value:
-        return value
-    if len(value) <= 8:
-        return "********"
-    return f"{value[:4]}...{value[-4:]}"
-
-
-@cli.group("profile")
-def profile_group():
-    """Manage MorphCloud CLI profiles."""
-    pass
-
-
-@profile_group.command("list")
-def profile_list():
-    cfg = config.load_config()
-    profiles = cfg.get("profiles", {}) if isinstance(cfg, dict) else {}
-    active = cfg.get("active_profile") if isinstance(cfg, dict) else None
-    if not profiles:
-        click.echo("No profiles configured.")
-        return
-    for name in sorted(profiles.keys()):
-        prefix = "* " if active == name else "  "
-        click.echo(f"{prefix}{name}")
-
-
-@profile_group.command("current")
-def profile_current():
-    cfg = config.load_config()
-    active = cfg.get("active_profile") if isinstance(cfg, dict) else None
-    if not active:
-        click.echo("No active profile.")
-        return
-    click.echo(active)
-
-
-@profile_group.command("show")
-@click.argument("name", required=True)
-def profile_show(name):
-    cfg = config.load_config()
-    profile = config.resolve_profile(name, cfg)
-    if not profile:
-        raise click.ClickException(f"Profile '{name}' not found.")
-    display = dict(profile)
-    if "api_key" in display:
-        display["api_key"] = _mask_secret(str(display.get("api_key") or ""))
-    click.echo(json.dumps(display, indent=2))
-
-
-@profile_group.command("set")
-@click.argument("name", required=True)
-@click.option("--api-key", default=None, help="API key for this profile.")
-@click.option("--base-url", default=None, help="Override the API base URL.")
-@click.option("--api-host", default=None, help="API host used to derive defaults.")
-@click.option("--ssh-hostname", default=None, help="Override SSH hostname.")
-@click.option("--ssh-port", default=None, type=int, help="Override SSH port.")
-@click.option(
-    "--service-base-url", default=None, help="Override the services API base URL."
-)
-@click.option(
-    "--volumes-base-url", default=None, help="Override the volumes API base URL."
-)
-@click.option("--admin-base-url", default=None, help="Override the admin API base URL.")
-@click.option("--db-base-url", default=None, help="Override the db API base URL.")
-@click.option(
-    "--simple-index-base-url",
-    default=None,
-    help="Override the simple-index base URL.",
-)
-def profile_set(
-    name,
-    api_key,
-    base_url,
-    api_host,
-    ssh_hostname,
-    ssh_port,
-    service_base_url,
-    volumes_base_url,
-    admin_base_url,
-    db_base_url,
-    simple_index_base_url,
-):
-    updates = {
-        "api_key": api_key,
-        "base_url": base_url,
-        "api_host": api_host,
-        "ssh_hostname": ssh_hostname,
-        "ssh_port": ssh_port,
-        "service_base_url": service_base_url,
-        "volumes_base_url": volumes_base_url,
-        "admin_base_url": admin_base_url,
-        "db_base_url": db_base_url,
-        "simple_index_base_url": simple_index_base_url,
-    }
-    updates = {k: v for k, v in updates.items() if v is not None}
-    if not updates:
-        raise click.ClickException("No profile fields provided to set.")
-
-    cfg = config.load_config()
-    if not isinstance(cfg, dict):
-        cfg = {}
-    profiles = cfg.get("profiles")
-    if not isinstance(profiles, dict):
-        profiles = {}
-    profile_data = profiles.get(name)
-    if not isinstance(profile_data, dict):
-        profile_data = {}
-
-    profile_data.update(updates)
-    profiles[name] = profile_data
-    cfg["profiles"] = profiles
-    cfg.setdefault("version", 1)
-
-    config.save_config(cfg)
-    click.echo(f"Profile '{name}' updated.")
-
-
-@profile_group.command("use")
-@click.argument("name", required=True)
-def profile_use(name):
-    cfg = config.load_config()
-    profiles = cfg.get("profiles", {}) if isinstance(cfg, dict) else {}
-    if name not in profiles:
-        raise click.ClickException(f"Profile '{name}' not found.")
-    if not isinstance(cfg, dict):
-        cfg = {}
-    cfg["active_profile"] = name
-    cfg.setdefault("version", 1)
-    config.save_config(cfg)
-    click.echo(f"Active profile set to '{name}'.")
-
-
-@profile_group.command("delete")
-@click.argument("name", required=True)
-def profile_delete(name):
-    cfg = config.load_config()
-    if not isinstance(cfg, dict):
-        raise click.ClickException(f"Profile '{name}' not found.")
-    profiles = cfg.get("profiles", {})
-    if not isinstance(profiles, dict) or name not in profiles:
-        raise click.ClickException(f"Profile '{name}' not found.")
-    profiles.pop(name, None)
-    cfg["profiles"] = profiles
-    if cfg.get("active_profile") == name:
-        cfg.pop("active_profile", None)
-    config.save_config(cfg)
-    click.echo(f"Profile '{name}' deleted.")
-
-
-@profile_group.command("env")
-@click.argument("name", required=False)
-@click.option(
-    "--include-api-key/--no-api-key",
-    default=True,
-    help="Include MORPH_API_KEY in the output.",
-)
-def profile_env(name, include_api_key):
-    settings = config.resolve_settings(profile=name)
-    env = settings.as_env(include_api_key=include_api_key)
-    for key, value in env.items():
-        click.echo(f"export {key}={shlex.quote(str(value))}")
-
-
-# Interactive pagination helpers (reused for list -i)
-def _get_terminal_size():
-    try:
-        return os.get_terminal_size()
-    except Exception:
-        return os.terminal_size((80, 24))
-
-
-def _get_keypress():
-    try:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(sys.stdin.fileno())
-            while True:
-                ch = sys.stdin.read(1)
-                if ch == "\x1b":
-                    try:
-                        next_chars = sys.stdin.read(2)
-                        seq = ch + next_chars
-                        if seq == "\x1b[D":
-                            return "left"
-                        elif seq == "\x1b[C":
-                            return "right"
-                        elif seq == "\x1b[A":
-                            return "up"
-                        elif seq == "\x1b[B":
-                            return "down"
-                        continue
-                    except Exception:
-                        continue
-                elif ch.lower() in ["q", "h", "l", "p", "n", "j", "k", "s", "m"]:
-                    return ch.lower()
-                elif ch == "\x03":
-                    return "\x03"
-                else:
-                    continue
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    except Exception:
-        # Fallback prompt
-        while True:
-            try:
-                key = input(
-                    "Enter command (←/→ page, ↑/↓ scroll, m metadata, q quit): "
-                ).lower()
-                if key in [
-                    "left",
-                    "right",
-                    "up",
-                    "down",
-                    "q",
-                    "h",
-                    "l",
-                    "p",
-                    "n",
-                    "j",
-                    "k",
-                    "s",
-                    "m",
-                ]:
-                    return key
-            except KeyboardInterrupt:
-                return "q"
-
-
-def _spinner_loop(message="Loading"):
-    spinner_chars = "|/-\\"
-    idx = 0
-    while getattr(_spinner_loop, "running", False):
-        print(
-            f"\r{message}... {spinner_chars[idx % len(spinner_chars)]}",
-            end="",
-            flush=True,
-        )
-        idx += 1
-        time.sleep(0.1)
-    print("\r" + " " * (len(message) + 10) + "\r", end="", flush=True)
-
-
-def _start_spinner(message="Loading"):
-    _spinner_loop.running = True
-    t = threading.Thread(target=_spinner_loop, args=(message,))
-    t.daemon = True
-    t.start()
-    return t
-
-
-def _stop_spinner():
-    _spinner_loop.running = False
-    time.sleep(0.2)
-
-
-def _interactive_pagination(
-    get_data_func,
-    format_item_func,
-    items_attr: str,
-    title: str,
-    limit: int = 50,
-    initial_page: int = 1,
-    enable_search: bool = False,
-    on_search=None,
-    search_summary_fn=None,
-    **kwargs,
-):
-    page = max(1, int(initial_page or 1))
-    scroll_offset = 0
-    # Enter alt screen
-    click.echo("\033[?1049h", nl=False)
-    click.echo("\033[?47h", nl=False)
-    current_items = []
-    total = 0
-    try:
-        while True:
-            term = _get_terminal_size()
-            height = term.lines
-            width = term.columns
-            content_height = max(5, height - 12)
-
-            if not current_items:
-                _start_spinner("Fetching data")
-                try:
-                    result = get_data_func(page=page, limit=limit, **kwargs)
-                    current_items = getattr(result, items_attr, [])
-                    total = getattr(result, "total", len(current_items))
-                    scroll_offset = 0
-                finally:
-                    _stop_spinner()
-
-            total_pages = (total + limit - 1) // limit if total > 0 else 1
-            has_prev = page > 1
-            has_next = page < total_pages
-
-            total_items_on_page = len(current_items)
-            max_scroll = max(0, total_items_on_page - content_height)
-            scroll_offset = max(0, min(scroll_offset, max_scroll))
-
-            click.echo("\033[2J\033[H", nl=False)
-            click.echo("=" * min(80, width))
-            click.echo(f"{title} (Interactive Mode)")
-            click.echo("=" * min(80, width))
-
-            # Optional search summary display
-            if enable_search and callable(search_summary_fn):
-                summary = search_summary_fn()
-                if summary:
-                    click.echo(f"🔍 Filter: {summary}")
-                    click.echo()
-
-            scroll_info = ""
-            if total_items_on_page > content_height:
-                scroll_info = f" | Scroll: {scroll_offset + 1}-{min(scroll_offset + content_height, total_items_on_page)} of {total_items_on_page}"
-            click.echo(
-                f"📄 Page {page} of {total_pages} (Total: {total} items{scroll_info})"
-            )
-            click.echo("-" * min(80, width))
-
-            if not current_items:
-                click.echo()
-                click.echo("   No results found.")
-                click.echo()
-            else:
-                click.echo()
-                visible = current_items[scroll_offset : scroll_offset + content_height]
-                for item in visible:
-                    line = format_item_func(item)
-                    if len(line) > width - 1:
-                        line = line[: width - 4] + "..."
-                    click.echo(line)
-                for _ in range(content_height - len(visible)):
-                    click.echo()
-
-            click.echo("-" * min(80, width))
-            nav = []
-            nav.append(
-                "← Previous page (left/h)" if has_prev else "← Previous page (disabled)"
-            )
-            nav.append(
-                "→ Next page (right/l)" if has_next else "→ Next page (disabled)"
-            )
-            if total_items_on_page > content_height:
-                nav.append(
-                    "↑ Scroll up (up/k)"
-                    if scroll_offset > 0
-                    else "↑ Scroll up (disabled)"
-                )
-                nav.append(
-                    "↓ Scroll down (down/j)"
-                    if scroll_offset < max_scroll
-                    else "↓ Scroll down (disabled)"
-                )
-            if enable_search:
-                nav.append("[m]etadata")
-            nav_text = " | ".join(nav)
-            if len(nav_text) > width - 1:
-                mid = len(nav) // 2
-                click.echo(f"Navigation: {' | '.join(nav[:mid])}")
-                click.echo(f"            {' | '.join(nav[mid:])}")
-            else:
-                click.echo(f"Navigation: {nav_text}")
-            click.echo()
-            if enable_search:
-                click.echo(
-                    "💡 Use arrow keys to navigate, 'm' to set metadata filter, 'q' to quit..."
-                )
-            else:
-                click.echo("💡 Use arrow keys to navigate, 'q' to quit...")
-
-            key = _get_keypress()
-            if key in ("left", "h", "p"):
-                if has_prev:
-                    page -= 1
-                    current_items = []
-            elif key in ("right", "l", "n"):
-                if has_next:
-                    page += 1
-                    current_items = []
-            elif key in ("up", "k"):
-                if scroll_offset > 0:
-                    scroll_offset -= 1
-            elif key in ("down", "j"):
-                if scroll_offset < max_scroll:
-                    scroll_offset += 1
-            elif key in ("m", "s") and enable_search and callable(on_search):
-                # Temporarily exit alt screen for input
-                click.echo("\033[?1049l", nl=False)
-                try:
-                    on_search()
-                finally:
-                    # Re-enter alt screen
-                    click.echo("\033[?1049h", nl=False)
-                # Reset page and refresh on any change
-                page = 1
-                current_items = []
-            elif key in ("q", "\x03"):
-                break
-
-    finally:
-        # Exit alt screen
-        click.echo("\033[?1049l", nl=False)
-
-
-# ─────────────────────────────────────────────────────────────
-#  User Commands
-# ─────────────────────────────────────────────────────────────
-
-
-@cli.group(cls=AliasedGroup)
-def user():
-    """Manage settings for the current authenticated user."""
-    pass
-
-
-# ── API Keys ────────────────────────────────────────────────
-
-
-@user.group(cls=AliasedGroup, name="api-key")
-def user_api_key():
-    """Manage user API keys."""
-    pass
-
-
-@user_api_key.command(name="list", aliases=["ls"])
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_api_key_list(json_mode):
-    client = get_client()
-    try:
-        keys = client.user.list_api_keys()
-        if json_mode:
-            for k in keys:
-                click.echo(format_json(k))
-        else:
-            headers = ["ID", "Prefix", "Created", "Last Used"]
-            rows = [
-                [
-                    k.id,
-                    k.key_prefix,
-                    unix_timestamp_to_datetime(k.created),
-                    unix_timestamp_to_datetime(k.last_used),
-                ]
-                for k in keys
-            ]
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_api_key.command(name="create", aliases=["new"])
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_api_key_create(json_mode):
-    client = get_client()
-    try:
-        with Spinner(
-            text="Creating API key...",
-            success_text="API key created",
-            success_emoji="🔑",
-        ):
-            resp = client.user.create_api_key()
-        if json_mode:
-            click.echo(format_json(resp))
-        else:
-            click.secho("API key created.", fg="green")
-            click.echo(f"ID: {resp.id}")
-            click.echo(f"Prefix: {resp.key_prefix}")
-            click.echo(f"Created: {unix_timestamp_to_datetime(resp.created)}")
-            click.secho(
-                "This is your API key — it will not be shown again:", fg="yellow"
-            )
-            click.secho(resp.key, fg="yellow")
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_api_key.command(name="delete", aliases=["rm"])
-@click.argument("api_key_id")
-def user_api_key_delete(api_key_id):
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Deleting API key {api_key_id}...",
-            success_text="API key deleted",
-            success_emoji="🗑",
-        ):
-            client.user.delete_api_key(api_key_id)
-    except Exception as e:
-        handle_api_error(e)
-
-
-# ── Secrets ─────────────────────────────────────────────────
-
-
-@user.group(cls=AliasedGroup, name="secret")
-def user_secret():
-    """Manage user secrets."""
-    pass
-
-
-@user_secret.command(name="list", aliases=["ls"])
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_secret_list(json_mode):
-    client = get_client()
-    try:
-        secrets = client.user.list_secrets()
-        if json_mode:
-            for secret in secrets:
-                click.echo(format_json(secret))
-        else:
-            headers = ["Name", "Description", "Metadata", "Created", "Updated"]
-            rows = []
-            for secret in secrets:
-                metadata_str = (
-                    ", ".join(f"{k}={v}" for k, v in secret.metadata.items())
-                    if secret.metadata
-                    else ""
-                )
-                rows.append(
-                    [
-                        secret.name,
-                        secret.description or "",
-                        metadata_str,
-                        unix_timestamp_to_datetime(secret.created),
-                        unix_timestamp_to_datetime(secret.updated),
-                    ]
-                )
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_secret.command(name="create", aliases=["new", "set"])
-@click.option("--name", required=True, help="Unique secret name.")
-@click.option(
-    "--value",
-    default=None,
-    help="Secret value. Prefer --value-stdin or interactive prompt to avoid shell history leaks.",
-)
-@click.option(
-    "--value-stdin",
-    "value_stdin",
-    is_flag=True,
-    default=False,
-    help="Read secret value from stdin.",
-)
-@click.option("--description", default=None, help="Optional description.")
-@click.option(
-    "--metadata",
-    "-m",
-    "metadata_options",
-    multiple=True,
-    help="Optional metadata (key=value).",
-)
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_secret_create(
-    name, value, value_stdin, description, metadata_options, json_mode
-):
-    if value_stdin and value is not None:
-        raise click.ClickException("Use either --value or --value-stdin, not both.")
-
-    if value_stdin:
-        value = sys.stdin.read()
-
-    if value is None:
-        if sys.stdin.isatty():
-            value = click.prompt(
-                "Secret value", hide_input=True, confirmation_prompt=True
-            )
-        else:
-            raise click.ClickException(
-                "Secret value is required. Provide --value or pipe via --value-stdin."
-            )
-
-    metadata_dict: typing.Optional[typing.Dict[str, str]] = None
-    if metadata_options:
-        metadata_dict = {}
-        for option in metadata_options:
-            if "=" not in option:
-                raise click.ClickException("Metadata must be in key=value format.")
-            key, val = option.split("=", 1)
-            if not key:
-                raise click.ClickException("Metadata key cannot be empty.")
-            metadata_dict[key] = val
-
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Creating secret {name}...",
-            success_text="Secret created",
-            success_emoji="🔐",
-        ):
-            secret = client.user.create_secret(
-                name=name,
-                value=value,
-                description=description,
-                metadata=metadata_dict,
-            )
-        if json_mode:
-            click.echo(format_json(secret))
-        else:
-            click.secho("Secret created.", fg="green")
-            click.echo(f"Name: {secret.name}")
-            click.echo(f"Created: {unix_timestamp_to_datetime(secret.created)}")
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_secret.command(name="delete", aliases=["rm"])
-@click.argument("name")
-def user_secret_delete(name):
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Deleting secret {name}...",
-            success_text="Secret deleted",
-            success_emoji="🗑",
-        ):
-            client.user.delete_secret(name)
-    except Exception as e:
-        handle_api_error(e)
-
-
-# Expose user secrets as a top-level command for convenience:
-#   morphcloud secrets ...
-cli.add_command(user_secret, name="secrets")
-
-
-# ── Managed SSH public keys ─────────────────────────────────
-
-
-@user.group(cls=AliasedGroup, name="ssh-key")
-def user_ssh_key():
-    """Manage user-owned SSH public keys used for direct SSH."""
-    pass
-
-
-def _read_ssh_public_key(
-    public_key: typing.Optional[str], public_key_file: typing.Optional[str]
-) -> str:
-    if public_key is not None and public_key_file is not None:
-        raise click.ClickException(
-            "Use either --public-key or --public-key-file, not both."
-        )
-    if public_key_file is not None:
-        path = pathlib.Path(public_key_file)
-        if path.suffix.lower() != ".pub":
-            raise click.ClickException(
-                "--public-key-file must point to a public .pub file, never a private key."
-            )
-        try:
-            public_key = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise click.ClickException(
-                f"Could not read public-key file: {exc}"
-            ) from exc
-    if public_key is None:
-        raise click.ClickException(
-            "Provide the public key with --public-key or --public-key-file."
-        )
-    value = public_key.strip()
-    if not value:
-        raise click.ClickException("SSH public key cannot be empty.")
-    if "PRIVATE KEY" in value:
-        raise click.ClickException(
-            "Private keys are not accepted. Provide only the public .pub value."
-        )
-    if "\n" in value or "\r" in value:
-        raise click.ClickException("Provide exactly one SSH public key.")
-    return value
-
-
-def _parse_ssh_expiry(
-    ctx: click.Context,
-    param: typing.Optional[click.Parameter],
-    value: typing.Optional[str],
-) -> typing.Optional[int]:
-    if value is None:
         return None
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise click.BadParameter(
-            "must be Unix seconds or an ISO 8601 datetime", ctx=ctx, param=param
-        ) from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-    return int(parsed.timestamp())
 
 
-@user_ssh_key.command(name="list", aliases=["ls"])
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_list(json_mode):
-    """List managed SSH public keys."""
-    client = get_client()
-    try:
-        keys = client.user.list_ssh_keys()
-        if json_mode:
-            click.echo(
-                json.dumps([key.model_dump(mode="json") for key in keys], indent=2)
-            )
-        else:
-            headers = [
-                "ID",
-                "Name",
-                "Algorithm",
-                "Fingerprint",
-                "Status",
-                "Created",
-                "Last Used",
-                "Expires",
-            ]
-            rows = [
-                [
-                    key.id,
-                    key.name,
-                    key.algorithm,
-                    key.fingerprint,
-                    key.status.value,
-                    unix_timestamp_to_datetime(key.created),
-                    unix_timestamp_to_datetime(key.last_used),
-                    unix_timestamp_to_datetime(key.expires),
-                ]
-                for key in keys
-            ]
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_ssh_key.command(name="get")
-@click.argument("ssh_key_id", required=False)
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_get(ssh_key_id, json_mode):
-    """Get a managed key by ID, or the legacy singular key when ID is omitted."""
-    client = get_client()
-    try:
-        if ssh_key_id is not None:
-            info = client.user.get_managed_ssh_key(ssh_key_id)
-            if json_mode:
-                click.echo(format_json(info))
-            else:
-                headers = [
-                    "ID",
-                    "Name",
-                    "Algorithm",
-                    "Fingerprint",
-                    "Status",
-                    "Created",
-                    "Updated",
-                    "Last Used",
-                    "Expires",
-                    "Revoked",
-                ]
-                rows = [
-                    [
-                        info.id,
-                        info.name,
-                        info.algorithm,
-                        info.fingerprint,
-                        info.status.value,
-                        unix_timestamp_to_datetime(info.created),
-                        unix_timestamp_to_datetime(info.updated),
-                        unix_timestamp_to_datetime(info.last_used),
-                        unix_timestamp_to_datetime(info.expires),
-                        unix_timestamp_to_datetime(info.revoked),
-                    ]
-                ]
-                print_docker_style_table(headers, rows)
-            return
-
-        info = client.user.get_ssh_key()
-        if json_mode:
-            click.echo(format_json(info))
-        else:
-            headers = ["Public Key", "Created"]
-            rows = [[info.public_key, unix_timestamp_to_datetime(info.created)]]
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_ssh_key.command(name="add", aliases=["create"])
-@click.option("--name", required=True, help="A unique, recognizable device name.")
-@click.option("--public-key", default=None, help="One OpenSSH public-key value.")
-@click.option(
-    "--public-key-file",
-    type=click.Path(exists=True, dir_okay=False, readable=True),
-    default=None,
-    help="Read the public key from a .pub file.",
-)
-@click.option(
-    "--expires",
-    callback=_parse_ssh_expiry,
-    default=None,
-    help="Optional expiry as Unix seconds or ISO 8601 (naive values are UTC).",
-)
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_add(name, public_key, public_key_file, expires, json_mode):
-    """Add a managed SSH public key.
-
-    A user-owned key authorizes direct SSH through all current organization
-    memberships. Morph never asks for or stores the corresponding private key.
-    """
-    key_value = _read_ssh_public_key(public_key, public_key_file)
-    client = get_client()
-    try:
-        with Spinner(
-            text="Adding SSH public key...",
-            success_text="SSH public key added",
-            success_emoji="🔐",
-        ):
-            info = client.user.add_ssh_key(
-                name=name, public_key=key_value, expires=expires
-            )
-        if json_mode:
-            click.echo(format_json(info))
-        else:
-            click.secho("SSH public key added.", fg="green")
-            click.echo(f"ID: {info.id}")
-            click.echo(f"Name: {info.name}")
-            click.echo(f"Fingerprint: {info.fingerprint}")
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_ssh_key.command(name="edit")
-@click.argument("ssh_key_id")
-@click.option("--name", default=None, help="New recognizable device name.")
-@click.option(
-    "--expires",
-    callback=_parse_ssh_expiry,
-    default=None,
-    help="New expiry as Unix seconds or ISO 8601.",
-)
-@click.option(
-    "--clear-expiry",
-    is_flag=True,
-    default=False,
-    help="Remove the key's existing expiry.",
-)
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_edit(ssh_key_id, name, expires, clear_expiry, json_mode):
-    """Edit a managed key's name or expiry; public material is immutable."""
-    if name is None and expires is None and not clear_expiry:
-        raise click.ClickException(
-            "Provide at least one of --name, --expires, or --clear-expiry."
+def click_type(parameter: dict[str, Any]) -> click.ParamType:
+    kind = parameter["kind"]
+    option = parameter.get("option") or {}
+    if kind == "path":
+        path_kind = option.get("path_kind") or "path"
+        return click.Path(
+            exists=bool(option.get("path_exists")),
+            file_okay=path_kind != "directory",
+            dir_okay=path_kind != "file",
+            path_type=Path if option.get("path_type") == "path" else str,
         )
-    if expires is not None and clear_expiry:
-        raise click.ClickException("Use either --expires or --clear-expiry, not both.")
-
-    client = get_client()
-    try:
-        with Spinner(
-            text="Editing SSH public key...",
-            success_text="SSH public key edited",
-            success_emoji="🔐",
-        ):
-            info = client.user.edit_ssh_key(
-                ssh_key_id, name=name, expires=expires, clear_expiry=clear_expiry
-            )
-        if json_mode:
-            click.echo(format_json(info))
-        else:
-            click.secho("SSH public key edited.", fg="green")
-            click.echo(f"ID: {info.id}")
-            click.echo(f"Name: {info.name}")
-            click.echo(f"Expires: {unix_timestamp_to_datetime(info.expires)}")
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_ssh_key.command(name="revoke", aliases=["rm"])
-@click.argument("ssh_key_id")
-@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
-def user_ssh_key_revoke(ssh_key_id, yes):
-    """Revoke one managed key across all current organization memberships."""
-    if not yes:
-        click.confirm(
-            "Revoke this key for direct SSH across all current organization "
-            "memberships? Browser terminal and instance credentials are separate.",
-            abort=True,
+    if kind == "document":
+        return DOCUMENT
+    if kind == "choice":
+        return click.Choice(
+            parameter["choices"],
+            case_sensitive=bool(option.get("case_sensitive", True)),
         )
-    client = get_client()
-    try:
-        with Spinner(
-            text="Revoking SSH public key...",
-            success_text="SSH public key revoked",
-            success_emoji="🗑",
-        ):
-            client.user.revoke_ssh_key(ssh_key_id)
-        click.secho("SSH public key revoked.", fg="green")
-    except Exception as e:
-        handle_api_error(e)
-
-
-@user_ssh_key.command(name="set", aliases=["update"])
-@click.option(
-    "--public-key",
-    required=True,
-    help="SSH public key string (e.g., 'ssh-rsa AAAA...')",
-)
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_ssh_key_set(public_key, json_mode):
-    """Set the legacy singular compatibility key.
-
-    Prefer ``add`` for safe overlap rotation with managed keys.
-    """
-    client = get_client()
-    try:
-        with Spinner(
-            text="Updating SSH key...",
-            success_text="SSH key updated",
-            success_emoji="🔐",
-        ):
-            info = client.user.set_ssh_key(public_key)
-        if json_mode:
-            click.echo(format_json(info))
-        else:
-            click.secho("SSH key updated.", fg="green")
-            click.echo(f"Created: {unix_timestamp_to_datetime(info.created)}")
-    except Exception as e:
-        handle_api_error(e)
-
-
-# ── Usage ───────────────────────────────────────────────────
-
-
-@user.command(name="usage")
-@click.option("--interval", default=None, help="Lookback window (e.g., 30m, 3h, 7d)")
-@click.option("--json", "json_mode", is_flag=True, default=False)
-def user_usage(interval, json_mode):
-    client = get_client()
-    try:
-        usage = client.user.usage(interval=interval)
-        if json_mode:
-            click.echo(format_json(usage))
-        else:
-            click.secho("User usage overview", fg="green")
-            click.echo(f"Interval buckets: {len(usage.items)}")
-            if usage.instance:
-                last = usage.instance[-1]
-                click.echo(
-                    f"Last bucket instance CPU: {last.instance_cpu_time}, MEM: {last.instance_memory_time}, DISK: {last.instance_disk_time}"
-                )
-            if usage.snapshot:
-                last = usage.snapshot[-1]
-                click.echo(
-                    f"Last bucket snapshot MEM: {last.snapshot_memory_time}, DISK: {last.snapshot_disk_time}"
-                )
-    except Exception as e:
-        handle_api_error(e)
-
-
-# ─────────────────────────────────────────────────────────────
-#  Image Commands
-# ─────────────────────────────────────────────────────────────
-
-
-@cli.group(cls=AliasedGroup)
-def image():
-    """Manage Morph base images."""
-    pass
-
-
-@image.command(name="list", aliases=["ls"])
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output in JSON format."
-)
-def list_image(json_mode):
-    """List all available images."""
-    client = get_client()
-    try:
-        images = client.images.list()
-        if json_mode:
-            for img in images:
-                click.echo(format_json(img))
-        else:
-            headers = ["ID", "Name", "Description", "Disk Size (MB)", "Created At"]
-            rows = []
-            for image in images:
-                rows.append(
-                    [
-                        image.id,
-                        image.name,
-                        image.description,
-                        image.disk_size,  # API returns MB
-                        unix_timestamp_to_datetime(image.created),
-                    ]
-                )
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-# ─────────────────────────────────────────────────────────────
-#  Snapshot Commands
-# ─────────────────────────────────────────────────────────────
-
-
-@cli.group(cls=AliasedGroup)
-def snapshot():
-    """Manage Morph snapshots (VM states)."""
-    pass
-
-
-@snapshot.command(name="list", aliases=["ls"])
-@click.option(
-    "--metadata",
-    "-m",
-    help="Filter snapshots by metadata (format: key=value)",
-    multiple=True,
-)
-@click.option(
-    "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
-)
-@click.option("--page", type=int, default=None, help="Page number (1-based)")
-@click.option("--limit", type=int, default=None, help="Page size")
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
-def list_snapshots(metadata, interactive, page, limit, json_mode):
-    """List all snapshots."""
-    client = get_client()
-    try:
-        metadata_dict = {}
-        for meta in metadata:
-            key, value = meta.split("=", 1)
-            metadata_dict[key] = value
-        if interactive:
-            # Maintain dynamic search filters in interactive mode (do not mutate base metadata)
-            base_metadata = dict(metadata_dict)
-            search_filter: dict[str, str] = {}
-
-            def get_data(**kwargs):
-                effective_metadata = {**base_metadata, **search_filter}
-                return client.snapshots.list_paginated(
-                    metadata=effective_metadata, **kwargs
-                )
-
-            def format_item(snap):
-                created = unix_timestamp_to_datetime(snap.created)
-                ttl_seconds = (
-                    str(snap.ttl.ttl_seconds)
-                    if snap.ttl.ttl_seconds is not None
-                    else "-"
-                )
-                return (
-                    f"   📸 {snap.id:<24} | {created:<22} | "
-                    f"{snap.status:<8} | TTL {ttl_seconds:<6} | "
-                    f"vCPU {snap.spec.vcpus:<2} | Mem {snap.spec.memory:<6} | Disk {snap.spec.disk_size:<6} | img {snap.refs.image_id}"
-                )
-
-            def on_search():
-                # Prompt user for metadata search term: key=value or empty to clear
-                new_search = click.prompt(
-                    "Enter metadata filter as key=value (Enter to clear)", default=""
-                ).strip()
-                nonlocal search_filter  # type: ignore
-                if not new_search:
-                    search_filter = {}
-                else:
-                    if "=" not in new_search:
-                        click.echo("Invalid format. Use key=value.")
-                    else:
-                        k, v = new_search.split("=", 1)
-                        search_filter = {k.strip(): v.strip()}
-                return True
-
-            def search_summary():
-                if not search_filter:
-                    return ""
-                k, v = next(iter(search_filter.items()))
-                return f"{k}={v}"
-
-            _interactive_pagination(
-                get_data,
-                format_item,
-                items_attr="snapshots",
-                title="MorphCloud - Snapshot List",
-                limit=(limit or 50),
-                initial_page=(page or 1),
-                enable_search=True,
-                on_search=on_search,
-                search_summary_fn=search_summary,
+    if kind == "int":
+        if option.get("minimum") is not None or option.get("maximum") is not None:
+            return click.IntRange(
+                min=option.get("minimum"),
+                max=option.get("maximum"),
+                clamp=bool(option.get("clamp")),
             )
-            return
-
-        # Non-interactive: if page/limit provided, use paginated endpoint, else full list
-        if page or limit:
-            resp = client.snapshots.list_paginated(
-                metadata=metadata_dict, page=(page or 1), limit=(limit or 50)
+        return click.INT
+    if kind == "float":
+        if option.get("minimum") is not None or option.get("maximum") is not None:
+            return click.FloatRange(
+                min=option.get("minimum"),
+                max=option.get("maximum"),
+                clamp=bool(option.get("clamp")),
             )
-            snapshots = resp.snapshots
-        else:
-            snapshots = client.snapshots.list(metadata=metadata_dict)
-        if json_mode:
-            if page or limit:
-                # For paginated requests, emit the full envelope
-                click.echo(format_json(resp))
-            else:
-                for snap in snapshots:
-                    click.echo(format_json(snap))
-        else:
-            # Show page info only when paginated flags are used
-            if page or limit:
-                click.echo(
-                    f"Total snapshots: {resp.total} | Page {resp.page} of {resp.total_pages} (showing {len(snapshots)})"
-                )
-            headers = [
-                "ID",
-                "Created At",
-                "Status",
-                "TTL (s)",
-                "VCPUs",
-                "Memory (MB)",
-                "Disk Size (MB)",
-                "Image ID",
-            ]
-            rows = []
-            for snap in snapshots:
-                rows.append(
-                    [
-                        snap.id,
-                        unix_timestamp_to_datetime(snap.created),
-                        snap.status,
-                        (
-                            snap.ttl.ttl_seconds
-                            if snap.ttl.ttl_seconds is not None
-                            else ""
-                        ),
-                        snap.spec.vcpus,
-                        snap.spec.memory,
-                        snap.spec.disk_size,
-                        snap.refs.image_id,
-                    ]
-                )
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
+        return click.FLOAT
+    return click.STRING
 
 
-@snapshot.command("create")
-@click.option("--image-id", required=True, help="ID of the base image to use.")
-@click.option("--vcpus", type=int, required=True, help="Number of virtual CPUs.")
-@click.option("--memory", type=int, required=True, help="Memory in Megabytes (MB).")
-@click.option(
-    "--disk-size", type=int, required=True, help="Disk size in Megabytes (MB)."
-)
-@click.option("--digest", help="Optional unique digest for caching/identification.")
-@click.option(
-    "--ttl-seconds",
-    type=int,
-    required=False,
-    help="Optional snapshot retention period in seconds.",
-    callback=_validate_positive_snapshot_ttl,
-)
-@click.option(
-    "--metadata",
-    "-m",
-    "metadata_options",
-    help="Metadata to attach (format: key=value).",
-    multiple=True,
-)
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output result as JSON."
-)
-def create_snapshot(
-    image_id,
-    vcpus,
-    memory,
-    disk_size,
-    digest,
-    ttl_seconds,
-    metadata_options,
-    json_mode,
-):
-    """Create a new snapshot from a base image and specifications."""
-    client = get_client()
-    try:
-        metadata_dict = {}
-        for meta in metadata_options:
-            if "=" not in meta:
-                raise click.UsageError("Metadata option must be in key=value format.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        with Spinner(
-            text=f"Creating snapshot from base image {image_id}...",
-            success_text="Snapshot creation complete!",
-            success_emoji="📸",
-        ):
-            new_snapshot = client.snapshots.create(
-                image_id=image_id,
-                vcpus=vcpus,
-                memory=memory,
-                disk_size=disk_size,
-                digest=digest,
-                ttl_seconds=ttl_seconds,
-                metadata=metadata_dict if metadata_dict else None,
-            )
-
-        if json_mode:
-            click.echo(format_json(new_snapshot))
-        else:
-            click.secho(f"Snapshot created: {new_snapshot.id}", fg="green")
-            if new_snapshot.digest:
-                click.echo(f"Digest: {new_snapshot.digest}")
-            if new_snapshot.ttl.ttl_seconds is not None:
-                click.echo(f"TTL: {new_snapshot.ttl.ttl_seconds} seconds")
-    except Exception as e:
-        handle_api_error(e)
+def option_declarations(parameter: dict[str, Any], default_name: str) -> list[str]:
+    option = parameter.get("option") or {}
+    names = list(option.get("declarations") or [])
+    long_options = [item for item in names if item.startswith("--")]
+    if not long_options:
+        names.insert(0, default_name)
+        long_options = [default_name]
+    if option.get("secondary"):
+        primary = long_options[0]
+        names[names.index(primary)] = f"{primary}/{option['secondary']}"
+    names.append(parameter["name"])
+    return names
 
 
-@snapshot.command("delete")
-@click.argument("snapshot_id")
-def delete_snapshot(snapshot_id):
-    """Delete a specific snapshot by its ID."""
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Deleting snapshot {snapshot_id}...",
-            success_text=f"Snapshot deleted: {snapshot_id}",
-            success_emoji="🗑",
-        ):
-            snap_obj = client.snapshots.get(snapshot_id)
-            snap_obj.delete()
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@snapshot.command("get")
-@click.argument("snapshot_id")
-def get_snapshot(snapshot_id):
-    """Get detailed information about a specific snapshot (outputs JSON)."""
-    client = get_client()
-    try:
-        snapshot_obj = client.snapshots.get(snapshot_id)
-        click.echo(format_json(snapshot_obj))
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@snapshot.command("set-metadata")
-@click.argument("snapshot_id")
-@click.option(
-    "--metadata",
-    "-m",
-    help="Metadata to attach (format: key=value)",
-    multiple=True,
-)
-@click.argument("metadata_args", nargs=-1, required=False)
-def set_snapshot_metadata(snapshot_id, metadata, metadata_args):
-    """
-    Set or update metadata on a snapshot.
-
-    Example:
-        morph snapshot set-metadata snap_123 key1=value1 "key 2=value with spaces"
-    """
-    client = get_client()
-    try:
-        snapshot_obj = client.snapshots.get(snapshot_id)
-
-        metadata_dict = {}
-        for meta in metadata_args:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be in key=value format.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-        for meta in metadata:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be in key=value format.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        with Spinner(
-            text=f"Updating metadata on snapshot {snapshot_id}...",
-            success_text=f"Metadata updated: {snapshot_id}",
-            success_emoji="📝",
-        ):
-            snapshot_obj.set_metadata(metadata_dict)
-
-        updated = client.snapshots.get(snapshot_id)
-        click.echo(format_json(updated))
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@snapshot.command("set-ttl")
-@click.argument("snapshot_id")
-@click.option(
-    "--ttl-seconds",
-    type=int,
-    required=True,
-    help="Snapshot TTL in seconds. Use -1 to remove TTL.",
-    callback=_validate_snapshot_ttl_or_clear,
-)
-def set_snapshot_ttl(snapshot_id, ttl_seconds):
-    """Set or remove a time-to-live (TTL) for a snapshot."""
-    client = get_client()
-    try:
-        snapshot_obj = client.snapshots.get(snapshot_id)
-
-        removing = ttl_seconds == -1
-        spinner_text = (
-            f"Removing TTL for {snapshot_id}..."
-            if removing
-            else f"Setting TTL for {snapshot_id} to {ttl_seconds} seconds..."
+def build_parameter(parameter: dict[str, Any]) -> click.Parameter:
+    if parameter["positional"]:
+        return click.Argument(
+            [parameter["name"]],
+            type=(
+                click.UNPROCESSED
+                if parameter["unprocessed"]
+                else click_type(parameter)
+            ),
+            required=bool(parameter["required"]),
+            nargs=-1 if parameter["variadic"] else 1,
         )
-        success_text = (
-            "Snapshot TTL removed successfully!"
-            if removing
-            else "Snapshot TTL set successfully!"
+    option_policy = parameter.get("option")
+    if parameter["kind"] == "ref" and parameter["required"] and option_policy is None:
+        return click.Argument(
+            [parameter["name"]],
+            metavar=f"{parameter['target_cli'].upper()}_ID",
+            type=click.STRING,
         )
-        with Spinner(
-            text=spinner_text,
-            success_text=success_text,
-            success_emoji="⏳",
-        ):
-            snapshot_obj.set_ttl(None if removing else ttl_seconds)
-
-        if removing:
-            click.echo(f"TTL removed for {snapshot_id}")
-        else:
-            click.echo(f"TTL set for {snapshot_id}: {ttl_seconds} seconds")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-# ─────────────────────────────────────────────────────────────
-#  Instance Commands
-# ─────────────────────────────────────────────────────────────
-
-
-@cli.group(cls=AliasedGroup)
-def instance():
-    """Manage Morph instances."""
-    pass
-
-
-@instance.command(name="list", aliases=["ls"])
-@click.option(
-    "--metadata", "-m", help="Filter instances by metadata (key=value)", multiple=True
-)
-@click.option("--page", type=int, default=None, help="Page number (1-based)")
-@click.option("--limit", type=int, default=None, help="Page size")
-@click.option(
-    "--interactive", "-i", is_flag=True, help="Interactive pagination with arrow keys"
-)
-@click.option(
-    "--json/--no-json", "json_mode", default=False, help="Output in JSON format"
-)
-def list_instances(metadata, page, limit, interactive, json_mode):
-    """List all instances."""
-    client = get_client()
-    try:
-        metadata_dict = {}
-        for meta in metadata:
-            key, value = meta.split("=", 1)
-            metadata_dict[key] = value
-
-        if interactive:
-            # Maintain dynamic search filter (does not mutate base --metadata)
-            base_metadata = dict(metadata_dict)
-            search_filter: dict[str, str] = {}
-
-            def get_data(**kwargs):
-                effective_metadata = {**base_metadata, **search_filter}
-                return client.instances.list_paginated(
-                    metadata=effective_metadata, **kwargs
-                )
-
-            def format_item(inst):
-                created = unix_timestamp_to_datetime(inst.created)
-                http_services = ",".join(
-                    f"{svc.name}:{svc.port}" for svc in inst.networking.http_services
-                )
-                return (
-                    f"   🖥  {inst.id:<24} | {created:<22} | {inst.status:<8} | "
-                    f"vCPU {inst.spec.vcpus:<2} | Mem {inst.spec.memory:<6} | Disk {inst.spec.disk_size:<6} | Snapshot {inst.refs.snapshot_id} | {http_services}"
-                )
-
-            def on_search():
-                new_search = click.prompt(
-                    "Enter metadata filter as key=value (Enter to clear)", default=""
-                ).strip()
-                nonlocal search_filter  # type: ignore
-                if not new_search:
-                    search_filter = {}
-                else:
-                    if "=" not in new_search:
-                        click.echo("Invalid format. Use key=value.")
-                    else:
-                        k, v = new_search.split("=", 1)
-                        search_filter = {k.strip(): v.strip()}
-                return True
-
-            def search_summary():
-                if not search_filter:
-                    return ""
-                k, v = next(iter(search_filter.items()))
-                return f"{k}={v}"
-
-            _interactive_pagination(
-                get_data,
-                format_item,
-                items_attr="instances",
-                title="MorphCloud - Instance List",
-                limit=(limit or 50),
-                initial_page=(page or 1),
-                enable_search=True,
-                on_search=on_search,
-                search_summary_fn=search_summary,
-            )
-            return
-
-        # Non-interactive: support optional page/limit
-        if page or limit:
-            resp = client.instances.list_paginated(
-                metadata=metadata_dict, page=(page or 1), limit=(limit or 50)
-            )
-            instances = resp.instances
-        else:
-            instances = client.instances.list(metadata=metadata_dict)
-        if json_mode:
-            if page or limit:
-                click.echo(format_json(resp))
-            else:
-                for inst in instances:
-                    click.echo(format_json(inst))
-        else:
-            if page or limit:
-                click.echo(
-                    f"Total instances: {resp.total} | Page {resp.page} of {resp.total_pages} (showing {len(instances)})"
-                )
-            headers = [
-                "ID",
-                "Snapshot ID",
-                "Created At",
-                "Status",
-                "VCPUs",
-                "Memory (MB)",
-                "Disk Size (MB)",
-                "Http Services",
-            ]
-            rows = []
-            total_vcpus = 0
-            total_memory_mb = 0
-            total_disk_mb = 0
-
-            for inst in instances:
-                rows.append(
-                    [
-                        inst.id,
-                        inst.refs.snapshot_id,
-                        unix_timestamp_to_datetime(inst.created),
-                        inst.status,
-                        inst.spec.vcpus,
-                        inst.spec.memory,
-                        inst.spec.disk_size,
-                        ", ".join(
-                            f"{svc.name}:{svc.port}"
-                            for svc in inst.networking.http_services
-                        ),
-                    ]
-                )
-                # Accumulate totals
-                total_vcpus += inst.spec.vcpus
-                total_memory_mb += inst.spec.memory
-                total_disk_mb += inst.spec.disk_size
-
-            # Add totals row if there are instances
-            if instances:
-                # Add a separator row (dashes)
-                separator_row = [
-                    "─" * 10,
-                    "─" * 10,
-                    "─" * 10,
-                    "─" * 10,
-                    "─" * 5,
-                    "─" * 10,
-                    "─" * 10,
-                    "─" * 10,
-                ]
-                rows.append(separator_row)
-
-                # Add totals row
-                totals_row = [
-                    f"{len(instances)} instances",  # Total count in ID column
-                    "",  # Blank snapshot ID
-                    "",  # Blank created at
-                    "",  # Blank status
-                    total_vcpus,  # Total vCPUs
-                    f"{total_memory_mb / 1024:.1f} GB",  # Memory in GB
-                    f"{total_disk_mb / 1024:.1f} GB",  # Disk in GB
-                    "",  # Blank HTTP services
-                ]
-                rows.append(totals_row)
-
-            print_docker_style_table(headers, rows)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("start")
-@click.argument("snapshot_id")
-@click.option(
-    "--metadata", "-m", "metadata_options", help="Metadata (key=value).", multiple=True
-)
-@click.option("--ttl-seconds", type=int, help="Time-to-live in seconds.")
-@click.option(
-    "--ttl-action",
-    type=click.Choice(["stop", "pause"]),
-    help="Action when TTL expires.",
-)
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output result as JSON."
-)
-def start_instance(snapshot_id, metadata_options, ttl_seconds, ttl_action, json_mode):
-    """Start a new instance from a snapshot."""
-    client = get_client()
-    try:
-        metadata_dict = {}
-        for meta in metadata_options:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be key=value.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        with Spinner(
-            text=f"Starting instance from snapshot {snapshot_id}...",
-            success_text="Instance start complete!",
-            success_emoji="🚀",
-        ):
-            new_instance = client.instances.start(
-                snapshot_id=snapshot_id,
-                metadata=metadata_dict if metadata_dict else None,
-                ttl_seconds=ttl_seconds,
-                ttl_action=ttl_action,
-            )
-
-        if json_mode:
-            click.echo(format_json(new_instance))
-        else:
-            click.secho(f"Instance started: {new_instance.id}", fg="green")
-            click.echo(f"Status: {new_instance.status.value}")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("stop")
-@click.argument("instance_id")
-def stop_instance(instance_id):
-    """Stop (terminate) a running or paused instance."""
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Stopping instance {instance_id}...",
-            success_text=f"Instance stopped: {instance_id}",
-            success_emoji="🛑",
-        ):
-            client.instances.stop(instance_id)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("pause")
-@click.argument("instance_id")
-def pause_instance(instance_id):
-    """Pause a running instance (preserves state)."""
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        with Spinner(
-            text=f"Pausing instance {instance_id}...",
-            success_text=f"Instance paused: {instance_id}",
-            success_emoji="⏸",
-        ):
-            instance_obj.pause()
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Instance '{instance_id}' cannot be paused ({e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("resume")
-@click.argument("instance_id")
-def resume_instance(instance_id):
-    """Resume a previously paused instance."""
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        with Spinner(
-            text=f"Resuming instance {instance_id}...",
-            success_text=f"Instance resumed: {instance_id}",
-            success_emoji="⏯",
-        ):
-            instance_obj.resume()
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Instance '{instance_id}' cannot be resumed ({e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("reboot")
-@click.argument("instance_id")
-@click.option("--vcpus", type=int, required=False)
-@click.option("--memory", type=int, required=False)
-@click.option("--disk-size", type=int, required=False)
-@click.option("--ttl-seconds", type=int, required=False)
-@click.option(
-    "--ttl-action",
-    type=click.Choice(["stop", "pause"]),
-    required=False,
-)
-@click.option("--metadata", "-m", "metadata_options", multiple=True)
-def reboot_instance(
-    instance_id,
-    vcpus,
-    memory,
-    disk_size,
-    ttl_seconds,
-    ttl_action,
-    metadata_options,
-):
-    """Reboot a running instance, optionally updating resources and settings."""
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        metadata_dict = {}
-        for meta in metadata_options:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be key=value.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        with Spinner(
-            text=f"Rebooting instance {instance_id}...",
-            success_text=f"Instance rebooted: {instance_id}",
-            success_emoji="🔄",
-        ):
-            instance_obj.reboot(
-                vcpus=vcpus,
-                memory=memory,
-                disk_size=disk_size,
-                metadata=metadata_dict if metadata_dict else None,
-                ttl_seconds=ttl_seconds,
-                ttl_action=ttl_action,
-            )
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Instance '{instance_id}' cannot be rebooted ({e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("get")
-@click.argument("instance_id")
-def get_instance(instance_id):
-    """Get detailed information about a specific instance (JSON)."""
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        click.echo(format_json(instance_obj))
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("snapshot")
-@click.argument("instance_id")
-@click.option("--digest", help="Optional unique digest.")
-@click.option(
-    "--ttl-seconds",
-    type=int,
-    required=False,
-    help="Optional snapshot retention period in seconds.",
-    callback=_validate_positive_snapshot_ttl,
-)
-@click.option(
-    "--metadata",
-    "-m",
-    help="Metadata to attach (format: key=value)",
-    multiple=True,
-)
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output result as JSON."
-)
-def snapshot_instance(instance_id, digest, ttl_seconds, metadata, json_mode):
-    """Create a new snapshot from an instance."""
-    client = get_client()
-
-    if metadata:
-        metadata_dict = {}
-        for meta in metadata:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be key=value.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-    else:
-        metadata_dict = None
-
-    try:
-        instance_obj = client.instances.get(instance_id)
-        if instance_obj.status != api.InstanceStatus.READY:
-            click.echo(
-                f"Error: Instance must be READY. Current: {instance_obj.status.value}",
-                err=True,
-            )
-            sys.exit(1)
-
-        with Spinner(
-            text=f"Creating snapshot from {instance_id}...",
-            success_text="Instance snapshot complete!",
-            success_emoji="📸",
-        ):
-            new_snapshot = instance_obj.snapshot(
-                digest=digest,
-                metadata=metadata_dict,
-                ttl_seconds=ttl_seconds,
-            )
-
-        if json_mode:
-            click.echo(format_json(new_snapshot))
-        else:
-            click.secho(f"Snapshot created: {new_snapshot.id}", fg="green")
-            if new_snapshot.digest:
-                click.echo(f"Digest: {new_snapshot.digest}")
-            if new_snapshot.ttl.ttl_seconds is not None:
-                click.echo(f"TTL: {new_snapshot.ttl.ttl_seconds} seconds")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Instance '{instance_id}' cannot be snapshotted ({e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("branch")
-@click.argument("instance_id")
-@click.option(
-    "--count",
-    type=int,
-    default=1,
-    show_default=True,
-    help="Number of new instances to create.",
-)
-@click.option(
-    "--json", "json_mode", is_flag=True, default=False, help="Output result as JSON."
-)
-def branch_instance(instance_id, count, json_mode):
-    """Snapshot and launch multiple new instances from it (branching)."""
-    if count < 1:
-        raise click.UsageError("Count must be >= 1.")
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        if instance_obj.status not in [
-            api.InstanceStatus.READY,
-            api.InstanceStatus.PAUSED,
-        ]:
-            click.echo(
-                f"Error: Instance must be READY or PAUSED. Current: {instance_obj.status.value}",
-                err=True,
-            )
-            sys.exit(1)
-
-        with Spinner(
-            text=f"Branching instance {instance_id} into {count} new instance(s)...",
-            success_text="Branch operation complete!",
-            success_emoji="🌱",
-        ):
-            snapshot_obj, new_instances = instance_obj.branch(count)
-
-        if json_mode:
-            result = {
-                "snapshot": snapshot_obj.model_dump(),
-                "new_instances": [inst.model_dump() for inst in new_instances],
-            }
-            click.echo(json.dumps(result, indent=2))
-        else:
-            click.secho(f"Created intermediate snapshot: {snapshot_obj.id}", fg="green")
-            click.echo("Started new instances:")
-            for inst in new_instances:
-                click.echo(f"- {inst.id} (Status: {inst.status.value})")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Instance '{instance_id}' cannot be branched ({e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("expose-http")
-@click.argument("instance_id")
-@click.argument("name")
-@click.argument("port", type=int)
-@click.option(
-    "--auth-mode",
-    type=click.Choice(["none", "api_key"]),
-    default="none",
-    help="Auth mode.",
-)
-def expose_http_service(instance_id, name, port, auth_mode):
-    """
-    Expose an HTTP service on an instance to a public URL.
-    """
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        if instance_obj.status != api.InstanceStatus.READY:
-            click.echo(
-                f"Error: Instance must be READY to expose services. Current: {instance_obj.status.value}",
-                err=True,
-            )
-            sys.exit(1)
-
-        with Spinner(
-            text=f"Exposing '{name}' on {instance_id} (port {port})...",
-            success_text="Service exposed successfully!",
-            success_emoji="🌐",
-        ):
-            auth_param = auth_mode if auth_mode == "api_key" else None
-            service_url = instance_obj.expose_http_service(name, port, auth_param)
-
-        click.echo(f"URL: {service_url}")
-        if auth_param == "api_key":
-            click.echo("Authentication: API key required")
-        else:
-            click.echo("Authentication: None")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        elif e.status_code == 409:
-            click.echo(
-                f"Error: Could not expose service (Conflict: {e.response_body}).",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("hide-http")
-@click.argument("instance_id")
-@click.argument("name")
-def hide_http_service(instance_id, name):
-    """
-    Hide a previously exposed HTTP service.
-    """
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        with Spinner(
-            text=f"Hiding service '{name}' on {instance_id}...",
-            success_text=f"Service '{name}' hidden successfully.",
-            success_emoji="🙈",
-        ):
-            instance_obj.hide_http_service(name)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(
-                f"Error: Instance '{instance_id}' or Service '{name}' not found.",
-                err=True,
-            )
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("exec")
-@click.argument("instance_id")
-@click.option(
-    "--stream",
-    is_flag=True,
-    default=False,
-    help="Stream output incrementally as it arrives instead of waiting for completion.",
-)
-@click.argument("command_args", nargs=-1, required=True)
-def exec_command(instance_id, stream, command_args):
-    """
-    Execute a command inside an instance and print output.
-
-    Use --stream to see output incrementally as the command runs.
-
-    Example: morphcloud instance exec $INSTANCE_ID --stream -- sudo apt update
-    """
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-
-        if stream:
-            # Streaming mode: print output as it arrives
-            result = instance_obj.exec(
-                list(command_args),
-                on_stdout=lambda chunk: print(chunk, end="", flush=True),
-                on_stderr=lambda chunk: print(
-                    chunk, end="", file=sys.stderr, flush=True
-                ),
-            )
-            sys.exit(result.exit_code)
-        else:
-            # Traditional mode: wait for completion, then print
-            cmd_str = " ".join(command_args)
-            with Spinner(
-                text=f"Executing: {cmd_str} on {instance_id}...",
-                success_text="Command execution complete!",
-                success_emoji="🏁",
-            ):
-                result = instance_obj.exec(list(command_args))
-
-            if result.stdout:
-                click.echo("--- Stdout ---")
-                click.echo(result.stdout.strip())
-            if result.stderr:
-                click.echo("--- Stderr ---", err=True)
-                click.echo(result.stderr.strip(), err=True)
-
-            click.echo(f"--- Exit Code: {result.exit_code} ---")
-            sys.exit(result.exit_code)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("set-metadata")
-@click.argument("instance_id")
-@click.option(
-    "--metadata",
-    "-m",
-    help="Metadata to attach (format: key=value)",
-    multiple=True,
-)
-@click.argument("metadata_args", nargs=-1, required=False)
-def set_instance_metadata(instance_id, metadata, metadata_args):
-    """
-    Set or update metadata on an instance.
-    """
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        metadata_dict = {}
-        for meta in metadata_args:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be in key=value format.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        for meta in metadata:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be in key=value format.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        # set_metadata is typically quick, so no spinner needed here
-        instance_obj.set_metadata(metadata_dict)
-
-        updated_instance = client.instances.get(instance_id)
-        click.echo(f"Metadata updated for {instance_id}:")
-        click.echo(format_json(updated_instance))
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("set-ttl")
-@click.argument("instance_id")
-@click.option(
-    "--ttl-seconds",
-    type=int,
-    required=True,
-    help="Time-to-live in seconds. Use -1 to remove TTL.",
-)
-@click.option(
-    "--ttl-action",
-    type=click.Choice(["stop", "pause"]),
-    required=False,
-    help="Action when TTL expires.",
-    default="stop",
-)
-def set_instance_ttl(instance_id, ttl_seconds, ttl_action):
-    """
-    Set or remove a time-to-live (TTL) for an instance.
-    The instance will be stopped or paused when the TTL expires.
-    Pass --ttl-seconds -1 to remove TTL.
-    """
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-        if instance_obj.status != api.InstanceStatus.READY:
-            click.echo(
-                f"Error: Instance must be READY to set TTL. Current: {instance_obj.status.value}",
-                err=True,
-            )
-            sys.exit(1)
-
-        removing = ttl_seconds == -1
-        spinner_text = (
-            f"Removing TTL for {instance_id}..."
-            if removing
-            else f"Setting TTL for {instance_id} to {ttl_seconds} seconds..."
+    option = f"--{parameter['name'].replace('_', '-')}"
+    if parameter["kind"] == "ref":
+        option = f"--{parameter['target_cli']}"
+    declarations = option_declarations(parameter, option)
+    policy = option_policy or {}
+    if parameter["kind"] == "kv":
+        multiple = policy.get("multiple")
+        return click.Option(
+            declarations,
+            type=KEY_VALUE,
+            multiple=True if multiple is None else bool(multiple),
+            help=policy.get("help") or "Repeat as KEY=VALUE.",
+            hidden=bool(policy.get("hidden")),
+            metavar=policy.get("metavar"),
+            show_default=policy.get("show_default"),
         )
-        success_text = (
-            "TTL removed successfully!" if removing else "TTL set successfully!"
-        )
-        with Spinner(
-            text=spinner_text,
-            success_text=success_text,
-            success_emoji="⏳",
-        ):
-            instance_obj.set_ttl(None if removing else ttl_seconds, ttl_action)
-
-        if removing:
-            click.echo(f"TTL removed for {instance_id}")
-        else:
-            click.echo(f"TTL set for {instance_id}: {ttl_seconds} seconds")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("set-wake-on")
-@click.argument("instance_id")
-@click.option(
-    "--ssh",
-    "wake_on_ssh",
-    type=click.BOOL,
-    default=None,
-    help="Enable or disable wake-on-SSH. Accepts true/false.",
-)
-@click.option(
-    "--http",
-    "wake_on_http",
-    type=click.BOOL,
-    default=None,
-    help="Enable or disable wake-on-HTTP. Accepts true/false.",
-)
-def set_wake_on(instance_id, wake_on_ssh, wake_on_http):
-    """
-    Configure the wake-on-event settings for an instance.
-    """
-    if wake_on_ssh is None and wake_on_http is None:
-        click.echo(
-            "Error: You must specify at least one option: --ssh or --http.", err=True
-        )
-        sys.exit(1)
-
-    client = get_client()
-    try:
-        instance_obj = client.instances.get(instance_id)
-
-        # Build a readable string for the spinner
-        changes = []
-        if wake_on_ssh is not None:
-            changes.append(f"wake-on-ssh to {wake_on_ssh}")
-        if wake_on_http is not None:
-            changes.append(f"wake-on-http to {wake_on_http}")
-        change_str = " and ".join(changes)
-
-        with Spinner(
-            text=f"Setting {change_str} for {instance_id}...",
-            success_text="Wake-on-event settings updated successfully!",
-            success_emoji="⚙️",
-        ):
-            instance_obj.set_wake_on(wake_on_ssh=wake_on_ssh, wake_on_http=wake_on_http)
-
-        click.secho(f"Successfully updated settings for {instance_id}.", fg="green")
-
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("ssh")
-@click.argument("instance_id")
-@click.option("--rm", is_flag=True, default=False, help="Stop the instance after SSH.")
-@click.option(
-    "--snapshot",
-    "create_snapshot_on_exit",
-    is_flag=True,
-    default=False,
-    help="Snapshot before stopping (requires --rm or manual stop).",
-)
-@click.argument("remote_command", nargs=-1, required=False, type=click.UNPROCESSED)
-def ssh_portal(instance_id, rm, create_snapshot_on_exit, remote_command):
-    """Start an interactive SSH session or run a command on an instance."""
-    client = get_client()
-    exit_code = 1
-    instance_obj = None
-
-    try:
-        instance_obj = client.instances.get(instance_id)
-
-        # --- REFACTORED BLOCK: Explicit status check ---
-        status = instance_obj.status
-        if status == api.InstanceStatus.PAUSED:
-            # Check if wake-on-ssh is enabled
-            if instance_obj.wake_on.wake_on_ssh:
-                click.secho(
-                    f"Instance {instance_id} is PAUSED. Attempting to resume via wake-on-SSH...",
-                    fg="yellow",
-                )
-            else:
-                click.echo(
-                    f"Error: Instance {instance_id} is PAUSED and wake-on-SSH is not enabled.",
-                    err=True,
-                )
-                click.echo(
-                    "Please run 'morph instance resume <INSTANCE_ID>' first.", err=True
-                )
-                sys.exit(1)
-        elif status == api.InstanceStatus.PENDING:
-            click.secho(
-                f"Instance {instance_id} is PENDING, waiting for it to become ready...",
-                fg="cyan",
+    if parameter["kind"] == "bool":
+        is_flag = policy.get("is_flag")
+        if policy.get("secondary"):
+            is_flag = True
+        if parameter["optional"] and not is_flag:
+            return click.Option(
+                declarations,
+                type=click.BOOL,
+                required=bool(parameter["required"]),
+                default=parameter["default"],
+                help=policy.get("help"),
+                hidden=bool(policy.get("hidden")),
+                metavar=policy.get("metavar"),
+                show_default=policy.get("show_default"),
             )
-        elif status != api.InstanceStatus.READY:
-            click.echo(
-                f"Error: Cannot SSH into instance with status '{status.value}'.",
-                err=True,
-            )
-            sys.exit(1)
-        # --- END OF REFACTORED BLOCK ---
-
-        # The rest of the function remains the same, as the SDK's ssh() method
-        # handles the connection details.
-        with Spinner(
-            text="Connecting via SSH...",
-            success_text="SSH connection established",
-            success_emoji="🔌",
-            color="cyan",
-        ):
-            # The instance_obj.ssh() call will trigger the auto-resume logic in the SDK
-            ssh_ctx = instance_obj.ssh()
-            ssh = ssh_ctx.__enter__()
-
-        is_interactive = sys.stdin.isatty() and not remote_command
-        if is_interactive:
-            click.secho("💻 Starting interactive SSH shell...", fg="magenta")
-            exit_code = ssh.interactive_shell()
-        else:
-            cmd_str = " ".join(remote_command) if remote_command else None
-            if not cmd_str:
-                raise click.UsageError(
-                    "Command must be provided in non-interactive mode or if stdin is not a TTY."
-                )
-            click.secho(f"🛸 Running remote command: {cmd_str}", fg="yellow")
-            result = ssh.run(cmd_str)
-            if result.stdout:
-                click.echo(result.stdout.strip())
-            if result.stderr:
-                click.echo(result.stderr.strip(), err=True)
-            exit_code = result.returncode
-            click.echo(f"Remote command exited with code {exit_code}")
-
-        ssh_ctx.__exit__(None, None, None)
-
-    except TimeoutError:
-        click.echo(
-            f"Error: Timed out waiting for {instance_id} to become ready.", err=True
+        return click.Option(
+            declarations,
+            is_flag=True if is_flag is None else bool(is_flag),
+            default=bool(parameter["default"]),
+            help=policy.get("help"),
+            hidden=bool(policy.get("hidden")),
+            show_default=policy.get("show_default"),
         )
-        sys.exit(1)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-    finally:
-        if instance_obj:
-            if create_snapshot_on_exit:
-                with Spinner(
-                    text="Creating snapshot before exiting...",
-                    success_text="Snapshot created",
-                    success_emoji="📸",
-                ):
-                    snap = instance_obj.snapshot()
-                click.echo(f"Snapshot ID: {snap.id}")
-
-            if rm:
-                with Spinner(
-                    text=f"Stopping instance {instance_id}...",
-                    success_text=f"Instance stopped: {instance_id}",
-                    success_emoji="🛑",
-                ):
-                    client.instances.stop(instance_id)
-
-    sys.exit(exit_code)
-
-
-@instance.command("port-forward")
-@click.argument("instance_id")
-@click.argument("remote_port", type=int)
-@click.argument("local_port", type=int, required=False)
-def port_forward(instance_id, remote_port, local_port):
-    """
-    Forward a port from the instance to your local machine.
-
-    Example:
-        morph instance port-forward inst_123 8080 8000
-    """
-    local_port = local_port or remote_port
-    client = get_client()
-    try:
-        with Spinner(
-            text=f"Waiting for {instance_id} to be ready...",
-            success_text=f"Instance ready: {instance_id}",
-            success_emoji="⚡",
-        ):
-            instance_obj = client.instances.get(instance_id)
-            instance_obj.wait_until_ready(timeout=300)
-
-        click.echo("Setting up port forward...")
-        with (
-            instance_obj.ssh() as ssh,
-            ssh.tunnel(local_port=local_port, remote_port=remote_port) as tunnel,
-        ):
-            click.echo(
-                f"Forwarding remote port {remote_port} to localhost:{local_port}"
-            )
-            click.echo("Press Ctrl+C to stop.")
-            tunnel.wait()
-    except TimeoutError:
-        click.echo(f"Error: Timed out waiting for {instance_id} to be ready.", err=True)
-        sys.exit(1)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except KeyboardInterrupt:
-        click.echo("\nPort forwarding stopped.")
-        sys.exit(0)
-    except Exception as e:
-        click.echo(f"Port forwarding error: {e}", err=True)
-        handle_api_error(e)
-
-
-@instance.command("copy")
-@click.argument("source")
-@click.argument("destination")
-@click.option(
-    "--recursive",
-    "-r",
-    is_flag=True,
-    default=False,
-    help="Copy directories recursively.",
-)
-def copy_files(source, destination, recursive):
-    """
-    Copy files/directories between local machine and a Morph instance.
-
-    Use 'instance_id:/path' for remote paths. Examples:
-      morph instance copy ./local.txt inst_123:/remote/path/
-      morph instance copy inst_123:/remote/file.log ./local_dir/
-      morph instance copy -r ./local_dir inst_123:/remote/dir
-    """
-    client = get_client()
-
-    # Helper to determine if a path is remote by checking for "instance_id:/..."
-    def is_remote_path(path_str):
-        return ":" in path_str and not path_str.startswith(":")
-
-    # Exactly one side must be remote
-    source_is_remote = is_remote_path(source)
-    dest_is_remote = is_remote_path(destination)
-    if source_is_remote and dest_is_remote:
-        raise click.UsageError("Both 'source' and 'destination' cannot be remote.")
-    if not source_is_remote and not dest_is_remote:
-        raise click.UsageError("Neither 'source' nor 'destination' is remote.")
-
-    if source_is_remote:
-        # Download direction: remote → local
-        instance_id, remote_path = source.split(":", 1)
-        local_path = destination
-        uploading = False
-    else:
-        # Upload direction: local → remote
-        instance_id, remote_path = destination.split(":", 1)
-        local_path = source
-        uploading = True
-
-    try:
-        instance_obj = client.instances.get(instance_id)
-        # Wait for instance to become ready
-        with Spinner(
-            text=f"Waiting for instance {instance_id} to be ready for copy...",
-            success_text=f"Instance ready: {instance_id}",
-            success_emoji="⚡",
-        ):
-            instance_obj.wait_until_ready(timeout=300)
-
-        click.echo("Starting copy operation...")
-
-        # Now we call the "pure" helper
-        copy_into_or_from_instance(
-            instance_obj=instance_obj,
-            local_path=local_path,
-            remote_path=remote_path,
-            uploading=uploading,
-            recursive=recursive,
-            verbose=True,
-        )
-
-    except TimeoutError:
-        click.echo(
-            f"Error: Timed out waiting for instance {instance_id} to become ready.",
-            err=True,
-        )
-        sys.exit(1)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("chat")
-@click.argument("instance_id")
-@click.option(
-    "--conversation-file",
-    "-f",
-    type=click.Path(dir_okay=False),
-    help="Path to a conversation file.",
-)
-@click.argument("instructions", nargs=-1, required=False, type=click.UNPROCESSED)
-def chat(instance_id, conversation_file, instructions):
-    """Start an interactive LLM agent chat session with an instance."""
-    client = get_client()
-    try:
-        from morphcloud._llm import agent_loop
-
-        instance_obj = client.instances.get(instance_id)
-        with Spinner(
-            text=f"Waiting for instance {instance_id} to be ready for chat...",
-            success_text=f"Instance ready for chat: {instance_id}",
-            success_emoji="💬",
-        ):
-            instance_obj.wait_until_ready(timeout=300)
-
-        click.echo("Starting chat agent...")
-
-        initial_prompt = " ".join(instructions) if instructions else None
-        agent_loop(
-            instance_obj,
-            initial_prompt=initial_prompt,
-            conversation_file=conversation_file,
-        )
-    except ImportError:
-        click.echo(
-            "Error: Chat requires additional dependencies (e.g., 'anthropic').",
-            err=True,
-        )
-        sys.exit(1)
-    except TimeoutError:
-        click.echo(
-            f"Error: Timed out waiting for instance '{instance_id}' to be ready.",
-            err=True,
-        )
-        sys.exit(1)
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("boot")
-@click.argument("snapshot_id")
-@click.option("--vcpus", type=int, required=False)
-@click.option("--memory", type=int, required=False)
-@click.option("--disk-size", type=int, required=False)
-@click.option("--metadata", "-m", "metadata_options", multiple=True)
-def boot_instance(snapshot_id, vcpus, memory, disk_size, metadata_options):
-    """Boot a new instance from a snapshot."""
-    client = get_client()
-    try:
-        metadata_dict = {}
-        for meta in metadata_options:
-            if "=" not in meta:
-                raise click.UsageError("Metadata must be key=value.")
-            k, v = meta.split("=", 1)
-            metadata_dict[k] = v
-
-        with Spinner(
-            text=f"Booting instance from snapshot {snapshot_id}...",
-            success_text="Instance boot complete!",
-            success_emoji="🚀",
-        ):
-            new_instance = client.instances.boot(
-                snapshot_id=snapshot_id,
-                vcpus=vcpus,
-                memory=memory,
-                disk_size=disk_size,
-                metadata=metadata_dict if metadata_dict else None,
-            )
-
-        click.secho(f"Instance booted: {new_instance.id}", fg="green")
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Snapshot '{snapshot_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("ssh-key")
-@click.argument("instance_id")
-@click.option(
-    "--password",
-    "show_password_only",
-    is_flag=True,
-    help="Output only the value of the password field.",
-)
-def ssh_key(instance_id, show_password_only):
-    """
-    Retrieve the SSH key details for an instance.
-
-    This key is ephemeral and is used for establishing the SSH connection.
-    """
-    client = get_client()
-    try:
-        # A spinner provides better UX for network requests.
-        with Spinner(
-            text=f"Retrieving SSH key for instance {instance_id}...",
-            success_text="SSH key retrieved!",
-            success_emoji="🔑",
-        ):
-            # Per the request, this command calls the endpoint directly.
-            # It accesses the internal http_client from the main client object.
-            response = client._http_client.get(f"/instance/{instance_id}/ssh/key")
-            key_data = response.json()
-
-        if show_password_only:
-            # If the --password flag is used, print only that value.
-            password = key_data.get("password")
-            if password is not None:
-                click.echo(password)
-            else:
-                # Handle cases where the key might be missing from the response.
-                click.echo(
-                    "Error: 'password' field not found in the API response.", err=True
-                )
-                sys.exit(1)
-        else:
-            # Print the full key details in a formatted JSON output.
-            click.echo(format_json(key_data))
-
-    except api.ApiError as e:
-        if e.status_code == 404:
-            click.echo(f"Error: Instance '{instance_id}' not found.", err=True)
-            sys.exit(1)
-        else:
-            handle_api_error(e)
-    except Exception as e:
-        handle_api_error(e)
-
-
-@instance.command("cleanup")
-@click.option(
-    "--snapshot-pattern",
-    help="Comma-separated glob patterns to match snapshot IDs (e.g., 'snapshot_dev_*,snapshot_test_*')",
-)
-@click.option(
-    "--snapshot-exclude-pattern",
-    help="Comma-separated glob patterns to exclude snapshot IDs",
-)
-@click.option(
-    "--service-pattern",
-    help="Comma-separated glob patterns to match exposed service names (instances with matching services are kept alive)",
-)
-@click.option(
-    "--service-exclude-pattern",
-    help="Comma-separated glob patterns to exclude service names (instances with matching services are processed)",
-)
-@click.option(
-    "--exclude-paused/--include-paused",
-    default=True,
-    help="Whether to exclude paused instances from cleanup (default: exclude)",
-)
-@click.option(
-    "--action",
-    type=click.Choice(["stop", "pause"]),
-    default="stop",
-    help="Action to perform on filtered instances",
-)
-@click.option(
-    "--max-workers",
-    type=int,
-    default=10,
-    help="Maximum number of concurrent operations",
-)
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    default=False,
-    help="Skip confirmation prompt and proceed immediately",
-)
-@click.option(
-    "--json",
-    "json_mode",
-    is_flag=True,
-    default=False,
-    help="Output results in JSON format",
-)
-def cleanup_instances(
-    snapshot_pattern,
-    snapshot_exclude_pattern,
-    service_pattern,
-    service_exclude_pattern,
-    exclude_paused,
-    action,
-    max_workers,
-    yes,
-    json_mode,
-):
-    """
-    Clean up instances based on various filtering criteria.
-
-    All pattern options support comma-separated lists of glob patterns.
-
-    Examples:
-
-      # Stop all instances from dev snapshots
-      morph instance cleanup --snapshot-pattern "snapshot_dev_*"
-
-      # Stop instances from multiple snapshot patterns
-      morph instance cleanup --snapshot-pattern "snapshot_dev_*,snapshot_test_*,snapshot_tmp_*"
-
-      # Keep instances exposing webhook or monitoring services, stop everything else
-      morph instance cleanup --service-pattern "*webhook*,*monitor*"
-
-      # Clean up test instances but exclude production snapshots
-      morph instance cleanup --snapshot-pattern "snapshot_test_*" --snapshot-exclude-pattern "snapshot_prod_*,snapshot_staging_*"
-
-      # Pause instances that don't have monitoring or logging services
-      morph instance cleanup --service-exclude-pattern "*monitor*,*log*" --action pause
-
-      # Skip confirmation for automated scripts
-      morph instance cleanup --snapshot-pattern "snapshot_temp_*" --yes
-    """
-    client = get_client()
-
-    try:
-        # Use confirmation unless --yes flag is provided
-        confirm = not yes
-
-        result = client.instances.cleanup(
-            snapshot_pattern=snapshot_pattern,
-            snapshot_exclude_pattern=snapshot_exclude_pattern,
-            service_pattern=service_pattern,
-            service_exclude_pattern=service_exclude_pattern,
-            exclude_paused=exclude_paused,
-            action=action,
-            max_workers=max_workers,
-            confirm=confirm,
-        )
-
-        if json_mode:
-            click.echo(json.dumps(result, indent=2))
-        else:
-            # Rich output is already handled by the cleanup method itself
-            # Just show a final summary
-            if result.get("success"):
-                if result.get("cancelled"):
-                    click.secho("Operation cancelled by user.", fg="cyan")
-                elif result["processed"] > 0:
-                    click.secho(
-                        f"✅ Successfully {action}{'ped' if action == 'stop' else 'd'} {result['processed']} instances.",
-                        fg="green",
-                    )
-                else:
-                    click.secho("No instances needed cleanup.", fg="green")
-            else:
-                if "error" in result:
-                    click.secho(f"❌ Error: {result['error']}", fg="red", err=True)
-                else:
-                    click.secho(
-                        f"❌ {result['failed']} instances failed to {action}.",
-                        fg="red",
-                        err=True,
-                    )
-                    sys.exit(1)
-
-    except api.ApiError as e:
-        click.echo(f"API Error (Status Code: {e.status_code})", err=True)
-        click.echo(f"Response Body: {e.response_body}", err=True)
-        sys.exit(1)
-    except Exception as e:
-        click.echo(f"An unexpected error occurred: {e}", err=True)
-        sys.exit(1)
-
-
-# Load CLI plugins
-load_cli_plugins(cli)
-
-
-def _register_builtin_cli_extensions() -> None:
-    # Register built-in volumes commands after external plugins so the
-    # first-party command wins if a duplicate name is present.
-    from morphcloud.volumes.cli import (
-        register_cli_plugin as register_volumes_cli_plugin,
+    show_default = policy.get("show_default")
+    return click.Option(
+        declarations,
+        type=click_type(parameter),
+        required=bool(parameter["required"]),
+        default=parameter["default"],
+        multiple=bool(policy.get("multiple")),
+        help=policy.get("help"),
+        hidden=bool(policy.get("hidden")),
+        metavar=policy.get("metavar"),
+        show_default=parameter["default"] not in (None, False)
+        if show_default is None
+        else show_default,
     )
 
-    register_volumes_cli_plugin(cli)
 
-    from morphcloud.plugins.cli import register_cli_plugin as register_plugin_cli_plugin
+def jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: jsonable(getattr(value, item.name))
+            for item in dataclasses.fields(value)
+        }
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: jsonable(item) for key, item in value.items()}
+    return value
 
-    register_plugin_cli_plugin(cli)
 
-    # Register built-in devbox commands last (so they win over any external
-    # plugin).
-    from morphcloud.devbox.cli import devbox as devbox_group
+def compact(value: Any, limit: int = 42) -> str:
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, separators=(",", ":"), sort_keys=True)
+    elif value is None:
+        text = "-"
+    else:
+        text = str(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    cli.add_command(devbox_group)
+
+class FormatValues(dict[str, Any]):
+    def __missing__(self, key: str) -> str:
+        return chr(123) + key + chr(125)
 
 
-_register_builtin_cli_extensions()
+def render_values(result: Any, inputs: dict[str, Any]) -> FormatValues:
+    values = FormatValues(inputs)
+    values.setdefault("id", inputs.get("__identity", ""))
+    payload = jsonable(result)
+    values["result"] = payload
+    if isinstance(payload, dict):
+        values.update(payload)
+        if payload.get("id") is not None:
+            values["id"] = payload["id"]
+    return values
+
+
+def select(payload: Any, path: str) -> Any:
+    current = payload
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+    return current
+
+
+def column_parts(
+    specification: str | dict[str, Any],
+) -> tuple[
+    str,
+    str,
+    float | None,
+    int | None,
+    str,
+    bool,
+    str | None,
+    str | None,
+    str,
+]:
+    if isinstance(specification, dict):
+        return (
+            specification["label"],
+            specification["path"],
+            specification.get("divisor"),
+            specification.get("precision"),
+            specification.get("suffix") or "",
+            bool(specification.get("trim_trailing_zeros", True)),
+            specification.get("datetime_format"),
+            specification.get("item_template"),
+            specification.get("item_separator") or ", ",
+        )
+    if "=" in specification:
+        label, path = specification.split("=", 1)
+        return label, path, None, None, "", True, None, None, ", "
+    return (
+        specification.replace(".", " ").replace("_", " ").title(),
+        specification,
+        None,
+        None,
+        "",
+        True,
+        None,
+        None,
+        ", ",
+    )
+
+
+def render_cell(
+    payload: Any,
+    column: tuple[
+        str,
+        str,
+        float | None,
+        int | None,
+        str,
+        bool,
+        str | None,
+        str | None,
+        str,
+    ],
+) -> str:
+    (
+        _,
+        path,
+        divisor,
+        precision,
+        suffix,
+        trim_trailing_zeros,
+        datetime_format,
+        item_template,
+        item_separator,
+    ) = column
+    value = select(payload, path)
+    if value is None:
+        return compact(None)
+    if datetime_format is not None:
+        try:
+            rendered = datetime.datetime.fromtimestamp(
+                float(value), tz=datetime.timezone.utc
+            ).strftime(datetime_format)
+            return compact(f"{rendered}{suffix}")
+        except (OSError, OverflowError, TypeError, ValueError):
+            pass
+    if item_template is not None and isinstance(value, (list, tuple)):
+        rendered_items: list[str] = []
+        for item in value:
+            item_payload = jsonable(item)
+            item_values = FormatValues(
+                item_payload if isinstance(item_payload, dict) else {"value": item_payload}
+            )
+            rendered_items.append(item_template.format_map(item_values))
+        return compact(f"{item_separator.join(rendered_items)}{suffix}")
+    if divisor is not None or precision is not None:
+        try:
+            number = float(value)
+            if divisor is not None:
+                number /= divisor
+            rendered = f"{number:.{precision}f}" if precision is not None else str(number)
+            if trim_trailing_zeros and "." in rendered:
+                rendered = rendered.rstrip("0").rstrip(".")
+            return compact(f"{rendered}{suffix}")
+        except (TypeError, ValueError):
+            pass
+    return compact(f"{value}{suffix}")
+
+
+def render_rows(
+    models: list[Any],
+    columns: list[str | dict[str, Any]],
+    title: str | None,
+) -> None:
+    if title:
+        click.secho(title, bold=True)
+    if not models:
+        click.echo("No results.")
+        return
+    rows = [jsonable(model) for model in models]
+    preferred = ["id", "slug", "name", "status", "revision", "sequence", "created_at"]
+    selected = columns or [name for name in preferred if any(name in row for row in rows)] or list(rows[0])[:5]
+    parts = [column_parts(column) for column in selected]
+    widths = [
+        max(
+            len(column[0]),
+            *(len(render_cell(row, column)) for row in rows),
+        )
+        for column in parts
+    ]
+    click.secho(
+        "  ".join(
+            column[0].upper().ljust(width)
+            for column, width in zip(parts, widths)
+        ),
+        bold=True,
+    )
+    click.echo("  ".join("─" * width for width in widths))
+    for row in rows:
+        click.echo(
+            "  ".join(
+                render_cell(row, column).ljust(width)
+                for column, width in zip(parts, widths)
+            )
+        )
+
+
+def render_summary(
+    result: Any,
+    policy: dict[str, Any],
+    values: FormatValues,
+) -> None:
+    title = (policy.get("title") or "Done").format_map(values)
+    click.secho(f"✓ {title}", fg="green", bold=True)
+    rendered_lines: list[tuple[str | None, str]] = []
+    for specification in policy.get("lines") or []:
+        label, separator, template = specification.partition("=")
+        if separator:
+            rendered_lines.append((label, template.format_map(values)))
+        else:
+            rendered_lines.append((None, specification.format_map(values)))
+    if not rendered_lines and result is not None:
+        render_detail(result)
+        return
+    width = max((len(label) for label, _ in rendered_lines if label), default=0)
+    for label, rendered in rendered_lines:
+        if label:
+            click.echo(f"  {label:<{width}}  {rendered}")
+        else:
+            click.echo(rendered)
+
+
+def render_detail(result: Any) -> None:
+    payload = jsonable(result)
+    if not isinstance(payload, dict):
+        click.echo(json.dumps(payload, indent=2, default=str))
+        return
+    width = max((len(str(key)) for key in payload), default=0)
+    for key, value in payload.items():
+        rendered = (
+            json.dumps(value, indent=2, sort_keys=True)
+            if isinstance(value, (dict, list))
+            else str(value)
+        )
+        click.secho(f"{key.replace('_', ' ').title():<{width + 2}}", bold=True, nl=False)
+        click.echo(rendered)
+
+
+def render_process(result: Any, policy: dict[str, Any]) -> None:
+    payload = jsonable(result)
+    if not isinstance(payload, dict):
+        click.echo(str(result))
+        return
+    stdout_path = policy.get("stdout_path")
+    stderr_path = policy.get("stderr_path")
+    exit_code_path = policy.get("exit_code_path")
+    stdout = str(select(payload, stdout_path) or "") if stdout_path else ""
+    stderr = str(select(payload, stderr_path) or "") if stderr_path else ""
+    exit_code = int(select(payload, exit_code_path) or 0) if exit_code_path else None
+    if policy.get("title"):
+        click.secho(policy["title"], bold=True)
+    if stdout:
+        click.echo(stdout, nl=not stdout.endswith("\n"))
+    if stderr:
+        click.secho("stderr", fg="yellow", bold=True, err=True)
+        click.echo(stderr, nl=not stderr.endswith("\n"), err=True)
+    if exit_code is not None:
+        click.secho(f"exit {exit_code}", fg="green" if exit_code == 0 else "red", bold=True)
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
+
+
+def render(
+    result: Any,
+    runtime: Any,
+    operation: dict[str, Any],
+    inputs: dict[str, Any],
+) -> None:
+    if runtime.json_output:
+        click.echo(json.dumps(jsonable(result), indent=2, default=str))
+        return
+    policy = operation.get("renderer") or {}
+    kind = policy.get("kind", "auto")
+    if kind == "json":
+        click.echo(json.dumps(jsonable(result), indent=2, default=str))
+        return
+    custom_renderer = CUSTOM_RENDERERS.get(kind)
+    if custom_renderer is not None:
+        custom_renderer(result, policy, inputs)
+        return
+    values = render_values(result, inputs)
+    if kind == "success":
+        message = (policy.get("success") or policy.get("title") or "Done").format_map(values)
+        click.secho(f"✓ {message}", fg="green", bold=True)
+        return
+    if kind == "summary":
+        render_summary(result, policy, values)
+        return
+    if kind == "process":
+        render_process(result, policy)
+        return
+    if kind == "table":
+        rows = result if isinstance(result, list) else []
+        if policy.get("items_path") and not isinstance(result, list):
+            selected = select(jsonable(result), policy["items_path"])
+            rows = selected if isinstance(selected, list) else []
+        render_rows(rows, policy.get("columns") or [], policy.get("title"))
+        return
+    if kind == "detail":
+        if policy.get("title"):
+            click.secho(policy["title"], bold=True)
+        render_detail(result)
+        return
+    if result is None:
+        return
+    if isinstance(result, BaseModel):
+        render_detail(result)
+        return
+    if isinstance(result, list) and all(isinstance(item, BaseModel) for item in result):
+        render_rows(result, [], None)
+        return
+    click.echo(json.dumps(jsonable(result), indent=2, default=str) if isinstance(result, (dict, list)) else str(result))
+
+
+def invoke(resource: dict[str, Any], operation: dict[str, Any], runtime: Any, values: dict[str, Any]) -> Any:
+    model = getattr(SDK_MODULES[resource["class_module"]], resource["class_name"])
+    subject = None
+    if operation["scope"] == "entity":
+        subject = runtime.resolve(model, str(values.pop("__identity")))
+    kwargs: dict[str, Any] = {}
+    if (
+        operation["scope"] == "entity"
+        and operation.get("binding") == "external"
+        and operation.get("subject_parameter")
+    ):
+        kwargs[operation["subject_parameter"]] = (
+            subject
+            if operation.get("subject_binding") == "model"
+            else getattr(subject, resource["identity_field"])
+        )
+    for parameter in operation["parameters"]:
+        if parameter["name"] == "self" or parameter["name"] == operation.get("subject_parameter"):
+            continue
+        if parameter["context"]:
+            kwargs[parameter["name"]] = runtime
+            continue
+        value = values.get(parameter["name"])
+        if parameter["kind"] == "kv":
+            value = dict(value or ())
+            if not value and not parameter["required"]:
+                value = parameter["default"]
+        if parameter["variadic"]:
+            value = list(value or ())
+        if parameter["kind"] == "ref" and value is not None:
+            target = getattr(
+                SDK_MODULES[parameter["target_module"]], parameter["target_class"]
+            )
+            resolved = runtime.resolve(target, str(value))
+            target_schema = RESOURCE_BY_CLASS[
+                (parameter["target_module"], parameter["target_class"])
+            ]
+            value = getattr(resolved, target_schema["identity_field"])
+        kwargs[parameter["name"]] = value
+
+    for precondition in operation["preconditions"]:
+        if precondition["kind"] == "status_in":
+            if subject is None:
+                raise click.ClickException(precondition["message"])
+            status = getattr(subject, "status", None)
+            if isinstance(status, Enum):
+                status = status.value
+            if status not in precondition["args"]:
+                raise click.ClickException(precondition["message"])
+        else:
+            raise click.ClickException(f"unsupported precondition: {precondition['kind']}")
+
+    try:
+        if operation.get("binding") == "external":
+            return getattr(
+                SDK_MODULES[operation["function_module"]], operation["python_name"]
+            )(**kwargs)
+        if operation["scope"] == "entity":
+            return getattr(subject, operation["python_name"])(**kwargs)
+        return getattr(model, operation["python_name"])(**kwargs)
+    except click.ClickException:
+        raise
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def invoke_standalone(command: dict[str, Any], runtime: Any, values: dict[str, Any]) -> Any:
+    kwargs: dict[str, Any] = {}
+    for parameter in command["parameters"]:
+        if parameter["context"]:
+            kwargs[parameter["name"]] = runtime
+            continue
+        value = values.get(parameter["name"])
+        if parameter["kind"] == "kv":
+            value = dict(value or ())
+            if not value and not parameter["required"]:
+                value = parameter["default"]
+        if parameter["variadic"]:
+            value = list(value or ())
+        if parameter["kind"] == "ref" and value is not None:
+            target = getattr(
+                SDK_MODULES[parameter["target_module"]], parameter["target_class"]
+            )
+            resolved = runtime.resolve(target, str(value))
+            target_schema = RESOURCE_BY_CLASS[
+                (parameter["target_module"], parameter["target_class"])
+            ]
+            value = getattr(resolved, target_schema["identity_field"])
+        kwargs[parameter["name"]] = value
+    try:
+        return getattr(
+            SDK_MODULES[command["function_module"]], command["python_name"]
+        )(**kwargs)
+    except click.ClickException:
+        raise
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def standalone_command(command: dict[str, Any]) -> click.Command:
+    params = [
+        build_parameter(parameter)
+        for parameter in command["parameters"]
+        if not parameter["context"]
+    ]
+    if (command.get("renderer") or {}).get("json_option"):
+        params.append(
+            click.Option(
+                ["--json", "__json_output"],
+                is_flag=True,
+                help="Emit this result as JSON.",
+            )
+        )
+
+    @click.pass_context
+    def callback(ctx: click.Context, **kwargs: Any) -> None:
+        command_json = bool(kwargs.pop("__json_output", False))
+        inputs = dict(kwargs)
+        policy = command.get("renderer") or {}
+        previous_json = bool(ctx.obj.json_output)
+        if command_json:
+            ctx.obj.json_output = True
+        try:
+            if policy.get("progress") and not ctx.obj.json_output:
+                click.secho(f"… {policy['progress']}", fg="cyan", err=True)
+            result = invoke_standalone(command, ctx.obj, dict(kwargs))
+            render(result, ctx.obj, command, inputs)
+        finally:
+            ctx.obj.json_output = previous_json
+
+    callback.__name__ = "command_" + "_".join(
+        [*command["path"], command["name"]]
+    ).replace("-", "_")
+    return click.Command(
+        name=command["name"],
+        callback=callback,
+        params=params,
+        help=command["summary"],
+    )
+
+
+def operation_command(resource: dict[str, Any], operation: dict[str, Any]) -> click.Command:
+    params: list[click.Parameter] = []
+    if operation["scope"] == "entity":
+        params.append(click.Argument(["__identity"], metavar=f"{resource['cli_name'].upper()}_ID"))
+    params.extend(
+        build_parameter(parameter)
+        for parameter in operation["parameters"]
+        if (
+            parameter["name"] != "self"
+            and not parameter["context"]
+            and parameter["name"] != operation.get("subject_parameter")
+        )
+    )
+    if (operation.get("renderer") or {}).get("json_option"):
+        params.append(
+            click.Option(
+                ["--json", "__json_output"],
+                is_flag=True,
+                help="Emit this result as JSON.",
+            )
+        )
+
+    @click.pass_context
+    def callback(ctx: click.Context, **kwargs: Any) -> None:
+        command_json = bool(kwargs.pop("__json_output", False))
+        inputs = dict(kwargs)
+        policy = operation.get("renderer") or {}
+        previous_json = bool(ctx.obj.json_output)
+        if command_json:
+            ctx.obj.json_output = True
+        try:
+            if policy.get("progress") and not ctx.obj.json_output:
+                click.secho(f"… {policy['progress']}", fg="cyan", err=True)
+            result = invoke(resource, operation, ctx.obj, dict(kwargs))
+            render(result, ctx.obj, operation, inputs)
+        finally:
+            ctx.obj.json_output = previous_json
+
+    callback.__name__ = f"operation_{resource['resource']}_{operation['name']}".replace("-", "_")
+    return click.Command(
+        name=operation["name"],
+        callback=callback,
+        params=params,
+        help=operation["summary"],
+    )
+
+
+@click.group(name='morphcloud', cls=PrefixGroup, help='Morph Cloud CLI - A tool for creating, managing, and interacting with Morph Cloud resources.')
+@click.version_option(package_name='morphcloud')
+@click.option(
+    '--profile', 'profile',
+    type=click.STRING,
+    default=None,
+    required=False,
+    help='Use a named profile for this command (overrides active profile).',
+    is_flag=False,
+    hidden=False,
+    show_default=None,
+)
+
+@click.pass_context
+def cli(ctx: click.Context, **values: Any) -> None:
+    json_output = bool(values.pop("__json_output", False))
+    ctx.obj = CONTEXT_CLASS(json_output=json_output, **values)
+
+
+for _definition in SCHEMA.get("command_groups", []):
+    _parent = cli
+    for _index, _name in enumerate(_definition["path"]):
+        _mounted = _parent.commands.get(_name)
+        if _mounted is None:
+            _mounted = PrefixGroup(
+                name=_name,
+                help=(
+                    _definition["help"]
+                    if _index == len(_definition["path"]) - 1
+                    else f"Manage {_name} commands."
+                ),
+            )
+            _parent.add_command(_mounted)
+        if not isinstance(_mounted, click.Group):
+            raise RuntimeError(f"CLI group path is not a group: {_name!r}")
+        if _index == len(_definition["path"]) - 1:
+            _mounted.help = _definition["help"]
+        _parent = _mounted
+
+
+for _definition in SCHEMA.get("commands", []):
+    if _definition["hidden"]:
+        continue
+    _parent = cli
+    for _name in _definition["path"]:
+        _mounted = _parent.commands.get(_name)
+        if not isinstance(_mounted, click.Group):
+            raise RuntimeError(f"CLI command parent is not a group: {_name!r}")
+        _parent = _mounted
+    _command = standalone_command(_definition)
+    _parent.add_command(_command)
+    for _alias in _definition["aliases"]:
+        _parent.add_command(_command, name=_alias)
+
+
+for _resource in SCHEMA["resources"]:
+    if not _resource["exposed"]:
+        continue
+    _parent = cli
+    for _parent_name in _resource.get("cli_parent", []):
+        _mounted = _parent.commands.get(_parent_name)
+        if _mounted is None:
+            _mounted = PrefixGroup(
+                name=_parent_name,
+                help=f"Manage {_parent_name} resources.",
+            )
+            _parent.add_command(_mounted)
+        if not isinstance(_mounted, click.Group):
+            raise RuntimeError(f"resource CLI parent is not a group: {_parent_name!r}")
+        _parent = _mounted
+    _group = _parent.commands.get(_resource["cli_name"])
+    _group_help = _resource.get("help") or f"Manage {_resource['resource']} resources."
+    if _group is None:
+        _group = PrefixGroup(
+            name=_resource["cli_name"],
+            help=_group_help,
+        )
+        _parent.add_command(_group)
+    elif isinstance(_group, click.Group):
+        _group.help = _group_help
+    else:
+        raise RuntimeError(f"resource CLI mount is not a group: {_resource['cli_name']!r}")
+    for _operation in _resource["operations"]:
+        if not _operation["hidden"]:
+            _command = operation_command(_resource, _operation)
+            _group.add_command(_command)
+            for _alias in _operation["aliases"]:
+                _group.add_command(_command, name=_alias)
+    for _alias in _resource["aliases"]:
+        _parent.add_command(_group, name=_alias)
+    for _alternate_path in _resource.get("alternate_paths", []):
+        _alternate_parent = cli
+        for _parent_name in _alternate_path[:-1]:
+            _mounted = _alternate_parent.commands.get(_parent_name)
+            if _mounted is None:
+                _mounted = PrefixGroup(
+                    name=_parent_name,
+                    help=f"Manage {_parent_name} resources.",
+                )
+                _alternate_parent.add_command(_mounted)
+            if not isinstance(_mounted, click.Group):
+                raise RuntimeError(
+                    f"resource CLI parent is not a group: {_parent_name!r}"
+                )
+            _alternate_parent = _mounted
+        _alternate_parent.add_command(_group, name=_alternate_path[-1])
+
+
+getattr(
+    SDK_MODULES['morphcloud.cli_runtime'],
+    'load_cli_plugins',
+)(cli)
 
 
 if __name__ == "__main__":
-    cli()
+    cli(prog_name='morphcloud')

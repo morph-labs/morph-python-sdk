@@ -1,24 +1,16 @@
-# morphcloud/_utils.py
-
 import threading
 import time
 from typing import Any
-
 import click
-
 
 def to_camel_case(snake_str: str) -> str:
     """Convert snake_case to camelCase"""
-    components = snake_str.split("_")
-    return components[0] + "".join(x.title() for x in components[1:])
-
+    components = snake_str.split('_')
+    return components[0] + ''.join((x.title() for x in components[1:]))
 
 def to_snake_case(camel_str: str) -> str:
     """Convert camelCase to snake_case"""
-    return "".join(["_" + c.lower() if c.isupper() else c for c in camel_str]).lstrip(
-        "_"
-    )
-
+    return ''.join(['_' + c.lower() if c.isupper() else c for c in camel_str]).lstrip('_')
 
 def is_jupyter_notebook() -> bool:
     """
@@ -26,43 +18,27 @@ def is_jupyter_notebook() -> bool:
     """
     try:
         shell = get_ipython().__class__.__name__
-        if shell == "ZMQInteractiveShell":
-            return True  # Jupyter notebook or qtconsole
-        elif shell == "TerminalInteractiveShell":
-            return False  # Terminal running IPython
+        if shell == 'ZMQInteractiveShell':
+            return True
+        elif shell == 'TerminalInteractiveShell':
+            return False
         else:
-            return False  # Other type (?)
+            return False
     except NameError:
-        return False  # Probably standard Python interpreter
+        return False
 
-
-def get_iframe_object_from_instance_id(
-    base_url: str, instance_id: str, width: int = 1280 // 2, height=720 // 2
-) -> Any:
+def get_iframe_object_from_instance_id(base_url: str, instance_id: str, width: int=1280 // 2, height=720 // 2) -> Any:
     """
     Get the iframe object from the instance id.
     """
     from IPython.display import IFrame
-
-    # Display the iframe
-    return IFrame(
-        src=f"{base_url}/static/vnc_lite.html?path=instance%2F{instance_id}%2Fvnc&scale=scale",
-        width=width,
-        height=height,
-    )
-
-
-# ─────────────────────────────────────────────────────────────
-#  Spinner Definition
-# ─────────────────────────────────────────────────────────────
-
+    return IFrame(src=f'{base_url}/static/vnc_lite.html?path=instance%2F{instance_id}%2Fvnc&scale=scale', width=width, height=height)
 
 class Spinner:
     """A context manager that shows an animated spinner with a status message."""
+    SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
-    SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    def __init__(self, text, success_text=None, success_emoji="✅", color="green"):
+    def __init__(self, text, success_text=None, success_emoji='✅', color='green'):
         self.text = text
         self.success_text = success_text
         self.success_emoji = success_emoji
@@ -74,12 +50,10 @@ class Spinner:
         frame_index = 0
         while not self.stop_event.is_set():
             frame = self.SPINNER_FRAMES[frame_index % len(self.SPINNER_FRAMES)]
-            click.echo(f"\r{frame} {self.text}", nl=False, err=True)
+            click.echo(f'\r{frame} {self.text}', nl=False, err=True)
             time.sleep(0.1)
             frame_index += 1
-
-        # Once stopping, overwrite the spinner line with spaces, then carriage-return
-        clear_line = "\r" + " " * (len(self.text) + 4) + "\r"
+        clear_line = '\r' + ' ' * (len(self.text) + 4) + '\r'
         click.echo(clear_line, nl=False, err=True)
 
     def __enter__(self):
@@ -91,17 +65,10 @@ class Spinner:
         self.stop_event.set()
         self.thread.join()
         if exc_type is None and self.success_text:
-            # Ensure there's a space between emoji and text:
-            click.secho(
-                f"{self.success_emoji}  {self.success_text}", fg=self.color, err=True
-            )
+            click.secho(f'{self.success_emoji}  {self.success_text}', fg=self.color, err=True)
         elif exc_type is not None:
-            # On error, you can also add a space if needed:
-            click.secho("❌ Operation failed!", fg="red", err=True)
-        # Let exceptions pass through
+            click.secho('❌ Operation failed!', fg='red', err=True)
         return False
-
-
 try:
     from enum import StrEnum
 except ImportError:
