@@ -3,9 +3,9 @@ from __future__ import annotations
 import sys
 import json
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 import click
-from .api import Instance, InstanceExecResponse, InstanceSshKey, InstanceStatus, Snapshot, copy_into_or_from_instance
+from .api import DiskResizeError, DiskResizeOperation, Instance, InstanceExecResponse, InstanceSshKey, InstanceStatus, Snapshot, copy_into_or_from_instance
 from .cli_helpers import format_json, print_docker_style_table
 from .cli_runtime import MorphRuntimeContext
 
@@ -333,3 +333,42 @@ def ssh_instance(instance: Instance, rm: bool=False, create_snapshot_on_exit: bo
             instance.stop()
             stopped = True
     return {'instance_id': instance.id, 'interactive': interactive, 'returncode': returncode, 'stdout': stdout, 'stderr': stderr, 'snapshot_id': snapshot_id, 'stopped': stopped}
+
+def render_disk_resize(result: DiskResizeOperation, policy: dict[str, Any], inputs: dict[str, Any]) -> None:
+    """Show operation identity even when a resize has not completed yet."""
+    if inputs.get('json_mode'):
+        click.echo(format_json(result.model_dump(mode='json')))
+        return
+    click.echo(f'Disk resize {result.id}: {result.status}')
+    click.echo(f'Capacity: {result.previous_disk_size} → {result.requested_disk_size} MiB')
+    click.echo(f'Phase: {result.phase}')
+    if result.idempotency_key:
+        click.echo(f'Idempotency key: {result.idempotency_key}')
+    if result.error:
+        click.echo(f'{result.error.code}: {result.error.message}')
+
+def _disk_resize_cli(action: Callable[[], DiskResizeOperation], json_mode: bool) -> DiskResizeOperation:
+    try:
+        return action()
+    except DiskResizeError as exc:
+        if json_mode:
+            click.echo(format_json({'error': type(exc).__name__, 'message': str(exc), 'operation_id': exc.operation_id, 'status_code': getattr(exc, 'status_code', None), 'error_code': getattr(exc, 'error_code', None), 'idempotency_key': exc.idempotency_key, 'operation': exc.operation.model_dump(mode='json') if exc.operation else None}))
+            raise click.exceptions.Exit(1) from exc
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+def resize_instance_disk(instance: Instance, disk_size: int, idempotency_key: str | None=None, wait: bool=True, timeout: float=300, json_mode: bool=False) -> DiskResizeOperation:
+    """Increase or decrease eligible disk capacity without rebooting.
+
+    A timeout stops waiting; inspect the operation or replay with the same key.
+    """
+    return _disk_resize_cli(lambda: instance.resize_disk(disk_size=disk_size, idempotency_key=idempotency_key, wait=wait, timeout=timeout), json_mode)
+
+def get_instance_disk_resize(ctx: MorphRuntimeContext, instance_id: str, operation_id: str, json_mode: bool=False) -> DiskResizeOperation:
+    """Inspect an existing resize, including failure or recovery state."""
+    return _disk_resize_cli(lambda: ctx.client.instances.get_disk_resize(instance_id, operation_id), json_mode)
+
+def wait_instance_disk_resize(ctx: MorphRuntimeContext, instance_id: str, operation_id: str, timeout: float=300, json_mode: bool=False) -> DiskResizeOperation:
+    """Wait for an existing resize without submitting another request."""
+    return _disk_resize_cli(lambda: ctx.client.instances.wait_disk_resize(instance_id, operation_id, timeout=timeout), json_mode)

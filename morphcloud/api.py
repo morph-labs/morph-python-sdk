@@ -11,6 +11,8 @@ from functools import lru_cache
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from rich.console import Console
+from morphcloud import _disk_resize
+from morphcloud._disk_resize import DiskResizeError, DiskResizeFailed, DiskResizeOperation, DiskResizeOperationError, DiskResizeRecoveryRequired, DiskResizeRefreshError, DiskResizeRequestError, DiskResizeTimeout
 from morphcloud._http_transport import build_async_http_transport, build_http_transport
 from morphcloud._utils import StrEnum
 from morphcloud.config import resolve_settings
@@ -1354,6 +1356,111 @@ class InstanceAPI(BaseAPI):
         response = await self._client._async_http_client.delete(f'/instance/{instance_id}')
         response.raise_for_status()
 
+    def resize_disk(self, instance_id: str, *, disk_size: int, idempotency_key: str | None=None, wait: bool=True, timeout: float=300) -> DiskResizeOperation:
+        """Set absolute disk capacity in MiB without rebooting an eligible instance.
+
+        Waiting is local: timeout never cancels accepted work. Preserve the
+        returned/exception idempotency key to replay after an uncertain response.
+        Decreases must fit existing usage and required headroom.
+        """
+        end = _disk_resize.deadline(timeout)
+        key = _disk_resize.request_key(disk_size, idempotency_key)
+        path = _disk_resize.operation_path(instance_id)
+        if not isinstance(wait, bool):
+            raise ValueError('wait must be a bool')
+        try:
+            response = self._client._http_client.post(path, json={'disk_size': disk_size}, headers={'Idempotency-Key': key}, timeout=min(30, _disk_resize.remaining(end, idempotency_key=key)))
+            response.raise_for_status()
+            operation = _disk_resize.parse_operation(response.json(), instance_id, idempotency_key=key, requested_disk_size=disk_size)
+        except httpx.TimeoutException as exc:
+            raise DiskResizeTimeout('Disk resize submission timed out; replay with the same key', idempotency_key=key) from exc
+        except (ApiError, httpx.HTTPError, ValueError) as exc:
+            raise DiskResizeRequestError('Disk resize submission failed; preserve the key for safe replay', cause=exc, idempotency_key=key) from exc
+        if _disk_resize.terminal(operation) or not wait:
+            return operation
+        return self._wait_disk_resize(instance_id, operation.id, end, operation)
+
+    async def aresize_disk(self, instance_id: str, *, disk_size: int, idempotency_key: str | None=None, wait: bool=True, timeout: float=300) -> DiskResizeOperation:
+        """Async resize_disk; cancelling the caller does not cancel remote work.
+
+        Supply a persistent key before starting if cancellation must be recoverable
+        across processes, including cancellation before an operation ID is known.
+        """
+        end = _disk_resize.deadline(timeout)
+        key = _disk_resize.request_key(disk_size, idempotency_key)
+        path = _disk_resize.operation_path(instance_id)
+        if not isinstance(wait, bool):
+            raise ValueError('wait must be a bool')
+        try:
+            seconds = _disk_resize.remaining(end, idempotency_key=key)
+            response = await asyncio.wait_for(self._client._async_http_client.post(path, json={'disk_size': disk_size}, headers={'Idempotency-Key': key}, timeout=min(30, seconds)), timeout=seconds)
+            response.raise_for_status()
+            operation = _disk_resize.parse_operation(response.json(), instance_id, idempotency_key=key, requested_disk_size=disk_size)
+        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+            raise DiskResizeTimeout('Disk resize submission timed out; replay with the same key', idempotency_key=key) from exc
+        except (ApiError, httpx.HTTPError, ValueError) as exc:
+            raise DiskResizeRequestError('Disk resize submission failed; preserve the key for safe replay', cause=exc, idempotency_key=key) from exc
+        if _disk_resize.terminal(operation) or not wait:
+            return operation
+        return await self._await_disk_resize(instance_id, operation.id, end, operation)
+
+    def get_disk_resize(self, instance_id: str, operation_id: str) -> DiskResizeOperation:
+        """Inspect the exact operation, including failed or recovery-required state."""
+        return self._get_disk_resize(instance_id, operation_id, _disk_resize.deadline(30))
+
+    async def aget_disk_resize(self, instance_id: str, operation_id: str) -> DiskResizeOperation:
+        """Async inspection of the exact operation without changing its state."""
+        return await self._aget_disk_resize(instance_id, operation_id, _disk_resize.deadline(30))
+
+    def _get_disk_resize(self, instance_id: str, operation_id: str, end: float, previous: DiskResizeOperation | None=None) -> DiskResizeOperation:
+        path = _disk_resize.operation_path(instance_id, operation_id)
+        key = previous.idempotency_key if previous else None
+        try:
+            response = self._client._http_client.get(path, timeout=min(30, _disk_resize.remaining(end, operation=previous, operation_id=operation_id)))
+            response.raise_for_status()
+            return _disk_resize.parse_operation(response.json(), instance_id, operation_id=operation_id, idempotency_key=key, requested_disk_size=previous.requested_disk_size if previous else None, previous=previous)
+        except httpx.TimeoutException as exc:
+            raise DiskResizeTimeout('Disk resize observation timed out; remote work was not cancelled', operation=previous, operation_id=operation_id) from exc
+        except (ApiError, httpx.HTTPError, ValueError) as exc:
+            raise DiskResizeRequestError('Disk resize observation failed; inspect this operation again', cause=exc, operation=previous, operation_id=operation_id) from exc
+
+    async def _aget_disk_resize(self, instance_id: str, operation_id: str, end: float, previous: DiskResizeOperation | None=None) -> DiskResizeOperation:
+        path = _disk_resize.operation_path(instance_id, operation_id)
+        key = previous.idempotency_key if previous else None
+        try:
+            seconds = _disk_resize.remaining(end, operation=previous, operation_id=operation_id)
+            response = await asyncio.wait_for(self._client._async_http_client.get(path, timeout=min(30, seconds)), timeout=seconds)
+            response.raise_for_status()
+            return _disk_resize.parse_operation(response.json(), instance_id, operation_id=operation_id, idempotency_key=key, requested_disk_size=previous.requested_disk_size if previous else None, previous=previous)
+        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+            raise DiskResizeTimeout('Disk resize observation timed out; remote work was not cancelled', operation=previous, operation_id=operation_id) from exc
+        except (ApiError, httpx.HTTPError, ValueError) as exc:
+            raise DiskResizeRequestError('Disk resize observation failed; inspect this operation again', cause=exc, operation=previous, operation_id=operation_id) from exc
+
+    def wait_disk_resize(self, instance_id: str, operation_id: str, *, timeout: float=300) -> DiskResizeOperation:
+        """Wait for this operation; raise typed terminal errors or a local timeout."""
+        return self._wait_disk_resize(instance_id, operation_id, _disk_resize.deadline(timeout))
+
+    async def await_disk_resize(self, instance_id: str, operation_id: str, *, timeout: float=300) -> DiskResizeOperation:
+        """Async wait; cancellation stops observation without cancelling remote work."""
+        return await self._await_disk_resize(instance_id, operation_id, _disk_resize.deadline(timeout))
+
+    def _wait_disk_resize(self, instance_id: str, operation_id: str, end: float, operation: DiskResizeOperation | None=None) -> DiskResizeOperation:
+        while True:
+            if operation is not None:
+                if _disk_resize.terminal(operation):
+                    return operation
+                time.sleep(_disk_resize.poll_delay(operation, end))
+            operation = self._get_disk_resize(instance_id, operation_id, end, operation)
+
+    async def _await_disk_resize(self, instance_id: str, operation_id: str, end: float, operation: DiskResizeOperation | None=None) -> DiskResizeOperation:
+        while True:
+            if operation is not None:
+                if _disk_resize.terminal(operation):
+                    return operation
+                await asyncio.sleep(_disk_resize.poll_delay(operation, end))
+            operation = await self._aget_disk_resize(instance_id, operation_id, end, operation)
+
     def reboot(self, instance_id: str, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> Instance:
         """
         Reboot an instance by its ID, optionally applying a new machine configuration.
@@ -1917,6 +2024,30 @@ class Instance(BaseModel):
             body['ttl_seconds'] = ttl_seconds
         response = await self._api._client._async_http_client.post(f'/instance/{self.id}/snapshot', params=params, json=body)
         return Snapshot.model_validate(response.json())._set_api(self._api._client.snapshots)
+
+    def resize_disk(self, *, disk_size: int, idempotency_key: str | None=None, wait: bool=True, timeout: float=300) -> DiskResizeOperation:
+        """Resize disk capacity; refresh local state only after confirmed success.
+
+        A DiskResizeRefreshError retains the successful operation if the later
+        refresh fails. Waiting timeout does not cancel the remote operation.
+        """
+        operation = self._api.resize_disk(self.id, disk_size=disk_size, idempotency_key=idempotency_key, wait=wait, timeout=timeout)
+        if operation.status == 'succeeded':
+            try:
+                self._refresh()
+            except (ApiError, httpx.HTTPError, ValueError) as exc:
+                raise DiskResizeRefreshError('Disk resize succeeded, but instance refresh failed', operation=operation) from exc
+        return operation
+
+    async def aresize_disk(self, *, disk_size: int, idempotency_key: str | None=None, wait: bool=True, timeout: float=300) -> DiskResizeOperation:
+        """Async resize with success evidence preserved across refresh failures."""
+        operation = await self._api.aresize_disk(self.id, disk_size=disk_size, idempotency_key=idempotency_key, wait=wait, timeout=timeout)
+        if operation.status == 'succeeded':
+            try:
+                await self._refresh_async()
+            except (ApiError, httpx.HTTPError, ValueError) as exc:
+                raise DiskResizeRefreshError('Disk resize succeeded, but instance refresh failed', operation=operation) from exc
+        return operation
 
     def reboot(self, *, vcpus: typing.Optional[int]=None, memory: typing.Optional[int]=None, disk_size: typing.Optional[int]=None, metadata: typing.Optional[typing.Dict[str, str]]=None, ttl_seconds: typing.Optional[int]=None, ttl_action: typing.Union[None, typing.Literal['stop', 'pause']]=None) -> None:
         """
